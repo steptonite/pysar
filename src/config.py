@@ -42,6 +42,8 @@ MODES = {
     "zh": {"language": "zh", "translate": "false"},
     "ko": {"language": "ko", "translate": "false"},
     "tr": {"language": "tr", "translate": "false"},
+    "th": {"language": "th", "translate": "false"},
+    "vi": {"language": "vi", "translate": "false"},
     "ar": {"language": "ar", "translate": "false"},
 }
 
@@ -63,6 +65,8 @@ MODE_LABELS = {
     "zh": "🇨🇳 中文",
     "ko": "🇰🇷 한국어",
     "tr": "🇹🇷 Türkçe",
+    "th": "🇹🇭 ไทย",
+    "vi": "🇻🇳 Tiếng Việt",
     "ar": "🇸🇦 العربية",
 }
 
@@ -82,6 +86,8 @@ MENU_MODES = [
     "zh",
     "ko",
     "tr",
+    "th",
+    "vi",
     "ar",
     "ru",
 ]

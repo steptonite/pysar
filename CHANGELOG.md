@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 - pyproject.toml, ruff config, pytest config.
 - LICENSE (MIT), CONTRIBUTING, CHANGELOG.
 - GitHub Actions CI: lint + smoke imports on macOS.
-- «🌍 Languages» submenu with 15 languages.
+- «🌍 Languages» submenu with 17 languages (Thai and Vietnamese added; total 18 modes including the flagship `→ English` shortcut).
 
 ### Changed
 - Project restructure: source moved into `src/`, mapped to the `cream_typer` package via setuptools `package-dir`.
