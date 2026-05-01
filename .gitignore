@@ -1,0 +1,112 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# Caches and reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+.hypothesis/
+coverage.xml
+*.cover
+*.py,cover
+nosetests.xml
+
+# Type checkers
+.pyright/
+.pylance/
+
+# ── Virtualenv ──────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Vendored deps (whisper.cpp + downloaded model) ─────────────────────────
+vendor/
+
+# ── Secrets / local config ─────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+secrets/
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Jupyter / IPython ──────────────────────────────────────────────────────
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ── PyInstaller ─────────────────────────────────────────────────────────────
+*.manifest
+*.spec
+
+# ── OS noise ────────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# Linux
+*~
+.fuse_hidden*
+.Trash-*
+
+# ── IDE / editors ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*.bak
+.history/
+.claude/
+
+# ── Project-specific ───────────────────────────────────────────────────────
+# Generated docs
+docs/_build/
+site/
+# Local dev artifacts
+*.local.toml
+scratch/
+tmp/

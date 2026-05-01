@@ -1,0 +1,72 @@
+name: 🐞 Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more detail you give, the faster we can fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the symptom and what you expected to see.
+      placeholder: |
+        I tap Caps Lock — the icon doesn't change, logs are silent. I expected «🔴 Recording…».
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `make whisper`
+        2. `make run`
+        3. Tap Caps Lock
+        4. ...
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "Sequoia 15.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon (M1/M2/M3/M4)
+        - Intel
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: "`python3 --version`"
+      placeholder: "3.11.7"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `make run` + `make whisper` + anything relevant from `Console.app`.
+      render: shell
+
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: macOS permissions
+      description: Verify Terminal/iTerm is in each list
+      options:
+        - label: "Privacy → Input Monitoring"
+        - label: "Privacy → Accessibility"
+        - label: "Privacy → Microphone"

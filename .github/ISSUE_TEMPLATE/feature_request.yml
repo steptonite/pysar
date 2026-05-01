@@ -1,0 +1,39 @@
+name: ✨ Feature request
+description: Idea or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What's awkward right now? What scenario do you want covered?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What do you propose?
+      description: Describe the solution. If there are several options, list them with pros and cons.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Anything you've already tried? Are there workarounds?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where the feature lands
+      options:
+        - macOS-specific
+        - Cross-platform (Windows / Linux)
+        - Whisper / transcription
+        - UI / menu bar
+        - Config / settings
+        - Other
+    validations:
+      required: true
