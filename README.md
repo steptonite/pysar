@@ -176,10 +176,13 @@ Pick a mode by clicking inside the **🌍 Languages** submenu in the menu bar. T
 🇩🇪 Deutsch        🇫🇷 Français       🇮🇹 Italiano
 🇵🇹 Português      🇳🇱 Nederlands     🇵🇱 Polski
 🇯🇵 日本語         🇨🇳 中文           🇰🇷 한국어
-🇹🇷 Türkçe         🇸🇦 العربية         🇷🇺 Русский
+🇹🇷 Türkçe         🇹🇭 ไทย            🇻🇳 Tiếng Việt
+🇸🇦 العربية         🇷🇺 Русский
 ```
 
 **Want a different set?** Edit `MODES`, `MODE_LABELS`, and `MENU_MODES` in [src/config.py](src/config.py). Whisper supports 99 languages — adding any of them is a single line in three dicts, no UI code required.
+
+**Note on Thai (th):** the `large-v3-turbo` model has noticeably degraded performance on Thai compared to `large-v3` (Whisper's original quality matrix). It still works, but expect more errors. Vietnamese is fine.
 
 ---
 
