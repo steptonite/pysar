@@ -10,6 +10,11 @@
 
 **Tap Caps Lock, speak any language, get any other.** Whisper.cpp, no cloud, no GPU rental.
 
+
+
+https://github.com/user-attachments/assets/18316366-6b6c-4c1a-9bf5-661285fe9c03
+
+
 ---
 
 ## 🌍 What it does
