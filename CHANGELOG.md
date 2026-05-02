@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Crash (`Abort trap: 6` / NSException) when the transcription "too short" branch fired. Tray UI updates (`set_title`, `set_status`, checkmark refresh) were happening on background threads (CGEventTap CFRunLoop, `_finish` daemon, whisper health check); AppKit requires `NSStatusItem` / `NSMenuItem` mutations on the main thread. Now wrapped in `PyObjCTools.AppHelper.callAfter`.
+
 ### Added
 - Platform abstraction layer (`src/backend/`) with Protocol contracts.
 - pyproject.toml, ruff config, pytest config.
