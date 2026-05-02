@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 import Quartz
 import rumps
+from PyObjCTools import AppHelper
 
 from ..config import CLIPBOARD_RESTORE_DELAY, HOTKEY_KEYCODE
 
@@ -156,15 +157,20 @@ class Tray:
         for code, item in self._mode_items.items():
             item.state = 1 if code == self._current else 0
 
+    # NSStatusItem / NSMenuItem must be mutated on the main thread or AppKit
+    # raises NSException → SIGABRT. Our callers (CGEventTap CFRunLoop, the
+    # _finish daemon thread, the whisper health check) live on background
+    # threads, so we hop to main via AppHelper.callAfter.
+
     def set_title(self, title: str) -> None:
-        self._app.title = title
+        AppHelper.callAfter(setattr, self._app, "title", title)
 
     def set_status(self, text: str) -> None:
-        self._status.title = text
+        AppHelper.callAfter(setattr, self._status, "title", text)
 
     def set_current_mode(self, code: str) -> None:
         self._current = code
-        self._refresh_checkmarks()
+        AppHelper.callAfter(self._refresh_checkmarks)
 
     def run(self) -> None:
         self._app.run()
