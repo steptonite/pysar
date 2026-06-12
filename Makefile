@@ -1,4 +1,4 @@
-.PHONY: setup install venv whisper-build whisper-model whisper run lint fmt test clean distclean
+.PHONY: setup install venv whisper-build whisper-model whisper-vad whisper run up app icon lint fmt test clean distclean
 
 # ── Config ──────────────────────────────────────────────────────────────────
 # Override any of these via env; defaults install everything into vendor/.
@@ -7,6 +7,8 @@ WHISPER_REPO       ?= https://github.com/ggerganov/whisper.cpp.git
 WHISPER_SERVER     ?= $(WHISPER_DIR)/build/bin/whisper-server
 WHISPER_MODEL_NAME ?= large-v3-turbo-q5_0
 WHISPER_MODEL      ?= $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL_NAME).bin
+WHISPER_VAD_NAME   ?= silero-v5.1.2
+WHISPER_VAD_MODEL  ?= $(WHISPER_DIR)/models/ggml-$(WHISPER_VAD_NAME).bin
 WHISPER_PORT       ?= 8080
 WHISPER_LANG       ?= en
 
@@ -14,12 +16,12 @@ PY = . venv/bin/activate &&
 
 # ── User-facing targets ─────────────────────────────────────────────────────
 
-# One-shot install: venv + python deps + whisper.cpp + model.
-setup: install whisper-build whisper-model
+# One-shot install: venv + python deps + whisper.cpp + speech & VAD models.
+setup: install whisper-build whisper-model whisper-vad
 	@echo ""
 	@echo "✅ Done. Next:"
-	@echo "   terminal 1:  make whisper"
-	@echo "   terminal 2:  make run"
+	@echo "   make app   # install the menu-bar app into /Applications (recommended)"
+	@echo "   make up    # or just run server + app from this terminal"
 
 venv:
 	@test -d venv || python3 -m venv venv
@@ -32,10 +34,30 @@ install: venv
 run:
 	$(PY) python -m pysar
 
+# One command: start whisper server (background) + app (foreground).
+up:
+	@bash scripts/start.sh
+
+# Install the Dock-less menu-bar app into /Applications + `cream` alias.
+app:
+	@bash scripts/install_app.sh
+
+# Regenerate the app icon (assets/Pysar.icns) from scratch.
+icon:
+	$(PY) python scripts/make_icon.py assets/icon-1024.png
+	@rm -rf assets/Pysar.iconset && mkdir -p assets/Pysar.iconset
+	@for sz in 16 32 64 128 256 512; do \
+		sips -z $$sz $$sz assets/icon-1024.png --out assets/Pysar.iconset/icon_$${sz}x$${sz}.png >/dev/null; \
+		d=$$((sz*2)); sips -z $$d $$d assets/icon-1024.png --out assets/Pysar.iconset/icon_$${sz}x$${sz}@2x.png >/dev/null; \
+	done
+	@sips -z 1024 1024 assets/icon-1024.png --out assets/Pysar.iconset/icon_512x512@2x.png >/dev/null
+	iconutil -c icns assets/Pysar.iconset -o assets/Pysar.icns
+	@rm -rf assets/Pysar.iconset
+
 whisper:
 	@test -x "$(WHISPER_SERVER)" || (echo "❌ whisper-server not built. Run: make whisper-build" && exit 1)
 	@test -f "$(WHISPER_MODEL)"  || (echo "❌ model not downloaded. Run: make whisper-model"  && exit 1)
-	$(WHISPER_SERVER) --model $(WHISPER_MODEL) --host 127.0.0.1 --port $(WHISPER_PORT) --language $(WHISPER_LANG)
+	$(WHISPER_SERVER) --model $(WHISPER_MODEL) --host 127.0.0.1 --port $(WHISPER_PORT) --language $(WHISPER_LANG) --split-on-word --suppress-nst --beam-size 5 --vad --vad-model $(WHISPER_VAD_MODEL)
 
 # ── Quality ─────────────────────────────────────────────────────────────────
 lint:
@@ -71,6 +93,16 @@ $(WHISPER_MODEL):
 	fi
 	@echo "📥 Downloading model $(WHISPER_MODEL_NAME) (~550 MB)…"
 	cd $(WHISPER_DIR) && bash ./models/download-ggml-model.sh $(WHISPER_MODEL_NAME)
+
+# ── whisper.cpp: VAD model (kills silence hallucinations) ────────────────────
+whisper-vad: $(WHISPER_VAD_MODEL)
+
+$(WHISPER_VAD_MODEL):
+	@if [ ! -d "$(WHISPER_DIR)" ]; then \
+		echo "❌ Clone whisper.cpp first: make whisper-build"; exit 1; \
+	fi
+	@echo "📥 Downloading VAD model $(WHISPER_VAD_NAME) (~1 MB)…"
+	cd $(WHISPER_DIR) && bash ./models/download-vad-model.sh $(WHISPER_VAD_NAME)
 
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 clean:

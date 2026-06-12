@@ -17,6 +17,31 @@ https://github.com/user-attachments/assets/18316366-6b6c-4c1a-9bf5-661285fe9c03
 
 ---
 
+## 🛠 This is a customized fork
+
+A personal fork of [steptonite/pysar](https://github.com/steptonite/pysar) (MIT). Same core idea, with quality-of-life changes baked in so it survives a clean macOS reinstall — just `make setup && make app`.
+
+What this fork adds on top of upstream:
+
+- **One-command launch** — `make up` (or the `cream` alias) starts the whisper server in the background *and* the app; quitting stops both. No more two terminals.
+- **Real `.app` in /Applications** — `make app` builds a Dock-less menu-bar agent (`LSUIElement`) with a custom icon, launchable from Spotlight/Launchpad. No Terminal window, no Dock tile.
+- **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag for instant confirmation. Default mode is `uk`.
+- **VAD anti-hallucination** — the server runs with Silero VAD (`make whisper-vad`, auto-downloaded by `make setup`), so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Server also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
+- **Clean paste** — the transcriber normalizes whitespace/newlines so a word never lands split across a line. No content-based text filtering: your real words are never dropped.
+
+Tuned for an **Apple M2 / 8 GB** machine. Model stays `large-v3-turbo-q5_0` (best speed/quality fit for limited RAM).
+
+### Quickstart (this fork)
+
+```bash
+make setup    # venv + whisper.cpp (Metal) + speech model + VAD model
+make app      # install "Pysar.app" into /Applications + `cream` alias
+```
+
+Then launch **Pysar** from Spotlight. First run: grant **Input Monitoring** and **Accessibility** to *Pysar* in System Settings → Privacy (macOS prompts for Microphone automatically). Caps Lock to dictate.
+
+---
+
 ## 🌍 What it does
 
 You speak in **any** language. Whatever language you picked in the menu bar — that's what comes out. Real examples:

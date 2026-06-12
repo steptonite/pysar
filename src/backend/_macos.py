@@ -13,7 +13,7 @@ import Quartz
 import rumps
 from PyObjCTools import AppHelper
 
-from ..config import CLIPBOARD_RESTORE_DELAY, HOTKEY_KEYCODE
+from ..config import CLIPBOARD_RESTORE_DELAY, HOTKEY_KEYCODE, LANG_HOTKEYS
 
 
 # ── Hotkey ───────────────────────────────────────────────────────────────────
@@ -29,11 +29,17 @@ class HotkeyListener:
     def __init__(self):
         self._caps_was_down = False
         self._on_toggle: Callable[[], None] | None = None
+        self._on_mode: Callable[[str], None] | None = None
 
-    def start(self, on_toggle: Callable[[], None]) -> None:
+    def start(
+        self,
+        on_toggle: Callable[[], None],
+        on_mode: Callable[[str], None] | None = None,
+    ) -> None:
         self._on_toggle = on_toggle
+        self._on_mode = on_mode
 
-        event_mask = 1 << Quartz.kCGEventFlagsChanged
+        event_mask = (1 << Quartz.kCGEventFlagsChanged) | (1 << Quartz.kCGEventKeyDown)
         tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
@@ -54,7 +60,7 @@ class HotkeyListener:
             Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopDefaultMode
         )
         Quartz.CGEventTapEnable(tap, True)
-        print("✅ Hotkey listener started (Caps Lock)")
+        print("✅ Hotkey listener started (Caps Lock; Ctrl+Option+U/R/E to switch language)")
         Quartz.CFRunLoopRun()
 
     def _callback(self, proxy, event_type, event, refcon):
@@ -69,6 +75,15 @@ class HotkeyListener:
                     if not shift_down and caps_down != self._caps_was_down and self._on_toggle:
                         self._on_toggle()
                     self._caps_was_down = caps_down
+
+            elif event_type == Quartz.kCGEventKeyDown and self._on_mode:
+                keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+                if keycode in LANG_HOTKEYS:
+                    flags = Quartz.CGEventGetFlags(event)
+                    ctrl = bool(flags & Quartz.kCGEventFlagMaskControl)
+                    alt = bool(flags & Quartz.kCGEventFlagMaskAlternate)
+                    if ctrl and alt:
+                        self._on_mode(LANG_HOTKEYS[keycode])
         except Exception as e:
             print(f"⚠️ hotkey callback: {e}")
         return event
@@ -173,4 +188,13 @@ class Tray:
         AppHelper.callAfter(self._refresh_checkmarks)
 
     def run(self) -> None:
+        # Hide the Dock icon — this is a menu-bar agent, not a windowed app.
+        # NSApplicationActivationPolicyAccessory (= 1) keeps the status-bar item
+        # alive while removing the Dock tile and the ⌘-Tab entry.
+        try:
+            from AppKit import NSApplication
+
+            NSApplication.sharedApplication().setActivationPolicy_(1)
+        except Exception as e:
+            print(f"⚠️ could not hide Dock icon: {e}")
         self._app.run()

@@ -11,7 +11,13 @@ import threading
 import time
 
 from .backend import HotkeyListener, Paster, Tray
-from .config import DEFAULT_MODE, MENU_MODES, MODE_LABELS
+from .config import (
+    DEFAULT_MODE,
+    IDLE_ICON_FALLBACK,
+    MENU_MODES,
+    MODE_ICONS,
+    MODE_LABELS,
+)
 from .recorder import AudioRecorder
 from .transcriber import is_alive, transcribe
 
@@ -32,13 +38,24 @@ class VoiceTyper:
 
         # Hotkey listener is blocking — runs in its own thread.
         listener = HotkeyListener()
-        threading.Thread(target=listener.start, args=(self._on_toggle,), daemon=True).start()
+        threading.Thread(
+            target=listener.start,
+            args=(self._on_toggle, self._on_mode_select),
+            daemon=True,
+        ).start()
 
         # Whisper-server health check at startup.
         threading.Thread(target=self._check_whisper, daemon=True).start()
 
+        # Show the active language in the menu bar from the start.
+        self._tray.set_title(self._idle_title())
+
     def run(self) -> None:
         self._tray.run()
+
+    def _idle_title(self) -> str:
+        """Menu-bar glyph when idle — the active language's flag."""
+        return MODE_ICONS.get(self._mode, IDLE_ICON_FALLBACK)
 
     # ── Hotkey ───────────────────────────────────────────────────────────────
     def _on_toggle(self) -> None:
@@ -62,7 +79,7 @@ class VoiceTyper:
             wav = self._recorder.stop()
             if wav is None:
                 self._tray.set_status("⚠️ Too short")
-                self._tray.set_title("🎙")
+                self._tray.set_title(self._idle_title())
                 return
 
             t0 = time.time()
@@ -75,20 +92,25 @@ class VoiceTyper:
                 return
             if not text:
                 self._tray.set_status("⚠️ Silence")
-                self._tray.set_title("🎙")
+                self._tray.set_title(self._idle_title())
                 return
 
             self._paster.paste_text(text)
             preview = text[:40] + ("…" if len(text) > 40 else "")
             self._tray.set_status(f"✓ ({dur:.1f}s) {preview}")
-            self._tray.set_title("🎙")
+            self._tray.set_title(self._idle_title())
         finally:
             self._busy = False
 
     # ── Mode selection ───────────────────────────────────────────────────────
     def _on_mode_select(self, code: str) -> None:
         self._mode = code
+        self._tray.set_current_mode(code)  # update the menu checkmark
         self._tray.set_status(f"Mode: {MODE_LABELS[code]}")
+        # Reflect the language in the menu-bar icon for instant confirmation,
+        # unless a record/transcribe cycle owns the title right now.
+        if not self._recording and not self._busy:
+            self._tray.set_title(self._idle_title())
 
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:

@@ -4,6 +4,18 @@
 # Caps Lock is a stateful key (with the LED). 1st tap = start, 2nd tap = stop.
 HOTKEY_KEYCODE = 57  # Caps Lock
 
+# ── Language-switch hotkeys ───────────────────────────────────────────────────
+# Hold Control+Option and tap a letter to switch the output language without
+# opening the menu. Listen-only: the combo also reaches the focused app, but
+# Ctrl+Option+letter doesn't type anything, so it's harmless.
+#   Ctrl+Option+U → Українська   Ctrl+Option+R → Русский   Ctrl+Option+E → English
+# Keys are layout-independent virtual keycodes (E=14, R=15, U=32).
+LANG_HOTKEYS = {
+    14: "translate",  # E → 🌐 English-out (any spoken language → English text)
+    15: "ru",  # R → Русский
+    32: "uk",  # U → Українська
+}
+
 # ── Audio ────────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz
 CHANNELS = 1
@@ -92,7 +104,17 @@ MENU_MODES = [
     "ru",
 ]
 
-DEFAULT_MODE = "en"
+# Idle menu-bar icon per mode — shows the active language at a glance so a
+# hotkey switch gives instant visual confirmation. Fallback to the mic glyph.
+MODE_ICONS = {
+    "uk": "🇺🇦",
+    "ru": "🇷🇺",
+    "en": "🇬🇧",
+    "translate": "🌐",
+}
+IDLE_ICON_FALLBACK = "🎙"
+
+DEFAULT_MODE = "uk"
 
 # ── Behavior ─────────────────────────────────────────────────────────────────
 MIN_RECORDING_SEC = 0.3  # shorter recordings are ignored (guards against accidental taps)
