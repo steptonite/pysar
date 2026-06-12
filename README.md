@@ -1,235 +1,76 @@
-# Pysar
+# Pysar — custom build
 
-[![CI](https://github.com/steptonite/pysar/actions/workflows/ci.yml/badge.svg)](https://github.com/steptonite/pysar/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?logo=apple)](https://www.apple.com/mac/)
 
-### 🎙️ Voice translation in any direction. Locally on Apple Silicon.
+My personal, customized macOS build of [**pysar**](https://github.com/steptonite/pysar) by Pysar (MIT — see [Attribution](#attribution--license)).
 
-**Tap Caps Lock, speak any language, get any other.** Whisper.cpp, no cloud, no GPU rental.
-
-
-
-https://github.com/user-attachments/assets/18316366-6b6c-4c1a-9bf5-661285fe9c03
-
+Offline voice dictation: tap **Caps Lock**, speak, tap again — text is transcribed locally by whisper.cpp (Metal GPU) and pasted at your cursor in any app. No cloud, no telemetry, audio never leaves the Mac. Tuned for an **Apple M2 / 8 GB**.
 
 ---
 
-## 🛠 This is a customized fork
+## What I changed on top of upstream
 
-A personal fork of [steptonite/pysar](https://github.com/steptonite/pysar) (MIT). Same core idea, with quality-of-life changes baked in so it survives a clean macOS reinstall — just `make setup && make app`.
+This fork is packaged to be reproducible — it survives a clean macOS reinstall via `make setup && make app`.
 
-What this fork adds on top of upstream:
+- **One-command launch** — `make up` (or the `cream` alias) starts the whisper server in the background *and* the app; quitting stops both. No two-terminal dance.
+- **Real `.app` in /Applications** — `make app` builds a Dock-less menu-bar agent (`LSUIElement`) with a custom icon, launchable from Spotlight/Launchpad. No Terminal window, no Dock tile, no Python rocket.
+- **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without opening the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag. Default mode is `uk`.
+- **VAD anti-hallucination** — the server runs with Silero VAD, so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
+- **Clean paste** — the transcriber only normalizes whitespace/newlines, so a word never lands split across a line. No content-based text filtering: real words are never dropped (the silence-hallucination problem is solved by VAD instead).
 
-- **One-command launch** — `make up` (or the `cream` alias) starts the whisper server in the background *and* the app; quitting stops both. No more two terminals.
-- **Real `.app` in /Applications** — `make app` builds a Dock-less menu-bar agent (`LSUIElement`) with a custom icon, launchable from Spotlight/Launchpad. No Terminal window, no Dock tile.
-- **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag for instant confirmation. Default mode is `uk`.
-- **VAD anti-hallucination** — the server runs with Silero VAD (`make whisper-vad`, auto-downloaded by `make setup`), so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Server also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
-- **Clean paste** — the transcriber normalizes whitespace/newlines so a word never lands split across a line. No content-based text filtering: your real words are never dropped.
-
-Tuned for an **Apple M2 / 8 GB** machine. Model stays `large-v3-turbo-q5_0` (best speed/quality fit for limited RAM).
-
-### Quickstart (this fork)
-
-```bash
-make setup    # venv + whisper.cpp (Metal) + speech model + VAD model
-make app      # install "Pysar.app" into /Applications + `cream` alias
-```
-
-Then launch **Pysar** from Spotlight. First run: grant **Input Monitoring** and **Accessibility** to *Pysar* in System Settings → Privacy (macOS prompts for Microphone automatically). Caps Lock to dictate.
-
----
-
-## 🌍 What it does
-
-You speak in **any** language. Whatever language you picked in the menu bar — that's what comes out. Real examples:
-
-| You said (any language goes)        | Active mode | What got pasted at the cursor       |
-|-------------------------------------|-------------|-------------------------------------|
-| 🇷🇺 «Привет, как у тебя дела?»        | 🇬🇧 `en`     | Hello, how are you doing?           |
-| 🇬🇧 "Let's ship it on Friday"         | 🇷🇺 `ru`     | Давай выкатим в пятницу             |
-| 🇩🇪 "Können wir morgen reden?"        | 🇯🇵 `ja`     | 明日話せますか？                     |
-| 🇰🇷 "안녕하세요, 만나서 반갑습니다"          | 🇸🇦 `ar`     | مرحبًا، تشرفت بلقائك                |
-| 🇯🇵 「コードレビューありがとう」           | 🇺🇦 `uk`     | Дякую за рев'ю коду                 |
-| **anything**                         | 🌐 `→ English` | always English — flagship mode     |
-
-**Why this works at all.** Whisper's encoder produces a language-agnostic representation of audio — meaning, not words. The decoder writes that meaning down in whichever language you asked for. Swap the `language` token, get a different output language. Same speech in, different writing out.
-
-This is something the native `task=translate` flag **can't do** on `large-v3-turbo` — that model was fine-tuned without translation data and the flag is broken. We sidestep it.
-
-**16 modes** in the menu bar: 15 target languages + the flagship `🌐 → English (from any)` shortcut. Click to switch, next dictation lands in the new language.
-
----
-
-## ✨ Where this beats typing
-
-- **Multilingual teams** — speak Russian to your dev chat, English to your PR description, German to your designer Slack — without changing keyboard layouts.
-- **Coding while talking** — narrate the logic out loud, get clean prose in your PR, RFC, commit message, or Notion doc.
-- **Faster than typing for non-English natives** — your brain composes in your native language, the text lands in whichever language the chat needs.
-- **Voice notes during meetings** — instant text in Notes / Obsidian, no «record now, transcribe later» loop.
-- **Translating quotes / tweets / headlines** — read out loud in any language, get any other language back.
-
----
-
-## ⚡ Architecture
-
-```
-Caps Lock (tap)  →  🎙️ recording…
-Caps Lock (tap)  →  whisper.cpp (localhost:8080)  →  clipboard  →  Cmd+V
-```
-
-Tap **Caps Lock** → speak → tap again → text appears at your cursor in **any app**: Slack, Notes, VS Code, your browser, terminal. The previous clipboard contents are saved and restored automatically.
-
-| Stage | What happens |
-|---|---|
-| **Hotkey** | Caps Lock (keycode 57) via Quartz CGEventTap. Toggle: 1st tap starts, 2nd tap stops. Doesn't block input to other applications. |
-| **Capture** | `sounddevice` at 16 kHz mono float32. WAV stays in memory (`io.BytesIO`) — never written to disk. |
-| **STT** | `POST` to `localhost:8080/inference` (whisper.cpp). The `large-v3-turbo-q5_0` model runs on Metal GPU. |
-| **Paste** | `pbcopy` + Cmd+V via CGEvent. The previous clipboard is saved and restored. |
-
-**Latency:** ~0.3-0.5 s for 10 s of speech on Apple Silicon (Metal GPU). **Privacy:** zero network egress — audio never leaves your Mac. **Cost:** zero — model is downloaded once (~550 MB), inference is free forever.
-
-**Platform:** macOS (Apple Silicon flagship; Intel Mac works without Metal). Windows / Linux backends — TBD.
+Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of unified memory.
 
 ---
 
 ## Install
 
-Requires Python 3.10+, `cmake`, and `git`. Everything else (whisper.cpp + the model) is installed by one command:
+Needs `cmake`, `git`, and Python 3.10+ (`brew install cmake python@3.12`).
 
 ```bash
-cd pysar
-make setup
+git clone https://github.com/steptonite/pysar-custom.git ~/code/pysar
+cd ~/code/pysar
+make setup    # venv + whisper.cpp (Metal) + speech model (~550 MB) + Silero VAD model
+make app      # build "Pysar.app" into /Applications + install the `cream` alias
 ```
 
-What `make setup` does:
-1. Creates `venv/` and installs the package in editable mode with macOS- and dev-extras (`pip install -e '.[macos,dev]'`).
-2. Clones [whisper.cpp](https://github.com/ggerganov/whisper.cpp) into `vendor/whisper.cpp` and builds `whisper-server` via cmake (Metal is enabled automatically on Apple Silicon).
-3. Downloads the `ggml-large-v3-turbo-q5_0.bin` model (~550 MB) into `vendor/whisper.cpp/models/`.
-
-**Already have whisper.cpp installed elsewhere?** Override the paths via env (export them or pass them to make):
-
-```bash
-WHISPER_DIR=~/code/whisper.cpp make whisper
-# or per-file:
-WHISPER_SERVER=/path/to/whisper-server WHISPER_MODEL=/path/to/ggml.bin make whisper
-```
-
-Subtargets if something specific failed: `make install`, `make whisper-build`, `make whisper-model`. Full wipe — `make distclean`.
+Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** and **Accessibility** to *Pysar* in System Settings → Privacy & Security (macOS prompts for Microphone automatically), then relaunch it.
 
 ---
 
-## Run
+## Use
 
-In two terminals:
+- **Dictate** — Caps Lock → speak → Caps Lock. Text pastes at the cursor.
+- **Switch language** — `Ctrl+Option+U` (🇺🇦) · `Ctrl+Option+R` (🇷🇺) · `Ctrl+Option+E` (🌐 → English). The menu-bar flag shows the active mode.
+- **Quit** — from the menu-bar icon; it stops the whisper server too.
 
-```bash
-# Terminal 1 — whisper server (run once, keep it up)
-make whisper
-
-# Terminal 2 — the app itself
-make run
-```
-
-A 🎙 icon appears in the menu bar. Press Caps Lock, speak, press again — text is pasted wherever the cursor is.
+More languages are available in the **🌍 Languages** submenu (15 targets + the `🌐 → English (from any)` shortcut). To change the set, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and the hotkeys in [src/config.py](src/config.py).
 
 ---
 
-## Development
+## How it works
 
-```bash
-make lint    # ruff check + format check
-make fmt     # ruff format + ruff check --fix
-make test    # pytest
+```
+Caps Lock (tap)  →  🎙️ recording…
+Caps Lock (tap)  →  whisper.cpp (localhost:8080, Metal)  →  clipboard  →  Cmd+V  →  clipboard restored
 ```
 
-CI runs the same commands on every PR (see [.github/workflows/ci.yml](.github/workflows/ci.yml)). Architecture notes and how to add your own backend live in [CONTRIBUTING.md](CONTRIBUTING.md).
+The trick behind "speak any language, get any other": Whisper's encoder produces a language-agnostic representation of the audio (meaning, not words), and the decoder writes it down in whichever language the `language` token names. Swapping that token translates — without the broken `task=translate` flag, which `large-v3-turbo` was fine-tuned without.
+
+**Latency** ~0.3–0.5 s per 10 s of speech on Apple Silicon (slower under memory pressure on 8 GB). **Privacy:** zero network egress. **Cost:** the model downloads once, inference is free.
 
 ---
 
 ## macOS permissions
 
-| Permission | Where to enable | Why |
+| Permission | Where | Why |
 |---|---|---|
-| **Input Monitoring** | Settings → Privacy → Input Monitoring | CGEventTap (Caps Lock interception) |
-| **Microphone** | Settings → Privacy → Microphone | Audio capture |
-| **Accessibility** | Settings → Privacy → Accessibility | CGEventPost (Cmd+V simulation) |
+| **Input Monitoring** | Settings → Privacy → Input Monitoring | Caps Lock interception (CGEventTap) |
+| **Microphone** | Settings → Privacy → Microphone | audio capture |
+| **Accessibility** | Settings → Privacy → Accessibility | Cmd+V paste simulation (CGEventPost) |
 
-Add **Terminal** (or iTerm) — not Python itself — since the app inherits permissions from its parent.
-
-macOS will pop up the permission dialogs automatically the first time you run the app.
-
----
-
-## Project layout
-
-```
-pysar/
-├── src/                   # imported as `pysar` (see pyproject.toml)
-│   ├── __init__.py        # __version__
-│   ├── __main__.py        # `python -m pysar`
-│   ├── app.py             # business logic, NO platform-specific code
-│   ├── config.py          # constants and transcription modes
-│   ├── recorder.py        # sounddevice → WAV in memory (io.BytesIO)
-│   ├── transcriber.py     # HTTP client for the whisper.cpp server
-│   └── backend/           # platform adapters (hotkey / paste / tray)
-│       ├── __init__.py    # dispatch by sys.platform
-│       ├── _base.py       # Protocol contracts for contributors
-│       ├── _macos.py      # Quartz CGEventTap + Cmd+V + rumps  ✅
-│       ├── _windows.py    # pynput + pystray                   🚧 TBD
-│       └── _linux.py      # pynput + pystray (X11)             🚧 TBD
-├── tests/                 # pytest smoke + transcriber mocks
-├── scripts/
-│   └── whisper_server.sh  # alternative to `make whisper`
-├── .github/
-│   ├── workflows/ci.yml   # lint + tests on macOS
-│   ├── ISSUE_TEMPLATE/    # bug / feature
-│   └── PULL_REQUEST_TEMPLATE.md
-├── pyproject.toml         # build / deps / ruff / pytest config
-├── Makefile               # setup / run / lint / fmt / test / whisper / distclean
-├── CHANGELOG.md           # Keep a Changelog
-├── CONTRIBUTING.md        # how to contribute
-└── LICENSE                # MIT
-```
-
----
-
-## Available languages
-
-Pick a mode by clicking inside the **🌍 Languages** submenu in the menu bar. The active one is checkmarked. The current set:
-
-```
-🌐 → English (from any)        ← flagship "translate anything to English" shortcut
-🇬🇧 English        🇺🇦 Українська     🇪🇸 Español
-🇩🇪 Deutsch        🇫🇷 Français       🇮🇹 Italiano
-🇵🇹 Português      🇳🇱 Nederlands     🇵🇱 Polski
-🇯🇵 日本語         🇨🇳 中文           🇰🇷 한국어
-🇹🇷 Türkçe         🇹🇭 ไทย            🇻🇳 Tiếng Việt
-🇸🇦 العربية         🇷🇺 Русский
-```
-
-**Want a different set?** Edit `MODES`, `MODE_LABELS`, and `MENU_MODES` in [src/config.py](src/config.py). Whisper supports 99 languages — adding any of them is a single line in three dicts, no UI code required.
-
-**Note on Thai (th):** the `large-v3-turbo` model has noticeably degraded performance on Thai compared to `large-v3` (Whisper's original quality matrix). It still works, but expect more errors. Vietnamese is fine.
-
----
-
-## Configuration
-
-Everything lives in [src/config.py](src/config.py):
-
-```python
-HOTKEY_KEYCODE = 57              # Caps Lock. 60=Right Shift, 61=Right Option, 54=Right Cmd
-SAMPLE_RATE    = 16000           # whisper.cpp expects 16 kHz
-WHISPER_URL    = "http://localhost:8080/inference"
-DEFAULT_MODE   = "en"            # "en" / "ru" / "translate" / "uk" / ...
-MIN_RECORDING_SEC = 0.3          # shorter taps are ignored
-CLIPBOARD_RESTORE_DELAY = 0.15   # delay before the previous clipboard is restored
-```
-
-The whisper-server's default language lives in the [Makefile](Makefile) under `WHISPER_LANG`, but it's only a fallback: the client always passes `language` explicitly from `MODES`.
+Grant these to **Pysar** (the app), not Python or Terminal. macOS does not prompt for Accessibility automatically — add it manually, then relaunch the app.
 
 ---
 
@@ -237,63 +78,36 @@ The whisper-server's default language lives in the [Makefile](Makefile) under `W
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Hotkey doesn't fire | No Input Monitoring permission | Settings → Privacy → Input Monitoring → Terminal |
-| Text isn't pasted | No Accessibility permission | Settings → Privacy → Accessibility → Terminal |
-| `⚠️ Whisper not running` in the menu | Server isn't up | `make whisper` in a separate terminal |
-| Empty transcription / `⚠️ Silence` | Too quiet, or shorter than `MIN_RECORDING_SEC` | Speak louder / hold the tap longer than 0.3s |
-| `⚠️ Too short` | Caps Lock tap shorter than `MIN_RECORDING_SEC` | Hold longer — this guards against accidental taps |
-| Double-fire on Shift+Caps | macOS clears AlphaShift on shift+caps | Already handled in [src/backend/_macos.py](src/backend/_macos.py) — events with Shift are ignored |
-| Wrong output language | Wrong mode active | Menu bar → 🌍 Languages → pick the right one |
+| Caps Lock does nothing | No Input Monitoring permission | grant it to Pysar, relaunch |
+| Captured text shown in menu bar but not pasted | No Accessibility permission | grant it to Pysar, relaunch |
+| `⚠️ Whisper not running` | Server isn't up | relaunch the app (it starts the server) |
+| Words split mid-word, e.g. `перен осит` | Server segmenting on tokens | already fixed via `--split-on-word`; relaunch to restart the server |
+| Subtitle-credit junk on silence | Whisper silence hallucination | VAD handles it; make sure the server restarted with the new flags |
+| Wrong output language | Wrong mode active | switch with `Ctrl+Option+U/R/E` (check the menu-bar flag) |
+| Slow (10–20 s) while Resolve/Photoshop open | 8 GB RAM under pressure (swap) | dictate when heavy apps are closed, or in shorter takes |
 
 ---
 
-## How this differs from other OSS apps
+## Make targets
 
-The space is crowded; here's what I'd pick depending on what you need:
+```
+make setup        # full install: venv + whisper.cpp + speech & VAD models
+make app          # install /Applications/Pysar.app + `cream` alias
+make up           # run server (bg) + app from this terminal
+make icon         # regenerate the app icon from scripts/make_icon.py
+make whisper-vad  # (re)download the Silero VAD model
+make lint / fmt / test
+make distclean    # wipe venv + vendored whisper.cpp
+```
 
-| Project | Stack | Hotkey | Backend | Notable |
-|---|---|---|---|---|
-| **pysar** *(this)* | Python + rumps | **Caps Lock toggle** | whisper.cpp HTTP | On-the-fly translation by swapping `language` instead of `translate=true` |
-| [foges/whisper-dictation](https://github.com/foges/whisper-dictation) | Python + rumps | Cmd+Option (toggle) | openai-whisper (PyTorch) | The well-known reference — but it loads the model into RAM every time |
-| [pindrop](https://github.com/watzon/pindrop) | Swift native | hold-to-talk | WhisperKit (Core ML) | Fully native, the best perf/battery story |
-| [vocamac](https://github.com/jatinkrmalik/vocamac) | Swift | hold-to-talk | WhisperKit | Tiny model bundled in the box, works out of the box |
-| [open-wispr](https://github.com/human37/open-wispr) | Electron | hold Globe (🌐) | whisper.cpp | Friendly onboarding, but Electron |
-| [openwhispr](https://github.com/OpenWhispr/openwhispr) | Electron, cross-platform | hold | local + cloud (BYOK) | Mac/Windows/Linux in one binary |
-| [GoWhisper](https://github.com/stephanwesten/GoWhisper) | Go | hold | whisper.cpp | Built around terminal / Claude Code |
-| [AudioWhisper](https://github.com/mazdak/AudioWhisper) | Swift | hold | OpenAI API / Gemini | Not local — sends audio to the cloud |
-
-**Pick pysar when:**
-- You want a toggle (tap-talk-tap) instead of holding a key.
-- You already have a whisper.cpp build and don't want yet another process bundled.
-- You want dictation in any language with auto-translation to English (and back).
-- You care about codebase size — this is ~300 lines, the whole thing reads in 10 minutes.
-
-**Pick something else when:**
-- You want a native macOS app without Python and cmake → [pindrop](https://github.com/watzon/pindrop) or [vocamac](https://github.com/jatinkrmalik/vocamac).
-- You need Windows/Linux **today** → [openwhispr](https://github.com/OpenWhispr/openwhispr).
-- You'd rather not deal with config → [open-wispr](https://github.com/human37/open-wispr) (better onboarding).
+Config lives in [src/config.py](src/config.py); server flags in [scripts/whisper_server.sh](scripts/whisper_server.sh) and the [Makefile](Makefile).
 
 ---
 
-## Acknowledgments
+## Attribution & License
 
-This project stands on the shoulders of others:
+Based on [**pysar**](https://github.com/steptonite/pysar) by **Pysar** ([github.com/steptonite/pysar](https://github.com/steptonite/pysar)), used under the MIT License. The original copyright notice is retained in [LICENSE](LICENSE). This repository is an independently modified build and is **not affiliated with or endorsed by** Pysar.
 
-- **[ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp)** — the C++ inference engine that makes local Whisper fast enough on consumer hardware. The entire reason this project is possible.
-- **[OpenAI Whisper](https://github.com/openai/whisper)** — the speech-recognition model architecture and the language-agnostic encoder we exploit for translation.
-- **[rumps](https://github.com/jaredks/rumps)** — Pythonic macOS menu-bar bindings.
-- The dictation OSS scene — [foges/whisper-dictation](https://github.com/foges/whisper-dictation), [pindrop](https://github.com/watzon/pindrop), [open-wispr](https://github.com/human37/open-wispr), [vocamac](https://github.com/jatinkrmalik/vocamac) — for showing the path.
+Also built on [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (ggerganov), [OpenAI Whisper](https://github.com/openai/whisper), [rumps](https://github.com/jaredks/rumps), and [Silero VAD](https://github.com/snakers4/silero-vad).
 
----
-
-## ⭐ Star history
-
-[![Star History Chart](https://api.star-history.com/svg?repos=steptonite/pysar&type=Date)](https://star-history.com/#steptonite/pysar&Date)
-
----
-
-## Made by
-
-Built by [**Pysar**](https://github.com/steptonite/pysar) — AI engineering studio shipping local-first AI: production RAG, real-time voice agents, on-prem deployment.
-
-Need something custom? [github.com/steptonite/pysar](https://github.com/steptonite/pysar) · [Telegram @steptonite](https://t.me/steptonite) · removed@example.invalid
+Licensed under MIT.
