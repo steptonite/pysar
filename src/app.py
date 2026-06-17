@@ -19,6 +19,13 @@ from .config import (
     MODE_LABELS,
 )
 from .recorder import AudioRecorder
+from .recordings import (
+    KEEP_LAST_OPTIONS,
+    load_settings,
+    recordings_dir,
+    save_recording,
+    save_settings,
+)
 from .transcriber import is_alive, transcribe
 
 
@@ -30,10 +37,19 @@ class VoiceTyper:
         self._recording = False
         self._busy = False  # blocks re-entry while a transcription is in flight
 
+        # Persisted settings (off by default — audio stays in memory).
+        self._settings = load_settings()
+
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
             current_mode=self._mode,
             on_mode_select=self._on_mode_select,
+            save_recordings=self._settings["save_recordings"],
+            keep_last=self._settings["keep_last"],
+            keep_last_options=KEEP_LAST_OPTIONS,
+            on_toggle_save=self._on_toggle_save,
+            on_set_keep_last=self._on_set_keep_last,
+            recordings_dir=str(recordings_dir()),
         )
 
         # Hotkey listener is blocking — runs in its own thread.
@@ -82,6 +98,15 @@ class VoiceTyper:
                 self._tray.set_title(self._idle_title())
                 return
 
+            # Persist the audio BEFORE transcribing, so a failed/aborted run is
+            # recoverable (re-transcribe later instead of re-speaking). Never let
+            # a save error break dictation.
+            if self._settings["save_recordings"]:
+                try:
+                    save_recording(wav, self._settings["keep_last"])
+                except Exception as e:
+                    print(f"⚠️ save_recording failed: {e}")
+
             t0 = time.time()
             text, err = transcribe(wav, mode=self._mode)
             dur = time.time() - t0
@@ -111,6 +136,17 @@ class VoiceTyper:
         # unless a record/transcribe cycle owns the title right now.
         if not self._recording and not self._busy:
             self._tray.set_title(self._idle_title())
+
+    # ── Recording-archive settings ───────────────────────────────────────────
+    def _on_toggle_save(self, enabled: bool) -> None:
+        self._settings["save_recordings"] = enabled
+        save_settings(self._settings)
+        self._tray.set_status("💾 Saving recordings" if enabled else "Recordings: memory only")
+
+    def _on_set_keep_last(self, n: int) -> None:
+        self._settings["keep_last"] = n
+        save_settings(self._settings)
+        self._tray.set_status(f"Keeping last {n} recordings")
 
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:

@@ -153,9 +153,18 @@ class Tray:
         modes: list[tuple[str, str]],
         current_mode: str,
         on_mode_select: Callable[[str], None],
+        save_recordings: bool = False,
+        keep_last: int = 10,
+        keep_last_options: tuple[int, ...] = (5, 10, 20),
+        on_toggle_save: Callable[[bool], None] | None = None,
+        on_set_keep_last: Callable[[int], None] | None = None,
+        recordings_dir: str | None = None,
     ):
         self._current = current_mode
         self._on_mode_select = on_mode_select
+        self._on_toggle_save = on_toggle_save
+        self._on_set_keep_last = on_set_keep_last
+        self._recordings_dir = recordings_dir
 
         self._app = rumps.App("🎙", quit_button="Quit")
         self._status = rumps.MenuItem("Ready")
@@ -171,7 +180,31 @@ class Tray:
         for code, _ in modes:
             lang_submenu.add(self._mode_items[code])
 
-        self._app.menu = [self._status, self._hint, None, lang_submenu, None]
+        # ── Recordings settings ───────────────────────────────────────────────
+        self._save_item = rumps.MenuItem("💾 Save recordings", callback=self._toggle_save)
+        self._save_item.state = 1 if save_recordings else 0
+
+        self._keep_items: dict[int, rumps.MenuItem] = {}
+        keep_submenu = rumps.MenuItem("Keep last")
+        for n in keep_last_options:
+            item = rumps.MenuItem(f"{n} recordings", callback=self._make_keep_callback(n))
+            item.state = 1 if n == keep_last else 0
+            self._keep_items[n] = item
+            keep_submenu.add(item)
+
+        open_folder = rumps.MenuItem("📂 Open recordings folder", callback=self._open_folder)
+
+        self._app.menu = [
+            self._status,
+            self._hint,
+            None,
+            lang_submenu,
+            None,
+            self._save_item,
+            keep_submenu,
+            open_folder,
+            None,
+        ]
 
     def _make_callback(self, code: str):
         def _cb(_sender):
@@ -179,6 +212,26 @@ class Tray:
             self._on_mode_select(code)
 
         return _cb
+
+    # ── Recordings settings callbacks (run on the main thread) ────────────────
+    def _toggle_save(self, _sender) -> None:
+        enabled = not bool(self._save_item.state)
+        self._save_item.state = 1 if enabled else 0
+        if self._on_toggle_save:
+            self._on_toggle_save(enabled)
+
+    def _make_keep_callback(self, n: int):
+        def _cb(_sender):
+            for k, item in self._keep_items.items():
+                item.state = 1 if k == n else 0
+            if self._on_set_keep_last:
+                self._on_set_keep_last(n)
+
+        return _cb
+
+    def _open_folder(self, _sender) -> None:
+        if self._recordings_dir:
+            subprocess.run(["open", self._recordings_dir], check=False)
 
     def _refresh_checkmarks(self) -> None:
         for code, item in self._mode_items.items():
