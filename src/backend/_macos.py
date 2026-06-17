@@ -194,15 +194,17 @@ class Tray:
 
         open_folder = rumps.MenuItem("📂 Open recordings folder", callback=self._open_folder)
 
+        settings_submenu = rumps.MenuItem("⚙️ Settings")
+        settings_submenu.add(self._save_item)
+        settings_submenu.add(keep_submenu)
+        settings_submenu.add(open_folder)
+
         self._app.menu = [
             self._status,
             self._hint,
             None,
             lang_submenu,
-            None,
-            self._save_item,
-            keep_submenu,
-            open_folder,
+            settings_submenu,
             None,
         ]
 
