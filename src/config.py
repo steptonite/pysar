@@ -23,7 +23,9 @@ CHUNK_SIZE = 1024
 
 # ── Whisper.cpp server ───────────────────────────────────────────────────────
 WHISPER_URL = "http://localhost:8080/inference"
-WHISPER_TIMEOUT = 30  # seconds
+WHISPER_TIMEOUT = 180  # seconds — long dictations on 8 GB under load need headroom
+# (a multi-minute recording can take well over 30 s to transcribe; too low a
+# timeout aborts the request mid-decode → "HTTPConnectionPool / port 8080" error)
 
 # ── Transcription modes ──────────────────────────────────────────────────────
 # Whisper quirk: the encoder produces a language-agnostic representation of the
@@ -118,4 +120,6 @@ DEFAULT_MODE = "uk"
 
 # ── Behavior ─────────────────────────────────────────────────────────────────
 MIN_RECORDING_SEC = 0.3  # shorter recordings are ignored (guards against accidental taps)
-CLIPBOARD_RESTORE_DELAY = 0.15  # delay before restoring the clipboard after Cmd+V
+CLIPBOARD_RESTORE_DELAY = 0.4  # delay before restoring the clipboard after Cmd+V
+# (long enough that the front app reads the paste before the old clipboard is
+# swapped back in — was 0.15 s, too tight on 8 GB under memory pressure)

@@ -97,12 +97,24 @@ class Paster:
     """Pastes via clipboard + Cmd+V, restoring the previous clipboard contents."""
 
     def paste_text(self, text: str) -> None:
+        payload = text.encode("utf-8")
         saved = self._read_clipboard()
+        self._write_clipboard(payload)
 
-        self._write_clipboard(text.encode("utf-8"))
-        time.sleep(0.05)
+        # Don't paste until our text is actually on the clipboard. Under memory
+        # pressure (8 GB + Resolve/PS) the pbcopy write lags, and pressing Cmd+V
+        # early grabs stale content — the old clipboard or a previous dictation.
+        # Poll instead of a fixed sleep so it's correct whether fast or slow.
+        for _ in range(50):  # up to ~1 s
+            if self._read_clipboard() == payload:
+                break
+            time.sleep(0.02)
+
         self._press_cmd_v()
 
+        # Restore the previous clipboard only after the front app has had time to
+        # read the paste; restoring too early swaps the old text back in before
+        # it's consumed (the other half of the same race).
         time.sleep(CLIPBOARD_RESTORE_DELAY)
         try:
             self._write_clipboard(saved)
