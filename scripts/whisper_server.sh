@@ -28,5 +28,4 @@ exec "$WHISPER_SERVER" \
     --language "$WHISPER_LANG" \
     --split-on-word \
     --suppress-nst \
-    --beam-size 5 \
     "${VAD_ARGS[@]}"
