@@ -1,6 +1,6 @@
 """macOS backend implementation: Quartz + rumps.
 
-- HotkeyListener: CGEventTap on Caps Lock (toggle by AlphaShift state change)
+- HotkeyListener: CGEventTap dispatching user-assignable hotkey bindings
 - Paster:         pbcopy + Cmd+V simulation via CGEvent, restores previous clipboard
 - Tray:           rumps.App with «🌍 Languages» submenu
 """
@@ -17,12 +17,16 @@ from PyObjCTools import AppHelper
 
 from ..config import (
     CLIPBOARD_RESTORE_DELAY,
-    HOTKEY_KEYCODE,
-    LANG_HOTKEYS,
+    DEFAULT_HOTKEY,
+    DEFAULT_LANG_HOTKEYS,
+    MODE_LABELS,
     MODE_SHORTCUTS,
     MODES,
+    MODIFIER_KEYCODES,
+    binding_label,
 )
-from ..profiles import META_PROMPT, PROMPT_TOKEN_BUDGET, budget_usage
+from ..i18n import strings, t
+from ..profiles import PROMPT_TOKEN_BUDGET, budget_usage, meta_prompt
 
 
 def set_login_item(enable: bool) -> bool:
@@ -65,23 +69,83 @@ def _set_app_name(name: str) -> None:
 
 
 # ── Hotkey ───────────────────────────────────────────────────────────────────
-class HotkeyListener:
-    """Caps Lock toggle via CGEventTap.
+# Modifier name → CGEvent flag bit. ("option" is AppKit's "Alternate".)
+def _mod_masks() -> dict[str, int]:
+    return {
+        "control": Quartz.kCGEventFlagMaskControl,
+        "option": Quartz.kCGEventFlagMaskAlternate,
+        "command": Quartz.kCGEventFlagMaskCommand,
+        "shift": Quartz.kCGEventFlagMaskShift,
+    }
 
-    Caps Lock is a stateful key with an LED (kCGEventFlagMaskAlphaShift).
-    1st tap: state 0→1 → start. 2nd tap: state 1→0 → stop.
-    Events with Shift held are ignored — macOS temporarily clears the AlphaShift
-    flag on shift+caps, which would otherwise trigger spurious toggles.
+
+class HotkeyListener:
+    """Global hotkey dispatch via a listen-only CGEventTap.
+
+    Every hotkey is a binding {"keycode", "mods"} with an action ("__toggle__"
+    for dictation, or a language code). Each binding is detected one of three
+    ways, decided by its shape:
+      • bare Caps Lock — its LED flag (AlphaShift). Toggles on every state change
+        (1st tap → start, 2nd → stop). Shift-held events are skipped (macOS
+        briefly clears AlphaShift on shift+caps → would mis-toggle).
+      • bare modifier  — a right/left ⌘⌥⌃⇧ key. Fires only on a *clean tap*
+        (pressed and released alone); used in a combo (⌘+arrow, ⌘+C) it's
+        ignored, so the modifier still works normally elsewhere.
+      • everything else — a key-down whose modifier set matches exactly. Covers
+        ⌃⌥-letter combos and bare F-keys. OS auto-repeat is ignored.
+
+    Bindings can be replaced live (set_bindings) — no relaunch — and the next
+    keypress can be captured for the Settings UI (begin_capture).
     """
 
-    def __init__(self, toggle_keycode: int | None = None):
-        self._caps_was_down = False
-        # Remappable push/toggle key (defaults to Caps Lock). Note: the AlphaShift
-        # state-change detection below is Caps-Lock-specific; remapping to a plain
-        # key would need keyDown handling too — that's a follow-up.
-        self._toggle_keycode = toggle_keycode or HOTKEY_KEYCODE
+    def __init__(self, hotkey: dict | None = None, lang_hotkeys: list[dict] | None = None):
         self._on_toggle: Callable[[], None] | None = None
         self._on_mode: Callable[[str], None] | None = None
+        self._capture: Callable[[dict], None] | None = None
+        self._cap_pending: int | None = None  # a bare modifier seen down, awaiting up
+        self._flag_bindings: list[dict] = []  # bare caps/modifier bindings
+        self._key_bindings: list[dict] = []  # key-down bindings (combos, F-keys)
+        self.set_bindings(hotkey or dict(DEFAULT_HOTKEY), lang_hotkeys or DEFAULT_LANG_HOTKEYS)
+
+    # ── Binding table ─────────────────────────────────────────────────────────
+    def set_bindings(self, hotkey: dict, lang_hotkeys: list[dict]) -> None:
+        """(Re)build the binding tables from settings. Safe to call live."""
+        masks = _mod_masks()
+        flag_b, key_b = [], []
+        raw = [{"action": "__toggle__", **hotkey}] + [
+            {"action": h["action"], "keycode": h["keycode"], "mods": h.get("mods", [])}
+            for h in lang_hotkeys
+        ]
+        for b in raw:
+            kc, mods = b["keycode"], list(b.get("mods") or [])
+            if kc is None:  # unassigned language slot — no binding
+                continue
+            if not mods and kc == 57:  # bare Caps Lock
+                flag_b.append({"action": b["action"], "keycode": kc, "kind": "caps", "down": False})
+            elif not mods and kc in MODIFIER_KEYCODES:  # bare modifier (tap-only)
+                flag_b.append(
+                    {
+                        "action": b["action"],
+                        "keycode": kc,
+                        "kind": "mod",
+                        "mask": masks[MODIFIER_KEYCODES[kc]],
+                        "down": False,
+                        "armed": False,  # set on a clean press, cleared by any combo
+                    }
+                )
+            else:  # key-down: combo or bare F-key
+                key_b.append({"action": b["action"], "keycode": kc, "mods": set(mods)})
+        self._flag_bindings, self._key_bindings = flag_b, key_b
+        # Mask of every modifier bit, to tell "this modifier alone" from a combo.
+        self._all_mod_mask = 0
+        for m in masks.values():
+            self._all_mod_mask |= m
+
+    def begin_capture(self, on_captured: Callable[[dict], None]) -> None:
+        """Capture the next keypress as a binding and hand {keycode,mods} to
+        `on_captured` (invoked on the main thread). Used by the Settings UI."""
+        self._cap_pending = None
+        self._capture = lambda binding: AppHelper.callAfter(on_captured, binding)
 
     def start(
         self,
@@ -112,33 +176,99 @@ class HotkeyListener:
             Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopDefaultMode
         )
         Quartz.CGEventTapEnable(tap, True)
-        print("✅ Hotkey listener started (Caps Lock; Ctrl+Option+U/R/E to switch language)")
+        print("✅ Hotkey listener started (hotkeys are configurable in Settings)")
         Quartz.CFRunLoopRun()
+
+    # ── Event handling ────────────────────────────────────────────────────────
+    @staticmethod
+    def _mods_from_flags(flags: int) -> list[str]:
+        return [name for name, mask in _mod_masks().items() if flags & mask]
+
+    def _fire(self, action: str) -> None:
+        if action == "__toggle__":
+            if self._on_toggle:
+                self._on_toggle()
+        elif self._on_mode:
+            self._on_mode(action)
 
     def _callback(self, proxy, event_type, event, refcon):
         try:
+            keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+            flags = Quartz.CGEventGetFlags(event)
+
+            if self._capture is not None:
+                self._handle_capture(event_type, keycode, flags)
+                return event
+
             if event_type == Quartz.kCGEventFlagsChanged:
-                keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-                if keycode == self._toggle_keycode:
-                    flags = Quartz.CGEventGetFlags(event)
-                    caps_down = bool(flags & Quartz.kCGEventFlagMaskAlphaShift)
-                    shift_down = bool(flags & Quartz.kCGEventFlagMaskShift)
+                shift_down = bool(flags & Quartz.kCGEventFlagMaskShift)
+                # Any modifier event for a *different* key disarms a pending tap —
+                # it means a second modifier joined, i.e. a combo is forming.
+                for b in self._flag_bindings:
+                    if b["kind"] == "mod" and b["down"] and b["keycode"] != keycode:
+                        b["armed"] = False
+                for b in self._flag_bindings:
+                    if b["keycode"] != keycode:
+                        continue
+                    if b["kind"] == "caps":
+                        down = bool(flags & Quartz.kCGEventFlagMaskAlphaShift)
+                        if not shift_down and down != b["down"]:
+                            self._fire(b["action"])
+                        b["down"] = down
+                    else:  # bare modifier — fire only on a clean tap (down then up,
+                        # with no other key/modifier in between).
+                        down = bool(flags & b["mask"])
+                        if down and not b["down"]:
+                            # Clean only if no *other* modifier is held right now.
+                            other = flags & self._all_mod_mask & ~b["mask"]
+                            b["armed"] = other == 0
+                        elif not down and b["down"]:
+                            if b["armed"]:
+                                self._fire(b["action"])
+                            b["armed"] = False
+                        b["down"] = down
 
-                    if not shift_down and caps_down != self._caps_was_down and self._on_toggle:
-                        self._on_toggle()
-                    self._caps_was_down = caps_down
-
-            elif event_type == Quartz.kCGEventKeyDown and self._on_mode:
-                keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-                if keycode in LANG_HOTKEYS:
-                    flags = Quartz.CGEventGetFlags(event)
-                    ctrl = bool(flags & Quartz.kCGEventFlagMaskControl)
-                    alt = bool(flags & Quartz.kCGEventFlagMaskAlternate)
-                    if ctrl and alt:
-                        self._on_mode(LANG_HOTKEYS[keycode])
+            elif event_type == Quartz.kCGEventKeyDown:
+                repeat = Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventAutorepeat
+                )
+                if repeat:
+                    return event
+                # A real key press means any held modifier is being used in a combo,
+                # not tapped — disarm every pending bare-modifier tap.
+                for b in self._flag_bindings:
+                    if b["kind"] == "mod":
+                        b["armed"] = False
+                mods = set(self._mods_from_flags(flags))
+                for b in self._key_bindings:
+                    if b["keycode"] == keycode and b["mods"] == mods:
+                        self._fire(b["action"])
+                        break
         except Exception as e:
             print(f"⚠️ hotkey callback: {e}")
         return event
+
+    def _handle_capture(self, event_type, keycode, flags) -> None:
+        """While capturing, resolve the user's next keypress into a binding.
+        A key-down wins immediately (key + held modifiers); a bare modifier or
+        Caps Lock is captured on its release (press → release with nothing in
+        between), so the modifiers of a combo aren't mistaken for the binding."""
+        if event_type == Quartz.kCGEventKeyDown:
+            self._finish_capture(keycode, self._mods_from_flags(flags))
+        elif event_type == Quartz.kCGEventFlagsChanged:
+            if keycode == 57:  # Caps Lock — distinctive, capture at once
+                self._finish_capture(57, [])
+            elif keycode in MODIFIER_KEYCODES:
+                mask = _mod_masks()[MODIFIER_KEYCODES[keycode]]
+                if flags & mask:  # pressed down → remember, wait for release
+                    self._cap_pending = keycode
+                elif self._cap_pending == keycode:  # released bare → capture it
+                    self._finish_capture(keycode, [])
+
+    def _finish_capture(self, keycode: int, mods: list[str]) -> None:
+        cb, self._capture, self._cap_pending = self._capture, None, None
+        if cb:
+            cb({"keycode": keycode, "mods": mods})
 
 
 # ── Paste ────────────────────────────────────────────────────────────────────
@@ -252,6 +382,12 @@ class Tray:
         on_toggle_login: Callable[[bool], None] | None = None,
         ui_theme: str = "auto",
         on_set_theme: Callable[[str], None] | None = None,
+        ui_lang: str = "uk",
+        on_set_lang: Callable[[str], None] | None = None,
+        hotkey: dict | None = None,
+        lang_hotkeys: list[dict] | None = None,
+        on_capture_hotkey: Callable[[str], None] | None = None,
+        on_clear_hotkey: Callable[[str], None] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -283,11 +419,21 @@ class Tray:
         self._launch_at_login = launch_at_login
         self._ui_theme = ui_theme
         self._on_set_theme = on_set_theme
+        self._ui_lang = ui_lang
+        self._on_set_lang = on_set_lang
+        self._hotkey = hotkey or dict(DEFAULT_HOTKEY)
+        self._lang_hotkeys = lang_hotkeys or [dict(h) for h in DEFAULT_LANG_HOTKEYS]
+        self._on_capture_hotkey = on_capture_hotkey
+        self._on_clear_hotkey = on_clear_hotkey
         self._settings_window = None  # built lazily on first open
 
-        self._app = rumps.App("🎙", quit_button="Quit")
-        self._status = rumps.MenuItem("Ready")
-        self._hint = rumps.MenuItem("Hotkey: Caps Lock")
+        self._app = rumps.App("🎙", quit_button=self._t("tray.quit"))
+        self._status = rumps.MenuItem(self._t("tray.ready"))
+        self._hint = rumps.MenuItem(
+            self._t(
+                "tray.hotkey", label=binding_label(self._hotkey["keycode"], self._hotkey["mods"])
+            )
+        )
 
         self._mode_items: dict[str, rumps.MenuItem] = {}
         for code, label in modes:
@@ -308,14 +454,14 @@ class Tray:
             self._mode_items[code] = item
         self._refresh_checkmarks()
 
-        lang_submenu = rumps.MenuItem("🌍 Languages")
+        lang_submenu = rumps.MenuItem(self._t("tray.languages"))
         for code, _ in modes:
             lang_submenu.add(self._mode_items[code])
 
-        self._profiles_submenu = rumps.MenuItem("👤 Profiles")
+        self._profiles_submenu = rumps.MenuItem(self._t("tray.profiles"))
         self._populate_profiles_menu()
 
-        settings_item = rumps.MenuItem("⚙️ Settings…", callback=self._open_settings)
+        settings_item = rumps.MenuItem(self._t("tray.settings"), callback=self._open_settings)
 
         self._app.menu = [
             self._status,
@@ -326,6 +472,10 @@ class Tray:
             settings_item,
             None,
         ]
+
+    def _t(self, key: str, **kw) -> str:
+        """Localized UI string in the current app language (see i18n.py)."""
+        return t(self._ui_lang, key, **kw)
 
     # ── Settings window ───────────────────────────────────────────────────────
     def _open_settings(self, _sender) -> None:
@@ -348,11 +498,14 @@ class Tray:
                         "import_profiles": self._win_import_profiles,
                         "copy_ai_prompt": self._win_copy_ai_prompt,
                         "set_theme": self._set_theme,
+                        "set_lang": self._set_lang,
+                        "capture_hotkey": self._capture_hotkey,
+                        "clear_hotkey": self._clear_hotkey,
                     },
                 )
             self._settings_window.show()
         except Exception as e:
-            rumps.notification("Pysar", "Couldn't open Settings", str(e)[:120])
+            rumps.notification("Pysar", self._t("notif.cantOpenSettings"), str(e)[:120])
 
     def _settings_state(self) -> dict:
         """Fresh snapshot for the settings window each time it opens."""
@@ -364,7 +517,11 @@ class Tray:
             "keep_last_options": list(self._keep_last_options),
             "launch_at_login": self._launch_at_login,
             "ui_theme": self._ui_theme,
-            "hotkey_label": "Caps Lock",
+            "ui_lang": self._ui_lang,
+            "t": strings(self._ui_lang),
+            "hotkey": dict(self._hotkey),
+            "hotkey_label": binding_label(self._hotkey["keycode"], self._hotkey["mods"]),
+            "lang_hotkeys": self._lang_hotkeys_state(),
             "recordings_dir": self._recordings_dir or "",
             # Profile editor: the full library + the toggled-on group per language,
             # plus the token budget so the meter can update live in the window.
@@ -398,9 +555,8 @@ class Tray:
         if enabled and not ok:
             rumps.notification(
                 "Pysar",
-                "Couldn't enable Launch at login",
-                "Add it manually: System Settings → General → Login Items "
-                "(only works from the installed app, not a terminal run).",
+                self._t("notif.cantLogin"),
+                self._t("notif.cantLoginBody"),
             )
 
     def _set_theme(self, theme: str) -> None:
@@ -444,11 +600,11 @@ class Tray:
             value.get("name", ""), value.get("language", "uk"), value.get("prompt", ""), original
         )
         if err:
-            rumps.notification("Pysar", "Couldn't save profile", err)
+            rumps.notification("Pysar", self._t("notif.cantSaveProfile"), err)
             return
         self._profiles = updated
         AppHelper.callAfter(self._populate_profiles_menu, True)
-        self._refresh_settings_window("Profile saved.")
+        self._refresh_settings_window(self._t("notice.saved"))
 
     def _win_delete_profile(self, name: str) -> None:
         if not self._on_delete_profile:
@@ -457,7 +613,7 @@ class Tray:
         for group in self._active_by_lang.values():
             group.discard(name)
         AppHelper.callAfter(self._populate_profiles_menu, True)
-        self._refresh_settings_window(f"Deleted “{name}”.")
+        self._refresh_settings_window(self._t("notice.deleted", name=name))
 
     def _win_import_profiles(self, text: str) -> None:
         """JSON pasted into the window's import panel: merge, sync menu, report."""
@@ -465,14 +621,65 @@ class Tray:
             return
         updated, count, err = self._on_import_profiles(text)
         if err:
-            self._refresh_settings_window(f"Import failed: {err}")
+            self._refresh_settings_window(self._t("notice.importFail", err=err))
             return
         self._profiles = updated
         AppHelper.callAfter(self._populate_profiles_menu, True)
-        self._refresh_settings_window(f"Imported {count} profile(s).")
+        self._refresh_settings_window(self._t("notice.imported", count=count))
 
-    def _win_copy_ai_prompt(self) -> None:
-        subprocess.run(["pbcopy"], input=META_PROMPT.encode("utf-8"), check=False)
+    def _win_copy_ai_prompt(self, lang: str | None = None) -> None:
+        # Copy the prompt in the picked language (sent with the action, so it works
+        # even if the set_lang message hasn't been processed yet).
+        use = lang if lang in ("uk", "en") else self._ui_lang
+        subprocess.run(["pbcopy"], input=meta_prompt(use).encode("utf-8"), check=False)
+
+    def _set_lang(self, lang: str) -> None:
+        self._ui_lang = lang if lang in ("uk", "en") else "uk"
+        if self._on_set_lang:
+            self._on_set_lang(self._ui_lang)
+        # Re-localize the live surfaces: the hint line, the open Settings window
+        # (its labels re-render from the new `t` table). The menu titles are built
+        # once and keep the launch language until the next restart.
+        self._hint.title = self._t(
+            "tray.hotkey", label=binding_label(self._hotkey["keycode"], self._hotkey["mods"])
+        )
+        self._refresh_settings_window()
+
+    def _capture_hotkey(self, slot: str) -> None:
+        """Begin live key-capture for a hotkey slot ("__toggle__" or a language
+        code). The rebind + persist happens in the app callback once a key lands;
+        bindings apply immediately (no relaunch)."""
+        if self._on_capture_hotkey:
+            self._on_capture_hotkey(slot)
+
+    def _clear_hotkey(self, action: str) -> None:
+        """Unassign a language slot's shortcut (back to no hotkey)."""
+        if self._on_clear_hotkey:
+            self._on_clear_hotkey(action)
+
+    def update_hotkeys(self, hotkey: dict, lang_hotkeys: list[dict]) -> None:
+        """Reflect a freshly-captured binding set: update the menu hint and push
+        new state into the open Settings window."""
+        self._hotkey = hotkey
+        self._lang_hotkeys = lang_hotkeys
+        self._hint.title = self._t(
+            "tray.hotkey", label=binding_label(hotkey["keycode"], hotkey["mods"])
+        )
+        self._refresh_settings_window()
+
+    def _lang_hotkeys_state(self) -> list[dict]:
+        out = []
+        for h in self._lang_hotkeys:
+            assigned = h.get("keycode") is not None
+            out.append(
+                {
+                    "action": h["action"],
+                    "assigned": assigned,
+                    "label": binding_label(h["keycode"], h.get("mods", [])) if assigned else "",
+                    "lang_label": MODE_LABELS.get(h["action"], h["action"]),
+                }
+            )
+        return out
 
     def _refresh_settings_window(self, notice: str | None = None) -> None:
         """Push fresh state into the open window (after add/edit/delete/import)
@@ -527,20 +734,22 @@ class Tray:
             sub.add(item)
             shown += 1
         if shown == 0:
-            sub.add(rumps.MenuItem(f"(no profiles for {cur})"))
+            sub.add(rumps.MenuItem(self._t("tray.noProfiles", lang=cur)))
 
         # Editing, import and the AI-prompt helper all live in Settings → Speech
         # profiles now; the menu keeps only the quick on/off toggles for the
         # language you're dictating in.
         sub.add(rumps.separator)
-        sub.add(rumps.MenuItem("Edit in Settings…", callback=self._open_settings))
+        sub.add(rumps.MenuItem(self._t("tray.editInSettings"), callback=self._open_settings))
 
     def _refresh_budget(self) -> None:
         lang = self._lang()
         active = list(self._active_by_lang.get(lang, set()))
         used, budget = budget_usage(self._profiles, active, lang)
-        warn = "  ⚠️ over budget" if used > budget else ""
-        self._budget_item.title = f"Tokens ({lang}): {used}/{budget}{warn}"
+        warn = self._t("tray.overBudget") if used > budget else ""
+        self._budget_item.title = self._t(
+            "tray.tokens", lang=lang, used=used, budget=budget, warn=warn
+        )
 
     def _make_profile_callback(self, name: str):
         def _cb(_sender):

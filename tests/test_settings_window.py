@@ -67,7 +67,7 @@ def test_build_html_embeds_state_as_json():
 
 def test_build_html_has_all_control_ids():
     html = build_html(_state())
-    for cid in ("mic", "save", "keep", "login", "open-folder", "hotkey", "rec-path"):
+    for cid in ("mic", "save", "keep", "login", "open-folder", "hk-toggle", "rec-path"):
         assert f'id="{cid}"' in html
 
 

@@ -1,20 +1,109 @@
 """Application constants. Tweak here — leave the other files alone."""
 
-# ── Hotkey ───────────────────────────────────────────────────────────────────
-# Caps Lock is a stateful key (with the LED). 1st tap = start, 2nd tap = stop.
-HOTKEY_KEYCODE = 57  # Caps Lock
+# ── Hotkeys ──────────────────────────────────────────────────────────────────
+# Hotkeys are freely user-assignable, captured live in Settings. A binding is
+# {"keycode": <macOS virtual keycode>, "mods": [<modifier names>]}, where a
+# modifier name is one of "control"/"option"/"command"/"shift".
+#
+# The one hard rule (`is_bindable`): the event tap is listen-only — it observes
+# keystrokes but can't swallow them — so a *printable* key bound on its own would
+# still type its character. Therefore a binding must EITHER carry ≥1 modifier
+# (⌃⌥⇧⌘ + any key, like a normal macOS shortcut) OR use a key that emits no text
+# on its own (Caps Lock, a modifier key, or an F-key). The capture UI enforces it.
 
-# ── Language-switch hotkeys ───────────────────────────────────────────────────
-# Hold Control+Option and tap a letter to switch the output language without
-# opening the menu. Listen-only: the combo also reaches the focused app, but
-# Ctrl+Option+letter doesn't type anything, so it's harmless.
-#   Ctrl+Option+U → Українська   Ctrl+Option+R → Русский   Ctrl+Option+E → English
-# Keys are layout-independent virtual keycodes (E=14, R=15, U=32).
-LANG_HOTKEYS = {
-    14: "translate",  # E → 🌐 English-out (any spoken language → English text)
-    15: "ru",  # R → Русский
-    32: "uk",  # U → Українська
+HOTKEY_KEYCODE = 57  # Caps Lock — the default toggle key (legacy constant)
+
+# Default toggle binding, used on first run / when settings are missing or corrupt.
+DEFAULT_HOTKEY = {"keycode": 57, "mods": []}  # Caps Lock, tap to start/stop
+
+# Per-language switch shortcuts are defined further down, once MENU_MODES exists —
+# see DEFAULT_LANG_HOTKEYS / LANG_HOTKEY_ACTIONS below. EVERY language is an
+# assignable slot; only a few carry a default binding (the rest start unassigned,
+# keycode=None, and can be bound from Settings).
+
+# Modifier keycodes (left & right) → the flag name each carries. Right-hand ones
+# also double as bindable bare keys (they emit no text).
+MODIFIER_KEYCODES = {
+    54: "command",
+    55: "command",
+    58: "option",
+    61: "option",
+    59: "control",
+    62: "control",
+    56: "shift",
+    60: "shift",
 }
+# F1–F19 emit no text. F1–F12 exist on the built-in keyboard (bound to media);
+# F13–F19 only on external keyboards. All bindable on their own.
+_FN_KEYCODES = frozenset(
+    {122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111}  # F1–F12
+    | {105, 107, 113, 106, 64, 79, 80}  # F13–F19
+)
+# Keys allowed as a bare binding (no modifier needed) — they type nothing.
+NONTYPING_KEYCODES = frozenset({57} | set(MODIFIER_KEYCODES) | _FN_KEYCODES)
+
+# Apple's canonical display order + glyphs for a shortcut string.
+MODIFIER_ORDER = ["control", "option", "shift", "command"]
+MODIFIER_SYMBOLS = {"control": "⌃", "option": "⌥", "shift": "⇧", "command": "⌘"}
+
+# Bare special keys get a spelled-out label; everything else uses KEY_LABELS.
+_BARE_LABELS = {
+    57: "Caps Lock",
+    54: "Right ⌘",
+    55: "Left ⌘",
+    61: "Right ⌥",
+    58: "Left ⌥",
+    62: "Right ⌃",
+    59: "Left ⌃",
+    60: "Right ⇧",
+    56: "Left ⇧",
+}
+# macOS virtual keycode → label (US layout). Only the printable/named keys we'd
+# ever show; anything missing falls back to "Key N".
+KEY_LABELS = {
+    0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C",
+    9: "V", 11: "B", 12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T",
+    18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9",
+    26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[",
+    34: "I", 35: "P", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\",
+    43: ",", 44: "/", 45: "N", 46: "M", 47: ".", 49: "Space", 48: "Tab",
+    36: "Return", 51: "Delete", 53: "Esc",
+    122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7",
+    100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12", 105: "F13",
+    107: "F14", 113: "F15", 106: "F16", 64: "F17", 79: "F18", 80: "F19",
+    123: "←", 124: "→", 125: "↓", 126: "↑",
+}  # fmt: skip
+
+
+def key_label(keycode: int) -> str:
+    """Label for a single key (no modifiers), falling back to the raw code."""
+    return _BARE_LABELS.get(keycode) or KEY_LABELS.get(keycode, f"Key {keycode}")
+
+
+def binding_label(keycode: int, mods) -> str:
+    """Human shortcut string, e.g. '⌃⌥U' or 'Caps Lock' or 'Right ⌥'."""
+    mods = set(mods or [])
+    if not mods and keycode in _BARE_LABELS:
+        return _BARE_LABELS[keycode]
+    prefix = "".join(MODIFIER_SYMBOLS[m] for m in MODIFIER_ORDER if m in mods)
+    return prefix + key_label(keycode)
+
+
+def is_bindable(keycode: int, mods) -> bool:
+    """A binding is allowed if it carries a modifier, or the key emits no text."""
+    return bool(mods) or keycode in NONTYPING_KEYCODES
+
+
+def match_keydown(bindings, keycode: int, mods):
+    """Pure matcher for the key-down path: return the action of the binding whose
+    keycode and modifier set match exactly, else None. `bindings` is a list of
+    {"action","keycode","mods"} dicts (the toggle uses action '__toggle__')."""
+    want = set(mods or [])
+    for b in bindings:
+        if b.get("keycode") == keycode and set(b.get("mods") or []) == want:
+            return b.get("action")
+    return None
+
 
 # ── Audio ────────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz
@@ -106,14 +195,34 @@ MENU_MODES = [
     "ru",
 ]
 
-# Display letters for the Ctrl+Option language-switch shortcuts (mirrors
-# LANG_HOTKEYS: U→uk, R→ru, E→translate). The real binding is the global event
-# tap in HotkeyListener; these just surface the combo in the menu and Settings.
+# Display letters for the Ctrl+Option language-switch shortcuts (mirrors the
+# default DEFAULT_LANG_HOTKEYS below: U→uk, R→ru, E→translate). The real binding
+# is the global event tap in HotkeyListener; these just surface the default combo
+# in the «🌍 Languages» menu as a native key-equivalent.
 MODE_SHORTCUTS = {
     "uk": "U",
     "ru": "R",
     "translate": "E",
 }
+
+# ── Per-language switch shortcuts ─────────────────────────────────────────────
+# Every language is an assignable slot (so any can get its own hotkey). Only a
+# few ship with a default combo; the rest start unassigned (keycode=None) and can
+# be bound — or cleared back to unassigned — from Settings. Order follows the menu.
+LANG_HOTKEY_ACTIONS = list(MENU_MODES)
+_DEFAULT_LANG_BINDINGS = {
+    "translate": (14, ["control", "option"]),  # ⌃⌥E
+    "ru": (15, ["control", "option"]),  # ⌃⌥R
+    "uk": (32, ["control", "option"]),  # ⌃⌥U
+}
+DEFAULT_LANG_HOTKEYS = [
+    {
+        "action": action,
+        "keycode": _DEFAULT_LANG_BINDINGS.get(action, (None, []))[0],
+        "mods": list(_DEFAULT_LANG_BINDINGS.get(action, (None, []))[1]),
+    }
+    for action in LANG_HOTKEY_ACTIONS
+]
 
 # Idle menu-bar icon per mode — shows the active language at a glance so a
 # hotkey switch gives instant visual confirmation. Fallback to the mic glyph.

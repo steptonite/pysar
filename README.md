@@ -20,6 +20,9 @@ This fork is packaged to be reproducible — it survives a clean macOS reinstall
 - **VAD anti-hallucination** — the server runs with Silero VAD, so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
 - **Clean paste** — the transcriber only normalizes whitespace/newlines, so a word never lands split across a line. No content-based text filtering: real words are never dropped (the silence-hallucination problem is solved by VAD instead).
 - **Optional recording archive** — off by default (audio stays in memory). Toggle **💾 Save recordings** in the menu bar to keep the last N WAVs on disk (5/10/20, auto-pruned) in `~/Library/Application Support/Pysar/recordings/`, so a failed or aborted dictation can be re-transcribed instead of re-spoken. **📂 Open recordings folder** reveals them in Finder. Settings persist across launches.
+- **Speech profiles** — per-language priming sentences that bias Whisper toward your jargon (tool names, slang, proper nouns) so it stops mangling them. Toggle profiles per language; the composed prompt is capped to a token budget. A built-in **"Copy AI prompt"** hands any chat model a meta-prompt that returns importable profile JSON — pasted back, the import is tolerant of smart quotes and trailing commas.
+- **Drill-in Settings window** — a native WebKit panel (audio, save, folder, hotkeys, profile editor, theme, UI language) instead of a tall menu. **Auto / Light / Dark** themes with a live accent.
+- **Bilingual UI (🇺🇦/🌐)** — the whole interface — menu bar, status line, notifications, Settings window — switches between Ukrainian and English live, independent of the dictation output language.
 
 Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of unified memory.
 
@@ -44,6 +47,7 @@ Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** a
 
 - **Dictate** — Caps Lock → speak → Caps Lock. Text pastes at the cursor.
 - **Switch language** — `Ctrl+Option+U` (🇺🇦) · `Ctrl+Option+R` (🇷🇺) · `Ctrl+Option+E` (🌐 → English). The menu-bar flag shows the active mode.
+- **Settings** — open from the menu bar to manage audio, recordings, custom hotkeys, speech profiles, theme, and UI language.
 - **Quit** — from the menu-bar icon; it stops the whisper server too.
 
 More languages are available in the **🌍 Languages** submenu (15 targets + the `🌐 → English (from any)` shortcut). To change the set, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and the hotkeys in [src/config.py](src/config.py).

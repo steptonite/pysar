@@ -166,7 +166,14 @@ _TEMPLATE = r"""<!doctype html>
   .kslist{display:flex; flex-direction:column; gap:7px; margin-top:8px}
   .kslist .ksrow{display:flex; align-items:center; gap:9px;
     color:var(--muted); font-size:12px}
+  .kslist .ksrow .kslabel{flex:1}
   .kslist kbd{min-width:46px; text-align:center; font-size:12px}
+  .kslist kbd.muted{opacity:.5; border-style:dashed; font-weight:400}
+  .clearbtn{min-width:0; padding:4px 7px; color:var(--muted)}
+  .clearbtn:hover{border-color:var(--danger); color:var(--danger)}
+  .hkcap{display:flex; align-items:center; gap:8px}
+  .hkcap kbd{min-width:60px; text-align:center}
+  .iconbtn{padding:4px 9px; font-size:12px}
 
   /* Profiles screen */
   .pgroup{margin-bottom:14px}
@@ -205,71 +212,74 @@ _TEMPLATE = r"""<!doctype html>
 <body>
   <!-- ── Main screen ──────────────────────────────────────────────────────── -->
   <div id="screen-main" class="screen on">
-    <header><h1>Settings</h1><span class="sub">Pysar Custom</span></header>
+    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar Custom</span></header>
 
-    <div class="sec-title">Audio</div>
+    <div class="sec-title" data-i18n="sec.audio">Audio</div>
     <section>
       <div class="row">
-        <div class="body"><div class="label">Microphone</div>
-          <div class="help">Input device used for dictation</div></div>
+        <div class="body"><div class="label" data-i18n="mic.label">Microphone</div>
+          <div class="help" data-i18n="mic.help">Input device used for dictation</div></div>
         <select id="mic"></select>
       </div>
     </section>
 
-    <div class="sec-title">Recordings</div>
+    <div class="sec-title" data-i18n="sec.recordings">Recordings</div>
     <section>
       <div class="row">
-        <div class="body"><div class="label">Save recordings</div>
-          <div class="help">Keep each WAV on disk so a failed run is recoverable</div></div>
+        <div class="body"><div class="label" data-i18n="save.label">Save recordings</div>
+          <div class="help" data-i18n="save.help">Keep each WAV on disk so a failed run is recoverable</div></div>
         <label class="toggle"><input type="checkbox" id="save">
           <span class="track"></span><span class="knob"></span></label>
       </div>
       <div class="row" id="keep-row">
-        <div class="body"><div class="label">Keep last</div>
-          <div class="help">Older recordings are deleted automatically</div></div>
+        <div class="body"><div class="label" data-i18n="keep.label">Keep last</div>
+          <div class="help" data-i18n="keep.help">Older recordings are deleted automatically</div></div>
         <select id="keep"></select>
       </div>
       <div class="row">
-        <div class="body"><div class="label">Storage folder</div>
+        <div class="body"><div class="label" data-i18n="folder.label">Storage folder</div>
           <div class="help" id="rec-path"></div></div>
-        <button id="open-folder">Open</button>
+        <button id="open-folder" data-i18n="folder.open">Open</button>
       </div>
     </section>
 
-    <div class="sec-title">Dictation</div>
+    <div class="sec-title" data-i18n="sec.dictation">Dictation</div>
     <section>
       <div class="row nav" id="go-profiles">
-        <div class="body"><div class="label">Speech profiles</div>
+        <div class="body"><div class="label" data-i18n="profiles.nav">Speech profiles</div>
           <div class="help" id="prof-sub">Prompt-priming for better recognition</div></div>
         <span class="chev">›</span>
       </div>
       <div class="row">
-        <div class="body"><div class="label">Dictation hotkey</div>
-          <div class="help">Tap to start, tap again to stop</div></div>
-        <kbd id="hotkey"></kbd>
+        <div class="body"><div class="label" data-i18n="hotkey.label">Dictation hotkey</div>
+          <div class="help" data-i18n="hotkey.help">Tap to start, tap again to stop</div></div>
+        <div class="hkcap"><kbd id="hk-toggle"></kbd>
+          <button class="iconbtn ghost" id="hk-toggle-btn" data-i18n="hotkey.change">Change…</button></div>
       </div>
       <div class="row" style="display:block">
-        <div class="label">Language shortcuts</div>
-        <div class="help" style="white-space:normal">Switch the decode language
-          anywhere, without opening the menu</div>
-        <div class="kslist">
-          <div class="ksrow"><kbd>⌃⌥U</kbd><span>Українська</span></div>
-          <div class="ksrow"><kbd>⌃⌥R</kbd><span>Русский</span></div>
-          <div class="ksrow"><kbd>⌃⌥E</kbd><span>→ English (from any language)</span></div>
-        </div>
+        <div class="label" data-i18n="langhk.label">Language shortcuts</div>
+        <div class="help" style="white-space:normal" data-i18n="langhk.help">Switch the decode language
+          anywhere, without opening the menu. Use any key with ⌃⌥⌘⇧ held, or a key
+          that types nothing on its own (Caps Lock, a modifier, an F-key).</div>
+        <div class="kslist" id="lang-hotkeys"></div>
       </div>
     </section>
 
-    <div class="sec-title">System</div>
+    <div class="sec-title" data-i18n="sec.system">System</div>
     <section>
       <div class="row">
-        <div class="body"><div class="label">Appearance</div>
-          <div class="help">Window theme — follow macOS, or force light / dark</div></div>
+        <div class="body"><div class="label" data-i18n="theme.label">Appearance</div>
+          <div class="help" data-i18n="theme.help">Window theme — follow macOS, or force light / dark</div></div>
         <select id="theme"></select>
       </div>
       <div class="row">
-        <div class="body"><div class="label">Launch at login</div>
-          <div class="help">Start Pysar automatically when you log in</div></div>
+        <div class="body"><div class="label" data-i18n="applang.label">App language</div>
+          <div class="help" data-i18n="applang.help">Language of the copied AI prompt</div></div>
+        <select id="lang"></select>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="login.label">Launch at login</div>
+          <div class="help" data-i18n="login.help">Start Pysar automatically when you log in</div></div>
         <label class="toggle"><input type="checkbox" id="login">
           <span class="track"></span><span class="knob"></span></label>
       </div>
@@ -282,38 +292,38 @@ _TEMPLATE = r"""<!doctype html>
       <span class="back" id="back">
         <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
-          stroke-linejoin="round"/></svg>Settings</span>
-      <h1 style="flex:0 1 auto">Speech profiles</h1>
+          stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
+      <h1 style="flex:0 1 auto" data-i18n="pscreen.title">Speech profiles</h1>
       <span style="flex:1"></span>
     </header>
-    <div class="ai">A profile is one natural sentence that primes whisper toward your
+    <div class="ai" data-i18n="pscreen.ai">A profile is one natural sentence that primes whisper toward your
       real vocabulary — names, jargon, English terms inside Ukrainian. Toggle the ones
       that fit what you're dictating; the meter shows how much of whisper's prompt
       budget each language uses.</div>
     <div class="notice" id="notice"></div>
     <div id="groups"></div>
 
-    <div class="sec-title">Build profiles with your AI</div>
+    <div class="sec-title" data-i18n="psec.ai">Build profiles with your AI</div>
     <section>
       <div class="row">
-        <div class="body"><div class="label">Copy AI prompt</div>
-          <div class="help" style="white-space:normal">Copies a ready prompt. Paste it into
+        <div class="body"><div class="label" data-i18n="copyai.label">Copy AI prompt</div>
+          <div class="help" style="white-space:normal" data-i18n="copyai.help">Copies a ready prompt. Paste it into
             ChatGPT / Gemini / Claude — it knows you from your chats and writes profiles as
             JSON, which you then import below.</div></div>
-        <button id="copy-ai">Copy</button>
+        <button id="copy-ai" data-i18n="copyai.btn">Copy</button>
       </div>
       <div class="row">
-        <div class="body"><div class="label">Import profiles</div>
-          <div class="help">Paste the JSON your AI returned</div></div>
-        <button id="import-toggle">Import…</button>
+        <div class="body"><div class="label" data-i18n="import.label">Import profiles</div>
+          <div class="help" data-i18n="import.help">Paste the JSON your AI returned</div></div>
+        <button id="import-toggle" data-i18n="import.btn">Import…</button>
       </div>
       <div id="import-panel" hidden>
         <div class="pform" style="margin:0 0 8px">
-          <label>Paste JSON here</label>
+          <label data-i18n="import.paste">Paste JSON here</label>
           <textarea id="import-text" placeholder='[{"name":"…","language":"uk","prompt":"…"}]'></textarea>
           <div class="frow">
-            <button class="ghost" id="import-cancel">Cancel</button>
-            <button class="primary" id="import-do">Import</button>
+            <button class="ghost" id="import-cancel" data-i18n="import.cancel">Cancel</button>
+            <button class="primary" id="import-do" data-i18n="import.do">Import</button>
           </div>
         </div>
       </div>
@@ -337,6 +347,28 @@ function send(action, value){
 }
 function applyAccent(){
   if (STATE.accent) document.documentElement.style.setProperty("--accent", STATE.accent);
+}
+
+// ── i18n ────────────────────────────────────────────────────────────────────
+// STATE.t is the localized string table (see i18n.py). T() looks a key up with a
+// fallback; applyI18n() fills every static [data-i18n] element from it.
+function T(key, fallback){
+  const v = STATE.t && STATE.t[key];
+  return (v === undefined || v === null) ? (fallback !== undefined ? fallback : key) : v;
+}
+function applyI18n(){
+  document.querySelectorAll("[data-i18n]").forEach(n => {
+    const v = STATE.t && STATE.t[n.getAttribute("data-i18n")];
+    if (v !== undefined && v !== null) n.textContent = v;
+  });
+  // Select options are built once but their labels are localized — relabel by
+  // value so a live language switch updates them too.
+  const keep = $("keep");
+  if (keep) [...keep.options].forEach(o => {
+    o.textContent = o.value + " " + T("keep.unit", "recordings");
+  });
+  const theme = $("theme"), TH = {auto:"theme.auto", light:"theme.light", dark:"theme.dark"};
+  if (theme) [...theme.options].forEach(o => { o.textContent = T(TH[o.value]); });
 }
 
 // ── Screen navigation ──────────────────────────────────────────────────────
@@ -366,7 +398,7 @@ $("back").addEventListener("click", () => show("main"));
   const keep = $("keep");
   (STATE.keep_last_options || [5,10,20]).forEach(n => {
     const o = document.createElement("option");
-    o.textContent = n + " recordings"; o.value = String(n);
+    o.textContent = n + " " + T("keep.unit", "recordings"); o.value = String(n);
     if (n === STATE.keep_last) o.selected = true;
     keep.appendChild(o);
   });
@@ -382,7 +414,8 @@ $("back").addEventListener("click", () => show("main"));
   login.addEventListener("change", () => send("set_login", login.checked));
 
   const theme = $("theme");
-  [["auto","Automatic"],["light","Light"],["dark","Dark"]].forEach(([val,label]) => {
+  [["auto",T("theme.auto","Automatic")],["light",T("theme.light","Light")],
+   ["dark",T("theme.dark","Dark")]].forEach(([val,label]) => {
     const o = document.createElement("option");
     o.value = val; o.textContent = label;
     if (val === (STATE.ui_theme || "auto")) o.selected = true;
@@ -390,11 +423,31 @@ $("back").addEventListener("click", () => show("main"));
   });
   theme.addEventListener("change", () => send("set_theme", theme.value));
 
+  const lang = $("lang");
+  [["uk","Українська"],["en","English"]].forEach(([val,label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.ui_lang || "uk")) o.selected = true;
+    lang.appendChild(o);
+  });
+  lang.addEventListener("change", () => send("set_lang", lang.value));
+
   $("rec-path").textContent = STATE.recordings_dir || "";
-  $("hotkey").textContent = STATE.hotkey_label || "Caps Lock";
   $("open-folder").addEventListener("click", () => send("open_folder"));
 
-  $("copy-ai").addEventListener("click", () => { send("copy_ai_prompt"); flash("Prompt copied to clipboard."); });
+  // Capture the dictation toggle: ask Python to record the next keypress. The
+  // kbd label and the language rows are refreshed by renderHotkeys() once the
+  // new binding lands (state push). The button is built once → wire it here.
+  $("hk-toggle-btn").addEventListener("click", () => {
+    $("hk-toggle").textContent = T("hotkey.press", "Press keys…");
+    send("capture_hotkey", "__toggle__");
+  });
+
+  $("copy-ai").addEventListener("click", () => {
+    // Carry the picked language so the copy never depends on set_lang round-tripping.
+    send("copy_ai_prompt", $("lang").value || STATE.ui_lang || "uk");
+    flash(T("copyai.done", "Prompt copied to clipboard."));
+  });
 
   const panel = $("import-panel"), ta = $("import-text");
   $("import-toggle").addEventListener("click", () => {
@@ -435,7 +488,7 @@ function renderProfiles(){
   if (langs.length === 0) langs.push(cur || "uk");
   const langOptions = ALL_LANGS;  // create a profile in any language → its group appears
 
-  $("prof-sub").textContent = profiles.length + " profile" + (profiles.length === 1 ? "" : "s");
+  $("prof-sub").textContent = T("prof.count", "Profiles: {n}").replace("{n}", profiles.length);
 
   langs.forEach(lang => {
     const g = el("div", "pgroup");
@@ -471,15 +524,15 @@ function renderProfiles(){
         refreshMeter();
         send("toggle_profile", {name: p.name, active: cb.checked});
       });
-      const edit = el("button", "iconbtn ghost", "Edit");
+      const edit = el("button", "iconbtn ghost", T("prow.edit", "Edit"));
       edit.addEventListener("click", () => openForm(sec, row, lang, langOptions, p));
       // Two-step delete: WKWebView blocks window.confirm(), so confirm inline.
-      const del = el("button", "iconbtn danger", "Delete");
+      const del = el("button", "iconbtn danger", T("prow.delete", "Delete"));
       let armed = false, armTimer = null;
       del.addEventListener("click", () => {
         if (!armed) {
-          armed = true; del.textContent = "Confirm?";
-          armTimer = setTimeout(() => { armed = false; del.textContent = "Delete"; }, 2500);
+          armed = true; del.textContent = T("prow.confirm", "Confirm?");
+          armTimer = setTimeout(() => { armed = false; del.textContent = T("prow.delete", "Delete"); }, 2500);
           return;
         }
         clearTimeout(armTimer);
@@ -490,7 +543,7 @@ function renderProfiles(){
     });
 
     g.appendChild(sec);
-    const add = el("button", "addbtn ghost", "+ Add profile");
+    const add = el("button", "addbtn ghost", T("prow.add", "+ Add profile"));
     add.addEventListener("click", () => openForm(sec, null, lang, langOptions, null));
     g.appendChild(add);
     root.appendChild(g);
@@ -504,11 +557,11 @@ function openForm(sec, anchorRow, lang, langOptions, profile){
   if (sec.parentElement.querySelector(".pform")) return;  // one open form per group
   const f = el("div", "pform");
 
-  f.appendChild(el("label", null, "Name"));
+  f.appendChild(el("label", null, T("form.name", "Name")));
   const name = el("input"); name.type = "text"; name.value = profile ? profile.name : "";
-  name.placeholder = "e.g. Розробка / код"; f.appendChild(name);
+  name.placeholder = T("form.namePh", "e.g. Розробка / код"); f.appendChild(name);
 
-  f.appendChild(el("label", null, "Language"));
+  f.appendChild(el("label", null, T("form.lang", "Language")));
   const langSel = document.createElement("select");
   langOptions.forEach(code => {
     const o = document.createElement("option");
@@ -518,17 +571,17 @@ function openForm(sec, anchorRow, lang, langOptions, profile){
   });
   f.appendChild(langSel);
 
-  f.appendChild(el("label", null, "Prompt — one natural sentence that primes recognition"));
+  f.appendChild(el("label", null, T("form.prompt", "Prompt — one natural sentence that primes recognition")));
   const ta = document.createElement("textarea");
   ta.value = profile ? (profile.prompt || "") : ""; f.appendChild(ta);
 
   const frow = el("div", "frow");
   const estLbl = el("span", "est");
-  const upd = () => { estLbl.textContent = "≈ " + est(ta.value) + " tokens"; };
+  const upd = () => { estLbl.textContent = "≈ " + est(ta.value) + " " + T("form.tokens", "tokens"); };
   ta.addEventListener("input", upd); upd();
-  const cancel = el("button", "ghost", "Cancel");
+  const cancel = el("button", "ghost", T("form.cancel", "Cancel"));
   cancel.addEventListener("click", () => f.remove());
-  const save = el("button", "primary", "Save");
+  const save = el("button", "primary", T("form.save", "Save"));
   save.addEventListener("click", () => {
     const payload = {
       name: name.value.trim(), language: langSel.value,
@@ -544,16 +597,49 @@ function openForm(sec, anchorRow, lang, langOptions, profile){
   name.focus();
 }
 
+// ── Hotkeys (re-rendered on every state push) ──────────────────────────────
+function renderHotkeys(){
+  const tog = $("hk-toggle");
+  if (tog) tog.textContent = STATE.hotkey_label || "Caps Lock";
+  const wrap = $("lang-hotkeys");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  (STATE.lang_hotkeys || []).forEach(h => {
+    const row = el("div", "ksrow");
+    const kb = el("kbd", h.assigned ? "" : "muted", h.assigned ? h.label : "—");
+    row.appendChild(kb);
+    row.appendChild(el("span", "kslabel", h.lang_label));
+    const btn = el("button", "iconbtn ghost",
+      h.assigned ? T("langhk.change", "Change…") : T("langhk.assign", "Assign…"));
+    btn.addEventListener("click", () => {
+      btn.textContent = T("hotkey.press", "Press keys…");
+      send("capture_hotkey", h.action);
+    });
+    row.appendChild(btn);
+    if (h.assigned) {
+      const clr = el("button", "iconbtn ghost clearbtn", "✕");
+      clr.title = T("langhk.remove", "Remove shortcut");
+      clr.addEventListener("click", () => send("clear_hotkey", h.action));
+      row.appendChild(clr);
+    }
+    wrap.appendChild(row);
+  });
+}
+
 // ── State push from Python (no reload → keeps the current screen) ──────────
 window.pysarApply = function(s){
   STATE = s;
   applyAccent();
+  applyI18n();
   renderProfiles();
+  renderHotkeys();
   if (s.notice) flash(s.notice);
 };
 
 applyAccent();
+applyI18n();
 renderProfiles();
+renderHotkeys();
 </script>
 </body>
 </html>"""

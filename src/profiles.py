@@ -37,12 +37,51 @@ META_PROMPT = (
     "(не інструкція!). Правила: кожен профіль = ОДНЕ природне речення (НЕ список),\n"
     "щільне на мої реальні терміни/імена/жаргон, ≤55 слів, одна основна мова;\n"
     "іншомовні терміни (англ/рос) вплітай у те саме речення.\n\n"
+    "ПОГАНО (список — дрейфує): ComfyUI, Flux, LoRA, VAE, KSampler, VRAM.\n"
+    "ДОБРЕ (речення): У ComfyUI я збираю воркфлоу на Flux і LoRA, кручу KSampler\n"
+    "і стежу за VRAM на хмарній RTX 4090.\n\n"
     "Використай те, що ти про мене знаєш з нашої історії. Якщо чогось бракує —\n"
     "спитай мене 2-3 короткі питання, потім згенеруй.\n\n"
-    "Видай ЛИШЕ JSON, без коментарів, у форматі:\n"
-    '[{"name":"Назва","language":"uk|en|ru","prompt":"природне речення з термінами"}]\n'
+    "ФОРМАТ (суворо): видай ЛИШЕ валідний JSON-масив. БЕЗ коментарів, БЕЗ\n"
+    'markdown-огорожі ```; лише ПРЯМІ ASCII-лапки " (НЕ «розумні» “ ” ’);\n'
+    "без коми перед ] чи }. Точний приклад цілої відповіді:\n"
+    '[{"name":"ComfyUI","language":"uk","prompt":"У ComfyUI я збираю воркфлоу на '
+    'Flux і LoRA, кручу KSampler і стежу за VRAM на RTX 4090"},\n'
+    ' {"name":"Я","language":"uk","prompt":"Я монтую AI-відео і ретушую фото в '
+    'ComfyUI з Flux та Wan, знімаю на Nikon D90"}]\n'
     'Зроби 4-6 профілів по моїх доменах + один "Я" (склеєний з головних).'
 )
+
+# English equivalent — copied when the app language is English, so the prompt the
+# user pastes into their chat AI matches the UI they're reading.
+META_PROMPT_EN = (
+    "Help me build profiles for an offline whisper-based dictation app.\n"
+    "whisper takes an initial_prompt — a short text that PRIMES recognition\n"
+    "(not an instruction!). Rules: each profile = ONE natural sentence (NOT a\n"
+    "list), dense with my real terms/names/jargon, ≤55 words, one main language;\n"
+    "weave foreign terms into the same sentence.\n\n"
+    "BAD (a list — drifts): ComfyUI, Flux, LoRA, VAE, KSampler, VRAM.\n"
+    "GOOD (a sentence): In ComfyUI I wire Flux and LoRA workflows, tune the\n"
+    "KSampler and watch VRAM on a cloud RTX 4090.\n\n"
+    "Use what you know about me from our history. If something's missing, ask me\n"
+    "2-3 short questions, then generate.\n\n"
+    "FORMAT (strict): output ONLY a valid JSON array. NO comments, NO markdown\n"
+    '``` fences; use only STRAIGHT ASCII quotes " (NOT smart “ ” ’); no comma\n'
+    "before ] or }. Exact example of a whole reply:\n"
+    '[{"name":"ComfyUI","language":"en","prompt":"In ComfyUI I wire Flux and LoRA '
+    'workflows, tune the KSampler and watch VRAM on an RTX 4090"},\n'
+    ' {"name":"Me","language":"en","prompt":"I edit AI video and retouch photos in '
+    'ComfyUI with Flux and Wan, shooting on a Nikon D90"}]\n'
+    'Make 4-6 profiles across my domains + one "Me" (merged from the main ones).'
+)
+
+_META_PROMPTS = {"uk": META_PROMPT, "en": META_PROMPT_EN}
+
+
+def meta_prompt(lang: str = "uk") -> str:
+    """The AI extraction prompt in the app's language (falls back to Ukrainian)."""
+    return _META_PROMPTS.get(lang, META_PROMPT)
+
 
 # Shipped starter library: general profiles + common domains, Ukrainian-first,
 # surzhyk-aware. Each prompt is a single natural sentence (see craft rule #1).
@@ -205,10 +244,34 @@ def validate_profile(d: object) -> dict | None:
     return {"name": name, "language": lang, "prompt": prompt}
 
 
+# Typographic → ASCII, for the lenient retry below. Chat AIs (notably ChatGPT)
+# love to "smart-quote" their JSON — “name” instead of "name" — which is invalid
+# JSON. We only apply this when strict parsing has already failed, so a paste
+# that's valid as-is (incl. legitimate curly quotes *inside* a string) is never
+# touched.
+_SMART_QUOTES = str.maketrans({"“": '"', "”": '"', "„": '"', "‟": '"', "＂": '"',
+                               "‘": "'", "’": "'", "‚": "'", "‛": "'"})  # fmt: skip
+
+
+def _loads_lenient(block: str):
+    """json.loads, then — only on failure — a forgiving retry that repairs the
+    two breakages chat AIs reliably emit: smart quotes and a trailing comma
+    before ] or }. Returns the parsed value, or raises the *original* error."""
+    try:
+        return json.loads(block)
+    except json.JSONDecodeError as first:
+        repaired = block.translate(_SMART_QUOTES)
+        repaired = re.sub(r",\s*([\]}])", r"\1", repaired)  # drop trailing commas
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            raise first from None
+
+
 def parse_imported(text: str) -> tuple[list[dict], str | None]:
     """Parse the JSON the user pasted from their chat AI. Tolerant of code
-    fences and surrounding prose: extract the first JSON array, validate items.
-    Returns (profiles, error). On success error is None."""
+    fences, surrounding prose, smart quotes and trailing commas: extract the
+    first JSON array, validate items. Returns (profiles, error)."""
     if not text or not text.strip():
         return [], "Empty paste."
     # Grab the first [...] block, so ```json fences or chatty preambles are fine.
@@ -216,7 +279,7 @@ def parse_imported(text: str) -> tuple[list[dict], str | None]:
     if not match:
         return [], "No JSON array found in the pasted text."
     try:
-        raw = json.loads(match.group(0))
+        raw = _loads_lenient(match.group(0))
     except json.JSONDecodeError as e:
         return [], f"Invalid JSON: {e}"
     if not isinstance(raw, list):

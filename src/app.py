@@ -18,7 +18,10 @@ from .config import (
     MODE_ICONS,
     MODE_LABELS,
     MODES,
+    binding_label,
+    is_bindable,
 )
+from .i18n import t
 from .profiles import (
     compose_prompt,
     merge_profiles,
@@ -45,6 +48,8 @@ class VoiceTyper:
         # Restore the last-used language; fall back if the stored code is unknown.
         saved_mode = self._settings.get("mode", DEFAULT_MODE)
         self._mode = saved_mode if saved_mode in MODES else DEFAULT_MODE
+        # UI language for status-line strings (kept in sync via _on_set_lang).
+        self._ui_lang = self._settings.get("ui_lang", "uk")
 
         self._recorder = AudioRecorder(device=self._settings.get("mic"))
         self._paster = Paster()
@@ -74,13 +79,19 @@ class VoiceTyper:
             on_toggle_login=self._on_toggle_login,
             ui_theme=self._settings.get("ui_theme", "auto"),
             on_set_theme=self._on_set_theme,
+            ui_lang=self._settings.get("ui_lang", "uk"),
+            on_set_lang=self._on_set_lang,
+            hotkey=self._settings["hotkey"],
+            lang_hotkeys=self._settings["lang_hotkeys"],
+            on_capture_hotkey=self._on_capture_hotkey,
+            on_clear_hotkey=self._on_clear_hotkey,
         )
 
-        # Hotkey listener is blocking — runs in its own thread. The toggle key is
-        # remappable; a change applies on next launch (the event tap is built once).
-        listener = HotkeyListener(self._settings.get("hotkey_keycode"))
+        # Hotkey listener is blocking — runs in its own thread. Bindings come from
+        # settings and can be re-captured live (set_bindings), no relaunch needed.
+        self._listener = HotkeyListener(self._settings["hotkey"], self._settings["lang_hotkeys"])
         threading.Thread(
-            target=listener.start,
+            target=self._listener.start,
             args=(self._on_toggle, self._on_mode_select),
             daemon=True,
         ).start()
@@ -93,6 +104,10 @@ class VoiceTyper:
 
     def run(self) -> None:
         self._tray.run()
+
+    def _t(self, key: str, **kw) -> str:
+        """Localized status-line string in the current app language (see i18n.py)."""
+        return t(self._ui_lang, key, **kw)
 
     def _idle_title(self) -> str:
         """Menu-bar glyph when idle — the active language's flag."""
@@ -109,20 +124,20 @@ class VoiceTyper:
             # the user clicks away during a slow transcription.
             self._paste_target = self._paster.capture_target()
             self._tray.set_title("🔴")
-            self._tray.set_status("● Recording…")
+            self._tray.set_status(self._t("st.recording"))
             self._recorder.start()
         else:
             self._recording = False
             self._busy = True
             self._tray.set_title("⏳")
-            self._tray.set_status("⏳ Transcribing…")
+            self._tray.set_status(self._t("st.transcribing"))
             threading.Thread(target=self._finish, daemon=True).start()
 
     def _finish(self) -> None:
         try:
             wav = self._recorder.stop()
             if wav is None:
-                self._tray.set_status("⚠️ Too short")
+                self._tray.set_status(self._t("st.tooShort"))
                 self._tray.set_title(self._idle_title())
                 return
 
@@ -149,7 +164,7 @@ class VoiceTyper:
                 self._tray.set_title("⚠️")
                 return
             if not text:
-                self._tray.set_status("⚠️ Silence")
+                self._tray.set_status(self._t("st.silence"))
                 self._tray.set_title(self._idle_title())
                 return
 
@@ -167,7 +182,7 @@ class VoiceTyper:
         self._settings["mode"] = code
         save_settings(self._settings)
         self._tray.set_current_mode(code)  # update the menu checkmark
-        self._tray.set_status(f"Mode: {MODE_LABELS[code]}")
+        self._tray.set_status(self._t("st.mode", label=MODE_LABELS[code]))
         # Reflect the language in the menu-bar icon for instant confirmation,
         # unless a record/transcribe cycle owns the title right now.
         if not self._recording and not self._busy:
@@ -177,12 +192,12 @@ class VoiceTyper:
     def _on_toggle_save(self, enabled: bool) -> None:
         self._settings["save_recordings"] = enabled
         save_settings(self._settings)
-        self._tray.set_status("💾 Saving recordings" if enabled else "Recordings: memory only")
+        self._tray.set_status(self._t("st.saving") if enabled else self._t("st.memoryOnly"))
 
     def _on_set_keep_last(self, n: int) -> None:
         self._settings["keep_last"] = n
         save_settings(self._settings)
-        self._tray.set_status(f"Keeping last {n} recordings")
+        self._tray.set_status(self._t("st.keepLast", n=n))
 
     # ── Speech profiles ───────────────────────────────────────────────────────
     def _on_toggle_profile(self, name: str, active: bool) -> None:
@@ -198,7 +213,7 @@ class VoiceTyper:
         elif not active and name in group:
             group.remove(name)
         save_settings(self._settings)
-        self._tray.set_status(f"👤 {name}: {'on' if active else 'off'}")
+        self._tray.set_status(self._t("st.profileOn" if active else "st.profileOff", name=name))
 
     def _on_save_profile(
         self, name: str, language: str, prompt: str, original_name: str | None
@@ -242,22 +257,62 @@ class VoiceTyper:
         self._settings["mic"] = name
         save_settings(self._settings)
         self._recorder.set_device(name)
-        self._tray.set_status(f"🎤 {name}" if name else "🎤 Default mic")
+        self._tray.set_status(self._t("st.mic", name=name) if name else self._t("st.defaultMic"))
 
     def _on_toggle_login(self, enabled: bool) -> None:
         self._settings["launch_at_login"] = enabled
         save_settings(self._settings)
-        self._tray.set_status("🚀 Launch at login: on" if enabled else "Launch at login: off")
+        self._tray.set_status(self._t("st.loginOn") if enabled else self._t("st.loginOff"))
 
     def _on_set_theme(self, theme: str) -> None:
         self._settings["ui_theme"] = theme
         save_settings(self._settings)
 
+    def _on_set_lang(self, lang: str) -> None:
+        self._settings["ui_lang"] = lang
+        self._ui_lang = lang  # keep status-line strings in the new language
+        save_settings(self._settings)
+
+    def _on_capture_hotkey(self, slot: str) -> None:
+        """Capture the next keypress and rebind `slot` to it, live (no relaunch).
+        `slot` is "__toggle__" for dictation, or a language code for a switch."""
+
+        def apply(binding: dict) -> None:
+            kc, mods = binding["keycode"], binding["mods"]
+            if not is_bindable(kc, mods):
+                # A bare printable key would also type — make the user add a modifier.
+                self._tray.set_status(self._t("st.needMod"))
+                return
+            if slot == "__toggle__":
+                self._settings["hotkey"] = {"keycode": kc, "mods": mods}
+            else:
+                for h in self._settings["lang_hotkeys"]:
+                    if h["action"] == slot:
+                        h["keycode"], h["mods"] = kc, mods
+                        break
+            save_settings(self._settings)
+            self._listener.set_bindings(self._settings["hotkey"], self._settings["lang_hotkeys"])
+            self._tray.update_hotkeys(self._settings["hotkey"], self._settings["lang_hotkeys"])
+            self._tray.set_status(self._t("st.hotkeySet", label=binding_label(kc, mods)))
+
+        self._listener.begin_capture(apply)
+
+    def _on_clear_hotkey(self, action: str) -> None:
+        """Unassign a language slot's shortcut, live (no relaunch)."""
+        for h in self._settings["lang_hotkeys"]:
+            if h["action"] == action:
+                h["keycode"], h["mods"] = None, []
+                break
+        save_settings(self._settings)
+        self._listener.set_bindings(self._settings["hotkey"], self._settings["lang_hotkeys"])
+        self._tray.update_hotkeys(self._settings["hotkey"], self._settings["lang_hotkeys"])
+        self._tray.set_status(self._t("st.cleared", label=MODE_LABELS.get(action, action)))
+
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:
         time.sleep(0.5)
         if not is_alive():
-            self._tray.set_status("⚠️ Whisper not running — `make whisper`")
+            self._tray.set_status(self._t("st.whisperDown"))
             self._tray.set_title("⚠️")
 
 

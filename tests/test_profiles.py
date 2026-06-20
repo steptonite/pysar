@@ -103,6 +103,31 @@ def test_parse_imported_tolerates_fences_and_prose():
     assert profiles[0]["name"] == "A"
 
 
+def test_parse_imported_repairs_smart_quotes():
+    # ChatGPT routinely emits “smart” quotes → invalid JSON. The lenient retry
+    # rescues the paste instead of failing the import.
+    text = "[{“name”:“Я”,“language”:“uk”,“prompt”:“У ComfyUI я кручу Flux”}]"
+    profiles, err = parse_imported(text)
+    assert err is None
+    assert profiles[0]["name"] == "Я"
+
+
+def test_parse_imported_repairs_trailing_comma():
+    text = '[{"name":"A","language":"uk","prompt":"x"},]'
+    profiles, err = parse_imported(text)
+    assert err is None
+    assert len(profiles) == 1
+
+
+def test_parse_imported_keeps_legit_curly_quotes_in_content():
+    # A paste that's already valid JSON must be parsed verbatim — curly quotes
+    # *inside* a string are content, not delimiters, and stay untouched.
+    text = '[{"name":"A","language":"uk","prompt":"він сказав “привіт” мені"}]'
+    profiles, err = parse_imported(text)
+    assert err is None
+    assert "“привіт”" in profiles[0]["prompt"]
+
+
 def test_parse_imported_dedupes_by_name():
     text = '[{"name":"A","language":"uk","prompt":"x"},{"name":"A","language":"uk","prompt":"y"}]'
     profiles, err = parse_imported(text)

@@ -12,7 +12,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .config import DEFAULT_MODE, HOTKEY_KEYCODE
+from .config import (
+    DEFAULT_HOTKEY,
+    DEFAULT_LANG_HOTKEYS,
+    DEFAULT_MODE,
+    LANG_HOTKEY_ACTIONS,
+)
+from .i18n import UI_LANGS
 from .profiles import DEFAULT_PROFILES
 
 _BASE = Path.home() / "Library" / "Application Support" / "Pysar"
@@ -36,10 +42,15 @@ DEFAULTS = {
     # own group, and switching mode swaps which group composes into the prompt.
     "profiles": None,
     "active_profiles": {"uk": ["Суржик / розмова"]},
-    # Push/toggle key. Caps Lock by default; remappable (applies on next launch).
-    "hotkey_keycode": HOTKEY_KEYCODE,
+    # Hotkeys, freely user-assignable (captured live in Settings). Each binding is
+    # {"keycode", "mods"}; the toggle defaults to Caps Lock, the language switches
+    # to ⌃⌥U/R/E. Normalised on load (legacy "hotkey_keycode" int is migrated).
+    "hotkey": DEFAULT_HOTKEY,
+    "lang_hotkeys": DEFAULT_LANG_HOTKEYS,
     # Settings-window appearance: "auto" follows macOS, else forced light/dark.
     "ui_theme": "auto",
+    # App language — currently drives only the copied AI prompt's language.
+    "ui_lang": "uk",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
@@ -50,8 +61,55 @@ def recordings_dir() -> Path:
     return _RECORDINGS
 
 
+_VALID_MODS = ("control", "option", "command", "shift")
+
+
+def _norm_binding(b) -> dict | None:
+    """Coerce a stored binding into {"keycode": int, "mods": [valid mods]} or None."""
+    if isinstance(b, dict) and isinstance(b.get("keycode"), int):
+        mods = [m for m in (b.get("mods") or []) if m in _VALID_MODS]
+        return {"keycode": b["keycode"], "mods": mods}
+    return None
+
+
+def _norm_hotkey(hk, legacy_keycode) -> dict:
+    """The toggle binding, migrating the pre-combo `hotkey_keycode` int if needed."""
+    b = _norm_binding(hk)
+    if b:
+        return b
+    if isinstance(legacy_keycode, int):
+        return {"keycode": legacy_keycode, "mods": []}
+    return {"keycode": DEFAULT_HOTKEY["keycode"], "mods": list(DEFAULT_HOTKEY["mods"])}
+
+
+def _norm_lang_hotkeys(lst) -> list[dict]:
+    """One binding per language slot, in LANG_HOTKEY_ACTIONS order; any missing or
+    invalid slot falls back to its default."""
+    stored = {}
+    if isinstance(lst, list):
+        for h in lst:
+            if not isinstance(h, dict) or h.get("action") not in LANG_HOTKEY_ACTIONS:
+                continue
+            if h.get("keycode") is None:  # explicitly unassigned (user cleared it)
+                stored[h["action"]] = {"action": h["action"], "keycode": None, "mods": []}
+                continue
+            b = _norm_binding(h)
+            if b:
+                stored[h["action"]] = {"action": h["action"], **b}
+    defaults = {h["action"]: h for h in DEFAULT_LANG_HOTKEYS}
+    out = []
+    for action in LANG_HOTKEY_ACTIONS:
+        if action in stored:
+            out.append(stored[action])
+        else:
+            d = defaults[action]
+            out.append({"action": action, "keycode": d["keycode"], "mods": list(d["mods"])})
+    return out
+
+
 def load_settings() -> dict:
     merged = dict(DEFAULTS)
+    data: dict = {}
     try:
         data = json.loads(_SETTINGS.read_text())
         for k in DEFAULTS:
@@ -61,8 +119,13 @@ def load_settings() -> dict:
             merged["keep_last"] = DEFAULTS["keep_last"]
         if merged["ui_theme"] not in UI_THEMES:
             merged["ui_theme"] = DEFAULTS["ui_theme"]
+        if merged["ui_lang"] not in UI_LANGS:
+            merged["ui_lang"] = DEFAULTS["ui_lang"]
     except Exception:
         pass  # missing/invalid settings file → fall back to defaults
+    # Normalise hotkeys into fresh dicts (also migrates the legacy int keycode).
+    merged["hotkey"] = _norm_hotkey(merged.get("hotkey"), data.get("hotkey_keycode"))
+    merged["lang_hotkeys"] = _norm_lang_hotkeys(merged.get("lang_hotkeys"))
     # Seed profiles on first run (None = never persisted), and always hand back
     # fresh mutable copies so a caller can't accidentally mutate DEFAULTS.
     if merged["profiles"] is None:
