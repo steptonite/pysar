@@ -21,12 +21,19 @@ def _clean(text: str) -> str:
     return _WS.sub(" ", text).strip()
 
 
-def transcribe(wav_bytes: bytes, mode: str = "ru") -> tuple[str | None, str | None]:
+def transcribe(
+    wav_bytes: bytes, mode: str = "ru", prompt: str = ""
+) -> tuple[str | None, str | None]:
     """Returns (text, error). Exactly one of them is always None.
 
-    mode: code from config.MODES (e.g. "ru", "en", "translate", "ja", ...).
+    mode:   code from config.MODES (e.g. "ru", "en", "translate", "ja", ...).
+    prompt: optional initial prompt (glossary of names/jargon) — whisper.cpp
+            biases decoding toward these spellings. Sent per-request, so it can
+            be edited live from the menu without restarting the server.
     """
-    params = MODES.get(mode, MODES["ru"])
+    params = dict(MODES.get(mode, MODES["ru"]))
+    if prompt:
+        params["prompt"] = prompt
     try:
         resp = requests.post(
             WHISPER_URL,

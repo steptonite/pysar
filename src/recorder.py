@@ -11,12 +11,49 @@ import sounddevice as sd
 from .config import CHANNELS, CHUNK_SIZE, MIN_RECORDING_SEC, SAMPLE_RATE
 
 
+def list_input_devices() -> list[str]:
+    """Names of devices that can capture audio, for the menu's mic picker."""
+    try:
+        seen: list[str] = []
+        for dev in sd.query_devices():
+            if dev.get("max_input_channels", 0) > 0:
+                name = dev.get("name", "")
+                if name and name not in seen:
+                    seen.append(name)
+        return seen
+    except Exception as e:
+        print(f"⚠️ could not list input devices: {e}")
+        return []
+
+
+def _resolve_device(name: str | None):
+    """Map a stored device *name* to a sounddevice index. None / unknown → default.
+
+    Names are stable across reconnects; indices aren't, so we always re-resolve
+    at stream-open time and silently fall back to the system default if the
+    chosen mic is gone (unplugged headset, etc.)."""
+    if not name:
+        return None
+    try:
+        for i, dev in enumerate(sd.query_devices()):
+            if dev.get("max_input_channels", 0) > 0 and dev.get("name") == name:
+                return i
+    except Exception:
+        pass
+    return None  # not found → default device
+
+
 class AudioRecorder:
-    def __init__(self):
+    def __init__(self, device: str | None = None):
         self._frames: list[bytes] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._started_at = 0.0
+        self._device = device  # input device *name* or None for system default
+
+    def set_device(self, name: str | None) -> None:
+        """Change the input device. Takes effect on the next recording."""
+        self._device = name
 
     def start(self):
         self._frames = []
@@ -44,6 +81,7 @@ class AudioRecorder:
                 samplerate=SAMPLE_RATE,
                 blocksize=CHUNK_SIZE,
                 dtype=np.float32,
+                device=_resolve_device(self._device),
             ) as stream:
                 while not self._stop_event.is_set():
                     chunk, _ = stream.read(CHUNK_SIZE)
@@ -58,7 +96,17 @@ class AudioRecorder:
         data = np.frombuffer(b"".join(self._frames), dtype=np.float32)
         if data.size == 0:
             return None
-        data_i16 = (data * 32767).astype(np.int16)
+
+        # Peak-normalize quiet input. The built-in Air mic runs hot-and-low; a
+        # faint signal makes turbo guess. Scale the loudest sample toward full
+        # scale, but cap the gain so we don't amplify a near-silent noise floor
+        # into garbage (VAD upstream already discards true silence).
+        peak = float(np.max(np.abs(data)))
+        if peak > 1e-3:
+            gain = min(0.95 / peak, 8.0)  # ≤ +18 dB
+            data = data * gain
+
+        data_i16 = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
 
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:

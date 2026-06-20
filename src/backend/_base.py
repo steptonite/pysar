@@ -20,7 +20,11 @@ class HotkeyBackend(Protocol):
 class PasteBackend(Protocol):
     """Pastes text into the active window. The previous clipboard is restored."""
 
-    def paste_text(self, text: str) -> None: ...
+    def capture_target(self):
+        """Snapshot the frontmost app to refocus before pasting (or None)."""
+        ...
+
+    def paste_text(self, text: str, target=None) -> None: ...
 
 
 class TrayBackend(Protocol):

@@ -57,7 +57,7 @@ icon:
 whisper:
 	@test -x "$(WHISPER_SERVER)" || (echo "❌ whisper-server not built. Run: make whisper-build" && exit 1)
 	@test -f "$(WHISPER_MODEL)"  || (echo "❌ model not downloaded. Run: make whisper-model"  && exit 1)
-	$(WHISPER_SERVER) --model $(WHISPER_MODEL) --host 127.0.0.1 --port $(WHISPER_PORT) --language $(WHISPER_LANG) --split-on-word --suppress-nst --vad --vad-model $(WHISPER_VAD_MODEL)
+	$(WHISPER_SERVER) --model $(WHISPER_MODEL) --host 127.0.0.1 --port $(WHISPER_PORT) --language $(WHISPER_LANG) --flash-attn --split-on-word --suppress-nst --vad --vad-model $(WHISPER_VAD_MODEL)
 
 # ── Quality ─────────────────────────────────────────────────────────────────
 lint:

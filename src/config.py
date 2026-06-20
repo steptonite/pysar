@@ -106,6 +106,15 @@ MENU_MODES = [
     "ru",
 ]
 
+# Display letters for the Ctrl+Option language-switch shortcuts (mirrors
+# LANG_HOTKEYS: U→uk, R→ru, E→translate). The real binding is the global event
+# tap in HotkeyListener; these just surface the combo in the menu and Settings.
+MODE_SHORTCUTS = {
+    "uk": "U",
+    "ru": "R",
+    "translate": "E",
+}
+
 # Idle menu-bar icon per mode — shows the active language at a glance so a
 # hotkey switch gives instant visual confirmation. Fallback to the mic glyph.
 MODE_ICONS = {

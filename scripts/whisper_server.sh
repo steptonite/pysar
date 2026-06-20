@@ -21,11 +21,15 @@ if [ -f "$WHISPER_VAD_MODEL" ]; then
     VAD_ARGS=(--vad --vad-model "$WHISPER_VAD_MODEL")
 fi
 
+# Flash attention: faster decode and lower memory on Apple-Silicon Metal — the
+# single biggest free speed win, and the memory drop matters most on 8 GB.
+# It's a context-init flag (set once at model load), not a per-request param.
 exec "$WHISPER_SERVER" \
     --model "$WHISPER_MODEL" \
     --host 127.0.0.1 \
     --port "$WHISPER_PORT" \
     --language "$WHISPER_LANG" \
+    --flash-attn \
     --split-on-word \
     --suppress-nst \
     "${VAD_ARGS[@]}"

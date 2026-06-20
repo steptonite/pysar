@@ -17,8 +17,16 @@ from .config import (
     MENU_MODES,
     MODE_ICONS,
     MODE_LABELS,
+    MODES,
 )
-from .recorder import AudioRecorder
+from .profiles import (
+    compose_prompt,
+    merge_profiles,
+    parse_imported,
+    remove_profile,
+    upsert_profile,
+)
+from .recorder import AudioRecorder, list_input_devices
 from .recordings import (
     KEEP_LAST_OPTIONS,
     load_settings,
@@ -31,14 +39,17 @@ from .transcriber import is_alive, transcribe
 
 class VoiceTyper:
     def __init__(self):
-        self._mode = DEFAULT_MODE
-        self._recorder = AudioRecorder()
+        # Persisted settings (off by default — audio stays in memory).
+        self._settings = load_settings()
+
+        # Restore the last-used language; fall back if the stored code is unknown.
+        saved_mode = self._settings.get("mode", DEFAULT_MODE)
+        self._mode = saved_mode if saved_mode in MODES else DEFAULT_MODE
+
+        self._recorder = AudioRecorder(device=self._settings.get("mic"))
         self._paster = Paster()
         self._recording = False
         self._busy = False  # blocks re-entry while a transcription is in flight
-
-        # Persisted settings (off by default — audio stays in memory).
-        self._settings = load_settings()
 
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
@@ -50,10 +61,24 @@ class VoiceTyper:
             on_toggle_save=self._on_toggle_save,
             on_set_keep_last=self._on_set_keep_last,
             recordings_dir=str(recordings_dir()),
+            profiles=self._settings["profiles"],
+            active_profiles=self._settings["active_profiles"],
+            on_toggle_profile=self._on_toggle_profile,
+            on_import_profiles=self._on_import_profiles,
+            on_save_profile=self._on_save_profile,
+            on_delete_profile=self._on_delete_profile,
+            mics=list_input_devices(),
+            current_mic=self._settings.get("mic"),
+            on_select_mic=self._on_select_mic,
+            launch_at_login=self._settings.get("launch_at_login", False),
+            on_toggle_login=self._on_toggle_login,
+            ui_theme=self._settings.get("ui_theme", "auto"),
+            on_set_theme=self._on_set_theme,
         )
 
-        # Hotkey listener is blocking — runs in its own thread.
-        listener = HotkeyListener()
+        # Hotkey listener is blocking — runs in its own thread. The toggle key is
+        # remappable; a change applies on next launch (the event tap is built once).
+        listener = HotkeyListener(self._settings.get("hotkey_keycode"))
         threading.Thread(
             target=listener.start,
             args=(self._on_toggle, self._on_mode_select),
@@ -80,6 +105,9 @@ class VoiceTyper:
 
         if not self._recording:
             self._recording = True
+            # Remember the focused app now, so the result pastes back here even if
+            # the user clicks away during a slow transcription.
+            self._paste_target = self._paster.capture_target()
             self._tray.set_title("🔴")
             self._tray.set_status("● Recording…")
             self._recorder.start()
@@ -107,8 +135,13 @@ class VoiceTyper:
                 except Exception as e:
                     print(f"⚠️ save_recording failed: {e}")
 
+            # Compose the whisper prompt from this language's active profile group.
+            lang = MODES.get(self._mode, MODES[DEFAULT_MODE])["language"]
+            active = self._settings["active_profiles"].get(lang, [])
+            prompt = compose_prompt(self._settings["profiles"], active, lang)
+
             t0 = time.time()
-            text, err = transcribe(wav, mode=self._mode)
+            text, err = transcribe(wav, mode=self._mode, prompt=prompt)
             dur = time.time() - t0
 
             if err:
@@ -120,7 +153,7 @@ class VoiceTyper:
                 self._tray.set_title(self._idle_title())
                 return
 
-            self._paster.paste_text(text)
+            self._paster.paste_text(text, getattr(self, "_paste_target", None))
             preview = text[:40] + ("…" if len(text) > 40 else "")
             self._tray.set_status(f"✓ ({dur:.1f}s) {preview}")
             self._tray.set_title(self._idle_title())
@@ -130,6 +163,9 @@ class VoiceTyper:
     # ── Mode selection ───────────────────────────────────────────────────────
     def _on_mode_select(self, code: str) -> None:
         self._mode = code
+        # Persist so the chosen language survives a restart.
+        self._settings["mode"] = code
+        save_settings(self._settings)
         self._tray.set_current_mode(code)  # update the menu checkmark
         self._tray.set_status(f"Mode: {MODE_LABELS[code]}")
         # Reflect the language in the menu-bar icon for instant confirmation,
@@ -147,6 +183,75 @@ class VoiceTyper:
         self._settings["keep_last"] = n
         save_settings(self._settings)
         self._tray.set_status(f"Keeping last {n} recordings")
+
+    # ── Speech profiles ───────────────────────────────────────────────────────
+    def _on_toggle_profile(self, name: str, active: bool) -> None:
+        # A profile belongs to its own language group, independent of the current
+        # mode — toggling "English" affects the en group, "Розробка" the uk group.
+        lang = next(
+            (p.get("language", "uk") for p in self._settings["profiles"] if p.get("name") == name),
+            "uk",
+        )
+        group = self._settings["active_profiles"].setdefault(lang, [])
+        if active and name not in group:
+            group.append(name)
+        elif not active and name in group:
+            group.remove(name)
+        save_settings(self._settings)
+        self._tray.set_status(f"👤 {name}: {'on' if active else 'off'}")
+
+    def _on_save_profile(
+        self, name: str, language: str, prompt: str, original_name: str | None
+    ) -> tuple[list[dict] | None, str | None]:
+        """Add or edit a profile from the Settings-window editor. Returns
+        (updated_profiles | None, error). Keeps the active group in sync when a
+        profile is renamed, so a toggled-on group doesn't lose its member."""
+        updated, err = upsert_profile(
+            self._settings["profiles"], name, language, prompt, original_name
+        )
+        if err:
+            return None, err
+        if original_name and original_name != name:
+            for group in self._settings["active_profiles"].values():
+                if original_name in group:
+                    group[group.index(original_name)] = name
+        self._settings["profiles"] = updated
+        save_settings(self._settings)
+        return updated, None
+
+    def _on_delete_profile(self, name: str) -> list[dict]:
+        """Remove a profile and drop it from every active group."""
+        self._settings["profiles"] = remove_profile(self._settings["profiles"], name)
+        for group in self._settings["active_profiles"].values():
+            if name in group:
+                group.remove(name)
+        save_settings(self._settings)
+        return self._settings["profiles"]
+
+    def _on_import_profiles(self, text: str) -> tuple[list[dict] | None, int, str | None]:
+        """Parse pasted JSON, merge into the library, persist. Returns
+        (updated_profiles | None, added_count, error) for the tray to react."""
+        incoming, err = parse_imported(text)
+        if err:
+            return None, 0, err
+        self._settings["profiles"] = merge_profiles(self._settings["profiles"], incoming)
+        save_settings(self._settings)
+        return self._settings["profiles"], len(incoming), None
+
+    def _on_select_mic(self, name: str | None) -> None:
+        self._settings["mic"] = name
+        save_settings(self._settings)
+        self._recorder.set_device(name)
+        self._tray.set_status(f"🎤 {name}" if name else "🎤 Default mic")
+
+    def _on_toggle_login(self, enabled: bool) -> None:
+        self._settings["launch_at_login"] = enabled
+        save_settings(self._settings)
+        self._tray.set_status("🚀 Launch at login: on" if enabled else "Launch at login: off")
+
+    def _on_set_theme(self, theme: str) -> None:
+        self._settings["ui_theme"] = theme
+        save_settings(self._settings)
 
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:
