@@ -224,6 +224,42 @@ DEFAULT_LANG_HOTKEYS = [
     for action in LANG_HOTKEY_ACTIONS
 ]
 
+# ── Profile-set hotkeys ───────────────────────────────────────────────────────
+# A *profile set* is a named bundle of speech profiles, activated all at once by
+# ⌃⌥<digit>, where the digit is the set's 1-based position in the list (max 9).
+# The combo is fixed, not user-captured — the index IS the shortcut, so there's
+# no per-set capture UI. Activating set N replaces the whole active selection.
+SET_MODS = ("control", "option")
+SET_DIGIT_KEYCODES = (18, 19, 20, 21, 23, 22, 26, 28, 25)  # virtual codes for 1..9
+MAX_PROFILE_SETS = 9
+
+
+def set_hotkey_bindings(profile_sets) -> list[dict]:
+    """Each set's binding, by index, for the hotkey listener. A set with an
+    explicit keycode overrides; otherwise it falls back to the default ⌃⌥<digit>.
+    Returns {"action": "set:<i>", "keycode", "mods"} dicts (i is 0-based)."""
+    out = []
+    for i, s in enumerate(profile_sets[:MAX_PROFILE_SETS]):
+        kc = s.get("keycode") if isinstance(s, dict) else None
+        if kc is not None:
+            out.append({"action": f"set:{i}", "keycode": kc, "mods": list(s.get("mods") or [])})
+        else:
+            out.append(
+                {"action": f"set:{i}", "keycode": SET_DIGIT_KEYCODES[i], "mods": list(SET_MODS)}
+            )
+    return out
+
+
+def set_hotkey_label(index: int, profile_set: dict | None = None) -> str:
+    """Display string for set N's shortcut. An explicit per-set binding wins;
+    otherwise the default ⌃⌥<digit> for this index (index is 0-based)."""
+    if profile_set and profile_set.get("keycode") is not None:
+        return binding_label(profile_set["keycode"], profile_set.get("mods") or [])
+    if 0 <= index < MAX_PROFILE_SETS:
+        return binding_label(SET_DIGIT_KEYCODES[index], list(SET_MODS))
+    return ""
+
+
 # Idle menu-bar icon per mode — shows the active language at a glance so a
 # hotkey switch gives instant visual confirmation. Fallback to the mic glyph.
 MODE_ICONS = {

@@ -88,3 +88,27 @@ def test_defaults_are_self_consistent():
 def test_only_a_few_languages_have_a_default_binding():
     assigned = [h["action"] for h in DEFAULT_LANG_HOTKEYS if h["keycode"] is not None]
     assert set(assigned) == {"uk", "ru", "translate"}
+
+
+# ── profile-set hotkeys (⌃⌥<digit>) ──────────────────────────────────────────
+def test_set_hotkey_bindings_indexed_digits():
+    from pysar.config import set_hotkey_bindings
+
+    b = set_hotkey_bindings([{"name": "Dev"}, {"name": "VFX"}])
+    assert [x["action"] for x in b] == ["set:0", "set:1"]
+    assert b[0]["keycode"] == 18 and b[0]["mods"] == ["control", "option"]  # ⌃⌥1
+    assert b[1]["keycode"] == 19  # ⌃⌥2
+
+
+def test_set_hotkey_bindings_capped_at_nine():
+    from pysar.config import MAX_PROFILE_SETS, set_hotkey_bindings
+
+    assert len(set_hotkey_bindings([{"name": str(i)} for i in range(20)])) == MAX_PROFILE_SETS
+
+
+def test_set_hotkey_label():
+    from pysar.config import set_hotkey_label
+
+    assert set_hotkey_label(0) == "⌃⌥1"
+    assert set_hotkey_label(8) == "⌃⌥9"
+    assert set_hotkey_label(99) == ""

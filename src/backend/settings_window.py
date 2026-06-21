@@ -205,6 +205,26 @@ _TEMPLATE = r"""<!doctype html>
   .pform .frow{display:flex; gap:9px; align-items:center; justify-content:flex-end}
   .pform .frow .est{margin-right:auto; font-size:11px; color:var(--muted)}
 
+  /* Profile sets */
+  .srow{display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line)}
+  .srow:first-child{border-top:0}
+  .srow kbd{min-width:46px; text-align:center; font-size:12px; flex:0 0 auto}
+  .srow .sbody{flex:1; min-width:0}
+  .srow .sname{font-weight:500}
+  .srow .smeta{color:var(--muted); font-size:12px; margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .srow .spill{flex:0 0 auto; font-size:11px; font-weight:600; color:var(--accent);
+    border:1px solid var(--accent); border-radius:999px; padding:2px 10px}
+  kbd.on{background:var(--accent); color:var(--accent-ink); border-color:transparent}
+  .kslist kbd.on{border-color:transparent}
+  .setmembers{display:flex; flex-direction:column; gap:7px; max-height:210px;
+    overflow:auto; margin-bottom:11px; padding:2px}
+  .setmembers label{display:flex; align-items:center; gap:9px; margin:0;
+    font-size:13px; font-weight:400; color:var(--ink); text-transform:none;
+    letter-spacing:0; cursor:pointer}
+  .setmembers .mlang{margin-left:auto; font-size:11px; color:var(--muted)}
+  .setmembers .none{color:var(--muted); font-size:12px}
+
   .ai{font-size:12px; color:var(--muted); margin:2px 2px 10px; line-height:1.5}
   .notice{font-size:12px; color:var(--accent); margin:0 2px 10px; min-height:0}
 </style>
@@ -250,18 +270,10 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" id="prof-sub">Prompt-priming for better recognition</div></div>
         <span class="chev">›</span>
       </div>
-      <div class="row">
-        <div class="body"><div class="label" data-i18n="hotkey.label">Dictation hotkey</div>
-          <div class="help" data-i18n="hotkey.help">Tap to start, tap again to stop</div></div>
-        <div class="hkcap"><kbd id="hk-toggle"></kbd>
-          <button class="iconbtn ghost" id="hk-toggle-btn" data-i18n="hotkey.change">Change…</button></div>
-      </div>
-      <div class="row" style="display:block">
-        <div class="label" data-i18n="langhk.label">Language shortcuts</div>
-        <div class="help" style="white-space:normal" data-i18n="langhk.help">Switch the decode language
-          anywhere, without opening the menu. Use any key with ⌃⌥⌘⇧ held, or a key
-          that types nothing on its own (Caps Lock, a modifier, an F-key).</div>
-        <div class="kslist" id="lang-hotkeys"></div>
+      <div class="row nav" id="go-hotkeys">
+        <div class="body"><div class="label" data-i18n="hotkeys.nav">Hotkeys</div>
+          <div class="help" data-i18n="hotkeys.navHelp">Dictation, language and profile sets</div></div>
+        <span class="chev">›</span>
       </div>
     </section>
 
@@ -303,6 +315,10 @@ _TEMPLATE = r"""<!doctype html>
     <div class="notice" id="notice"></div>
     <div id="groups"></div>
 
+    <div class="sec-title" data-i18n="psec.sets">Profile sets</div>
+    <div class="ai" data-i18n="sets.help">Press ⌃⌥‹digit› to switch a whole set of profiles on at once.</div>
+    <div id="sets"></div>
+
     <div class="sec-title" data-i18n="psec.ai">Build profiles with your AI</div>
     <section>
       <div class="row">
@@ -328,6 +344,37 @@ _TEMPLATE = r"""<!doctype html>
         </div>
       </div>
     </section>
+  </div>
+
+  <!-- ── Hotkeys screen (drill-in) ────────────────────────────────────────── -->
+  <div id="screen-hotkeys" class="screen">
+    <header>
+      <span class="back" id="back-hk">
+        <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+          stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
+      <h1 style="flex:0 1 auto" data-i18n="hkscreen.title">Hotkeys</h1>
+      <span style="flex:1"></span>
+    </header>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="hotkey.label">Dictation hotkey</div>
+          <div class="help" data-i18n="hotkey.help">Tap to start, tap again to stop</div></div>
+        <div class="hkcap"><kbd id="hk-toggle"></kbd>
+          <button class="iconbtn ghost" id="hk-toggle-btn" data-i18n="hotkey.change">Change…</button></div>
+      </div>
+      <div class="row" style="display:block">
+        <div class="label" data-i18n="langhk.label">Language shortcuts</div>
+        <div class="help" style="white-space:normal" data-i18n="langhk.help">Switch the decode language
+          anywhere, without opening the menu. Use any key with ⌃⌥⌘⇧ held, or a key
+          that types nothing on its own (Caps Lock, a modifier, an F-key).</div>
+        <div class="kslist" id="lang-hotkeys"></div>
+      </div>
+    </section>
+
+    <div class="sec-title" data-i18n="psec.sethk">Profile-set shortcuts</div>
+    <div class="ai" data-i18n="setshk.help">Each set is switched on with ⌃⌥‹digit›. Manage the sets in Speech profiles.</div>
+    <div id="set-shortcuts"></div>
   </div>
 
 <script>
@@ -376,10 +423,13 @@ function show(name){
   view = name;
   $("screen-main").classList.toggle("on", name === "main");
   $("screen-profiles").classList.toggle("on", name === "profiles");
+  $("screen-hotkeys").classList.toggle("on", name === "hotkeys");
   window.scrollTo(0, 0);
 }
 $("go-profiles").addEventListener("click", () => show("profiles"));
+$("go-hotkeys").addEventListener("click", () => show("hotkeys"));
 $("back").addEventListener("click", () => show("main"));
+$("back-hk").addEventListener("click", () => show("main"));
 
 // ── Static general controls (built once) ───────────────────────────────────
 (function(){
@@ -597,6 +647,168 @@ function openForm(sec, anchorRow, lang, langOptions, profile){
   name.focus();
 }
 
+// ── Profile sets (re-rendered on every state push) ─────────────────────────
+// A set is a named bundle of profiles activated all-at-once by ⌃⌥<digit> (the
+// digit = its 1-based position). The badge label comes from Python (set.label).
+function renderSets(){
+  const root = $("sets"); if (!root) return;
+  root.innerHTML = "";
+  const sets = STATE.profile_sets || [];
+  const max = STATE.max_sets || 9;
+  const sec = el("section"); sec.style.marginBottom = "4px";
+
+  if (sets.length === 0){
+    const none = el("div", "srow");
+    none.appendChild(el("span", "smeta", T("sets.none", "No sets yet.")));
+    sec.appendChild(none);
+  }
+
+  sets.forEach((s, i) => {
+    const row = el("div", "srow" + (s.active ? " on" : ""));
+    row.appendChild(el("kbd", s.active ? "on" : "", s.label || ""));
+    const body = el("div", "sbody");
+    body.appendChild(el("div", "sname", s.name));
+    body.appendChild(el("div", "smeta", (s.members || []).join(", ") || T("set.empty", "(empty set)")));
+    row.appendChild(body);
+
+    // Explicit live state: an "Active" pill when this set IS the current
+    // selection (Python computes it), else an Activate button that switches to it.
+    if (s.active) {
+      row.appendChild(el("span", "spill", T("set.active", "Active")));
+    } else {
+      const act = el("button", "iconbtn ghost", T("set.activate", "Activate"));
+      act.addEventListener("click", () => send("activate_set", i));  // state push marks it active
+      row.appendChild(act);
+    }
+    const edit = el("button", "iconbtn ghost", T("prow.edit", "Edit"));
+    edit.addEventListener("click", () => openSetForm(sec, row, s, i));
+    const del = el("button", "iconbtn danger", T("prow.delete", "Delete"));
+    let armed = false, armTimer = null;
+    del.addEventListener("click", () => {
+      if (!armed) {
+        armed = true; del.textContent = T("prow.confirm", "Confirm?");
+        armTimer = setTimeout(() => { armed = false; del.textContent = T("prow.delete", "Delete"); }, 2500);
+        return;
+      }
+      clearTimeout(armTimer);
+      send("delete_set", i);  // Python persists + re-binds, then pushes fresh state
+    });
+    row.appendChild(edit); row.appendChild(del);
+    sec.appendChild(row);
+  });
+
+  root.appendChild(sec);
+  if (sets.length < max) {
+    const add = el("button", "addbtn ghost", T("set.add", "+ Add set"));
+    add.addEventListener("click", () => openSetForm(sec, null, null, null));
+    root.appendChild(add);
+  }
+}
+
+// Inline add/edit form for a set: name + a checkbox list of every profile.
+function openSetForm(sec, anchorRow, set, index){
+  if (sec.parentElement.querySelector(".pform")) return;  // one open form at a time
+  const f = el("div", "pform");
+
+  f.appendChild(el("label", null, T("form.name", "Name")));
+  const name = el("input"); name.type = "text"; name.value = set ? set.name : "";
+  name.placeholder = T("set.namePh", "e.g. Coding"); f.appendChild(name);
+
+  f.appendChild(el("label", null, T("set.members", "Profiles in set")));
+  const list = el("div", "setmembers");
+  const profiles = STATE.profiles || [];
+  const chosen = new Set(set ? (set.members || []) : []);
+  const boxes = [];
+  if (profiles.length === 0) list.appendChild(el("div", "none", "—"));
+  profiles.forEach(p => {
+    const lab = el("label");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = chosen.has(p.name); cb.value = p.name;
+    cb.addEventListener("change", updateMeters);
+    lab.appendChild(cb);
+    lab.appendChild(el("span", null, p.name));
+    lab.appendChild(el("span", "mlang", langLabel(p.language || "uk")));
+    list.appendChild(lab); boxes.push(cb);
+  });
+  f.appendChild(list);
+
+  // Token budget per language — whisper composes one prompt per decode language,
+  // so the budget is per-language. Shows the user when a selection overflows
+  // (the meter turns red), which they couldn't otherwise see while ticking boxes.
+  const BUDGET = STATE.token_budget || 224;
+  const meterbox = el("div"); meterbox.style.margin = "0 0 11px";
+  f.appendChild(meterbox);
+  function updateMeters(){
+    meterbox.innerHTML = "";
+    const byLang = {};
+    boxes.forEach(b => {
+      if (!b.checked) return;
+      const p = profiles.find(x => x.name === b.value); if (!p) return;
+      const l = p.language || "uk";
+      byLang[l] = (byLang[l] || 0) + est(p.prompt || "");
+    });
+    Object.keys(byLang).sort().forEach(l => {
+      const used = byLang[l], over = used > BUDGET;
+      const head = el("div", "plang");
+      head.appendChild(el("span", "name", langLabel(l)));
+      const meter = el("div", "meter" + (over ? " over" : "")); const bar = el("i");
+      bar.style.width = Math.min(100, used / BUDGET * 100) + "%"; meter.appendChild(bar);
+      head.appendChild(meter);
+      head.appendChild(el("span", "count", used + "/" + BUDGET));
+      meterbox.appendChild(head);
+    });
+  }
+  updateMeters();
+
+  const frow = el("div", "frow");
+  const cancel = el("button", "ghost", T("form.cancel", "Cancel"));
+  cancel.addEventListener("click", () => f.remove());
+  const save = el("button", "primary", T("form.save", "Save"));
+  save.addEventListener("click", () => {
+    const nm = name.value.trim(); if (!nm) { name.focus(); return; }
+    const members = boxes.filter(b => b.checked).map(b => b.value);
+    send("save_set", {index: (index === null || index === undefined) ? null : index, name: nm, members});
+  });
+  frow.appendChild(cancel); frow.appendChild(save);
+  f.appendChild(frow);
+
+  if (anchorRow) anchorRow.after(f); else sec.appendChild(f);
+  name.focus();
+}
+
+// Set shortcuts on the Hotkeys screen — discoverable alongside the others and
+// reassignable here. The set's membership is edited on the Profiles screen.
+function renderSetShortcuts(){
+  const root = $("set-shortcuts"); if (!root) return;
+  root.innerHTML = "";
+  const sets = STATE.profile_sets || [];
+  if (sets.length === 0){
+    root.appendChild(el("div", "ai", T("sets.none", "No sets yet.")));
+    return;
+  }
+  const wrap = el("div", "kslist");
+  sets.forEach((s, i) => {
+    const row = el("div", "ksrow");
+    row.appendChild(el("kbd", s.active ? "on" : "", s.label || ""));
+    row.appendChild(el("span", "kslabel", s.name));
+    // Reassignable: a set always has a working shortcut (default ⌃⌥<digit>),
+    // and can be rebound to any key. "assigned" means a custom override is set.
+    const btn = el("button", "iconbtn ghost", T("langhk.change", "Change…"));
+    btn.addEventListener("click", () => {
+      btn.textContent = T("hotkey.press", "Press keys…");
+      send("capture_hotkey", "set:" + i);
+    });
+    row.appendChild(btn);
+    if (s.assigned) {
+      const clr = el("button", "iconbtn ghost clearbtn", "✕");
+      clr.title = T("sethk.reset", "Reset to default");
+      clr.addEventListener("click", () => send("clear_hotkey", "set:" + i));
+      row.appendChild(clr);
+    }
+    wrap.appendChild(row);
+  });
+  root.appendChild(wrap);
+}
+
 // ── Hotkeys (re-rendered on every state push) ──────────────────────────────
 function renderHotkeys(){
   const tog = $("hk-toggle");
@@ -632,6 +844,8 @@ window.pysarApply = function(s){
   applyAccent();
   applyI18n();
   renderProfiles();
+  renderSets();
+  renderSetShortcuts();
   renderHotkeys();
   if (s.notice) flash(s.notice);
 };
@@ -639,6 +853,7 @@ window.pysarApply = function(s){
 applyAccent();
 applyI18n();
 renderProfiles();
+renderSets();
 renderHotkeys();
 </script>
 </body>

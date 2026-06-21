@@ -4,11 +4,13 @@ from pysar.profiles import (
     DEFAULT_PROFILES,
     PROMPT_TOKEN_BUDGET,
     active_for_language,
+    active_set_index,
     budget_usage,
     compose_prompt,
     estimate_tokens,
     merge_profiles,
     parse_imported,
+    regroup_active,
     remove_profile,
     upsert_profile,
     validate_profile,
@@ -199,3 +201,67 @@ def test_remove_profile():
     ]
     assert [p["name"] for p in remove_profile(profs, "Dev")] == ["Music"]
     assert remove_profile(profs, "Nope") == profs  # absent → unchanged
+
+
+# ── regroup_active (profile sets) ────────────────────────────────────────────
+def test_regroup_active_buckets_by_language():
+    got = regroup_active(_P, ["Dev", "English"])
+    assert got == {"uk": ["Dev"], "en": ["English"]}
+
+
+def test_regroup_active_drops_unknown_members():
+    assert regroup_active(_P, ["Dev", "Ghost"]) == {"uk": ["Dev"]}
+
+
+def test_regroup_active_empty():
+    assert regroup_active(_P, []) == {}
+
+
+# ── profile-set persistence normalization (recordings._norm_profile_sets) ────
+def test_norm_profile_sets_cleans_and_caps():
+    from pysar.config import MAX_PROFILE_SETS
+    from pysar.recordings import _norm_profile_sets
+
+    raw = [
+        {"name": "  Dev  ", "members": ["A", 1, "B"]},  # trims name, drops non-str member
+        {"name": "", "members": []},  # nameless → dropped
+        "garbage",  # non-dict → dropped
+        {"members": ["X"]},  # no name → dropped
+    ]
+    out = _norm_profile_sets(raw)
+    assert out == [{"name": "Dev", "members": ["A", "B"], "keycode": None, "mods": []}]
+    assert _norm_profile_sets(None) == []
+    assert len(_norm_profile_sets([{"name": str(i)} for i in range(99)])) == MAX_PROFILE_SETS
+
+
+def test_norm_profile_sets_keeps_override_binding():
+    from pysar.recordings import _norm_profile_sets
+
+    out = _norm_profile_sets([{"name": "Dev", "members": [], "keycode": 18, "mods": ["control"]}])
+    assert out == [{"name": "Dev", "members": [], "keycode": 18, "mods": ["control"]}]
+
+
+def test_set_hotkey_bindings_honor_override():
+    from pysar.config import set_hotkey_bindings
+
+    b = set_hotkey_bindings([{"name": "X", "keycode": 99, "mods": ["command"]}, {"name": "Y"}])
+    assert b[0]["keycode"] == 99 and b[0]["mods"] == ["command"]  # custom
+    assert b[1]["keycode"] == 19  # default ⌃⌥2
+
+
+# ── active_set_index (which set is currently live) ───────────────────────────
+def test_active_set_index_matches_exact_selection():
+    sets = [{"name": "S1", "members": ["Dev"]}, {"name": "S2", "members": ["Dev", "English"]}]
+    assert active_set_index(sets, _P, {"uk": ["Dev"]}) == 0
+    assert active_set_index(sets, _P, {"uk": ["Dev"], "en": ["English"]}) == 1
+
+
+def test_active_set_index_none_when_handedited():
+    sets = [{"name": "S1", "members": ["Dev"]}]
+    assert active_set_index(sets, _P, {"uk": ["Dev", "Music"]}) is None
+    assert active_set_index(sets, _P, {}) is None
+
+
+def test_active_set_index_ignores_empty_groups():
+    sets = [{"name": "S1", "members": ["Dev"]}]
+    assert active_set_index(sets, _P, {"uk": ["Dev"], "en": []}) == 0

@@ -17,6 +17,7 @@ from .config import (
     DEFAULT_LANG_HOTKEYS,
     DEFAULT_MODE,
     LANG_HOTKEY_ACTIONS,
+    MAX_PROFILE_SETS,
 )
 from .i18n import UI_LANGS
 from .profiles import DEFAULT_PROFILES
@@ -51,6 +52,9 @@ DEFAULTS = {
     "ui_theme": "auto",
     # App language — currently drives only the copied AI prompt's language.
     "ui_lang": "uk",
+    # Profile sets: named bundles of profile names, each activated all-at-once by
+    # ⌃⌥<digit> (digit = 1-based index). Empty until the user creates one.
+    "profile_sets": [],
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
@@ -107,6 +111,35 @@ def _norm_lang_hotkeys(lst) -> list[dict]:
     return out
 
 
+def _norm_profile_sets(lst) -> list[dict]:
+    """Structural clean of stored profile sets: keep up to MAX_PROFILE_SETS, each
+    a {"name": str, "members": [str], "keycode": int|None, "mods": [str]}. A
+    keycode of None means "use the default ⌃⌥<digit> for this index"; an explicit
+    binding overrides it. Bad entries are dropped; member existence isn't checked
+    here (profiles may load later), the activator skips strays."""
+    out: list[dict] = []
+    if isinstance(lst, list):
+        for s in lst:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name", "")).strip()
+            if not name:
+                continue
+            members = [str(m) for m in (s.get("members") or []) if isinstance(m, str)]
+            b = _norm_binding(s)  # an explicit override binding, or None → default
+            out.append(
+                {
+                    "name": name,
+                    "members": members,
+                    "keycode": b["keycode"] if b else None,
+                    "mods": b["mods"] if b else [],
+                }
+            )
+            if len(out) >= MAX_PROFILE_SETS:
+                break
+    return out
+
+
 def load_settings() -> dict:
     merged = dict(DEFAULTS)
     data: dict = {}
@@ -138,6 +171,7 @@ def load_settings() -> dict:
     if isinstance(act, list):
         act = {"uk": act}
     merged["active_profiles"] = {lng: list(names) for lng, names in act.items()}
+    merged["profile_sets"] = _norm_profile_sets(merged.get("profile_sets"))
     return merged
 
 

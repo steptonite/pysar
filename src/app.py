@@ -14,18 +14,21 @@ from .backend import HotkeyListener, Paster, Tray
 from .config import (
     DEFAULT_MODE,
     IDLE_ICON_FALLBACK,
+    MAX_PROFILE_SETS,
     MENU_MODES,
     MODE_ICONS,
     MODE_LABELS,
     MODES,
     binding_label,
     is_bindable,
+    set_hotkey_bindings,
 )
 from .i18n import t
 from .profiles import (
     compose_prompt,
     merge_profiles,
     parse_imported,
+    regroup_active,
     remove_profile,
     upsert_profile,
 )
@@ -85,14 +88,23 @@ class VoiceTyper:
             lang_hotkeys=self._settings["lang_hotkeys"],
             on_capture_hotkey=self._on_capture_hotkey,
             on_clear_hotkey=self._on_clear_hotkey,
+            profile_sets=self._settings["profile_sets"],
+            on_save_set=self._on_save_set,
+            on_delete_set=self._on_delete_set,
+            on_activate_set=self._on_activate_set,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
         # settings and can be re-captured live (set_bindings), no relaunch needed.
-        self._listener = HotkeyListener(self._settings["hotkey"], self._settings["lang_hotkeys"])
+        # Profile sets add ⌃⌥<digit> combos alongside the toggle and language keys.
+        self._listener = HotkeyListener(
+            self._settings["hotkey"],
+            self._settings["lang_hotkeys"],
+            set_hotkey_bindings(self._settings["profile_sets"]),
+        )
         threading.Thread(
             target=self._listener.start,
-            args=(self._on_toggle, self._on_mode_select),
+            args=(self._on_toggle, self._on_mode_select, self._on_activate_set),
             daemon=True,
         ).start()
 
@@ -275,7 +287,8 @@ class VoiceTyper:
 
     def _on_capture_hotkey(self, slot: str) -> None:
         """Capture the next keypress and rebind `slot` to it, live (no relaunch).
-        `slot` is "__toggle__" for dictation, or a language code for a switch."""
+        `slot` is "__toggle__" (dictation), a language code (switch), or
+        "set:<index>" (a profile set's override binding)."""
 
         def apply(binding: dict) -> None:
             kc, mods = binding["keycode"], binding["mods"]
@@ -285,28 +298,92 @@ class VoiceTyper:
                 return
             if slot == "__toggle__":
                 self._settings["hotkey"] = {"keycode": kc, "mods": mods}
+            elif slot.startswith("set:"):
+                idx = int(slot[4:])
+                sets = self._settings["profile_sets"]
+                if 0 <= idx < len(sets):
+                    sets[idx]["keycode"], sets[idx]["mods"] = kc, mods
             else:
                 for h in self._settings["lang_hotkeys"]:
                     if h["action"] == slot:
                         h["keycode"], h["mods"] = kc, mods
                         break
             save_settings(self._settings)
-            self._listener.set_bindings(self._settings["hotkey"], self._settings["lang_hotkeys"])
+            self._apply_bindings()
             self._tray.update_hotkeys(self._settings["hotkey"], self._settings["lang_hotkeys"])
             self._tray.set_status(self._t("st.hotkeySet", label=binding_label(kc, mods)))
 
         self._listener.begin_capture(apply)
 
     def _on_clear_hotkey(self, action: str) -> None:
-        """Unassign a language slot's shortcut, live (no relaunch)."""
-        for h in self._settings["lang_hotkeys"]:
-            if h["action"] == action:
-                h["keycode"], h["mods"] = None, []
-                break
+        """Reset a slot's shortcut, live. A language slot goes back to unassigned;
+        a "set:<index>" slot reverts to its default ⌃⌥<digit> (keycode None)."""
+        if action.startswith("set:"):
+            idx = int(action[4:])
+            sets = self._settings["profile_sets"]
+            label = sets[idx]["name"] if 0 <= idx < len(sets) else action
+            if 0 <= idx < len(sets):
+                sets[idx]["keycode"], sets[idx]["mods"] = None, []
+        else:
+            label = MODE_LABELS.get(action, action)
+            for h in self._settings["lang_hotkeys"]:
+                if h["action"] == action:
+                    h["keycode"], h["mods"] = None, []
+                    break
         save_settings(self._settings)
-        self._listener.set_bindings(self._settings["hotkey"], self._settings["lang_hotkeys"])
+        self._apply_bindings()
         self._tray.update_hotkeys(self._settings["hotkey"], self._settings["lang_hotkeys"])
-        self._tray.set_status(self._t("st.cleared", label=MODE_LABELS.get(action, action)))
+        self._tray.set_status(self._t("st.cleared", label=label))
+
+    # ── Profile sets ──────────────────────────────────────────────────────────
+    def _apply_bindings(self) -> None:
+        """Rebuild the listener's binding table from the live settings — toggle,
+        language switches and the ⌃⌥<digit> profile-set combos together."""
+        self._listener.set_bindings(
+            self._settings["hotkey"],
+            self._settings["lang_hotkeys"],
+            set_hotkey_bindings(self._settings["profile_sets"]),
+        )
+
+    def _on_save_set(self, index, name: str, members: list[str]):
+        """Create (index None) or replace (index given) a profile set. Returns
+        (sets, error); the set hotkeys are re-bound so ⌃⌥<digit> works at once."""
+        name = (name or "").strip()
+        if not name:
+            return self._settings["profile_sets"], "A set needs a name."
+        members = [m for m in (members or []) if isinstance(m, str)]
+        sets = self._settings["profile_sets"]
+        if index is None:
+            if len(sets) >= MAX_PROFILE_SETS:
+                return sets, f"At most {MAX_PROFILE_SETS} sets."
+            sets.append({"name": name, "members": members})
+        elif 0 <= index < len(sets):
+            sets[index] = {"name": name, "members": members}
+        else:
+            return sets, "Set not found."
+        save_settings(self._settings)
+        self._apply_bindings()
+        return sets, None
+
+    def _on_delete_set(self, index: int) -> list[dict]:
+        sets = self._settings["profile_sets"]
+        if 0 <= index < len(sets):
+            sets.pop(index)
+            save_settings(self._settings)
+            self._apply_bindings()
+        return sets
+
+    def _on_activate_set(self, index: int) -> None:
+        """Make a set's members the entire active selection (⌃⌥<digit> or the
+        Settings button). Replaces every language group at once."""
+        sets = self._settings["profile_sets"]
+        if not (0 <= index < len(sets)):
+            return
+        s = sets[index]
+        self._settings["active_profiles"] = regroup_active(self._settings["profiles"], s["members"])
+        save_settings(self._settings)
+        self._tray.set_active_profiles(self._settings["active_profiles"])
+        self._tray.set_status(self._t("st.setOn", name=s["name"]))
 
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:

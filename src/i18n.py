@@ -31,6 +31,9 @@ _UK = {
     "folder.open": "Відкрити",
     "profiles.nav": "Профілі мовлення",
     "profiles.navHelp": "Праймінг промпту для кращого розпізнавання",
+    "hotkeys.nav": "Хоткеї",
+    "hotkeys.navHelp": "Диктовка, мова та набори профілів",
+    "hkscreen.title": "Хоткеї",
     "hotkey.label": "Хоткей диктовки",
     "hotkey.help": "Тап — старт, ще тап — стоп",
     "hotkey.change": "Змінити…",
@@ -88,6 +91,19 @@ _UK = {
     "prow.confirm": "Підтвердити?",
     "prow.add": "+ Додати профіль",
     "prof.count": "Профілі: {n}",
+    # ── Settings · profile sets ─────────────────────────────────────────────
+    "psec.sets": "Набори профілів",
+    "sets.help": "Натисни ⌃⌥‹цифру›, щоб увімкнути цілий набір профілів за раз.",
+    "sets.none": "Ще немає наборів — створи набір, щоб вмикати профілі однією клавішею.",
+    "set.activate": "Увімкнути",
+    "set.active": "Активний",
+    "set.add": "+ Додати набір",
+    "set.namePh": "напр. Кодинг",
+    "set.members": "Профілі в наборі",
+    "set.empty": "(порожній набір)",
+    "psec.sethk": "Хоткеї наборів",
+    "setshk.help": "Кожен набір вмикається через ⌃⌥‹цифру›. Самі набори — у Профілях мовлення.",
+    "sethk.reset": "Скинути до типового",
     # ── Settings · notices (pushed from Python) ─────────────────────────────
     "notice.saved": "Профіль збережено.",
     "notice.deleted": "Видалено «{name}».",
@@ -130,6 +146,7 @@ _UK = {
     "st.needMod": "⚠️ Додай ⌃⌥⌘⇧ — ця клавіша друкуватиме сама",
     "st.hotkeySet": "Хоткей: {label}",
     "st.cleared": "Прибрано хоткей для {label}",
+    "st.setOn": "🎛 Набір: {name}",
 }
 
 _EN = {
@@ -150,6 +167,9 @@ _EN = {
     "folder.open": "Open",
     "profiles.nav": "Speech profiles",
     "profiles.navHelp": "Prompt-priming for better recognition",
+    "hotkeys.nav": "Hotkeys",
+    "hotkeys.navHelp": "Dictation, language and profile sets",
+    "hkscreen.title": "Hotkeys",
     "hotkey.label": "Dictation hotkey",
     "hotkey.help": "Tap to start, tap again to stop",
     "hotkey.change": "Change…",
@@ -207,6 +227,19 @@ _EN = {
     "prow.confirm": "Confirm?",
     "prow.add": "+ Add profile",
     "prof.count": "Profiles: {n}",
+    # ── Settings · profile sets ─────────────────────────────────────────────
+    "psec.sets": "Profile sets",
+    "sets.help": "Press ⌃⌥‹digit› to switch a whole set of profiles on at once.",
+    "sets.none": "No sets yet — create one to switch profiles on with a single key.",
+    "set.activate": "Activate",
+    "set.active": "Active",
+    "set.add": "+ Add set",
+    "set.namePh": "e.g. Coding",
+    "set.members": "Profiles in set",
+    "set.empty": "(empty set)",
+    "psec.sethk": "Profile-set shortcuts",
+    "setshk.help": "Each set is switched on with ⌃⌥‹digit›. Manage the sets in Speech profiles.",
+    "sethk.reset": "Reset to default",
     # ── Settings · notices (pushed from Python) ─────────────────────────────
     "notice.saved": "Profile saved.",
     "notice.deleted": "Deleted “{name}”.",
@@ -249,6 +282,7 @@ _EN = {
     "st.needMod": "⚠️ Add ⌃⌥⌘⇧ — that key would type on its own",
     "st.hotkeySet": "Hotkey set: {label}",
     "st.cleared": "Cleared shortcut for {label}",
+    "st.setOn": "🎛 Set: {name}",
 }
 
 _STRINGS = {"uk": _UK, "en": _EN}

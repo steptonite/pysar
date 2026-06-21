@@ -19,14 +19,16 @@ from ..config import (
     CLIPBOARD_RESTORE_DELAY,
     DEFAULT_HOTKEY,
     DEFAULT_LANG_HOTKEYS,
+    MAX_PROFILE_SETS,
     MODE_LABELS,
     MODE_SHORTCUTS,
     MODES,
     MODIFIER_KEYCODES,
     binding_label,
+    set_hotkey_label,
 )
 from ..i18n import strings, t
-from ..profiles import PROMPT_TOKEN_BUDGET, budget_usage, meta_prompt
+from ..profiles import PROMPT_TOKEN_BUDGET, active_set_index, budget_usage, meta_prompt
 
 
 def set_login_item(enable: bool) -> bool:
@@ -98,24 +100,42 @@ class HotkeyListener:
     keypress can be captured for the Settings UI (begin_capture).
     """
 
-    def __init__(self, hotkey: dict | None = None, lang_hotkeys: list[dict] | None = None):
+    def __init__(
+        self,
+        hotkey: dict | None = None,
+        lang_hotkeys: list[dict] | None = None,
+        set_hotkeys: list[dict] | None = None,
+    ):
         self._on_toggle: Callable[[], None] | None = None
         self._on_mode: Callable[[str], None] | None = None
+        self._on_set: Callable[[int], None] | None = None
         self._capture: Callable[[dict], None] | None = None
         self._cap_pending: int | None = None  # a bare modifier seen down, awaiting up
         self._flag_bindings: list[dict] = []  # bare caps/modifier bindings
         self._key_bindings: list[dict] = []  # key-down bindings (combos, F-keys)
-        self.set_bindings(hotkey or dict(DEFAULT_HOTKEY), lang_hotkeys or DEFAULT_LANG_HOTKEYS)
+        self.set_bindings(
+            hotkey or dict(DEFAULT_HOTKEY), lang_hotkeys or DEFAULT_LANG_HOTKEYS, set_hotkeys
+        )
 
     # ── Binding table ─────────────────────────────────────────────────────────
-    def set_bindings(self, hotkey: dict, lang_hotkeys: list[dict]) -> None:
-        """(Re)build the binding tables from settings. Safe to call live."""
+    def set_bindings(
+        self, hotkey: dict, lang_hotkeys: list[dict], set_hotkeys: list[dict] | None = None
+    ) -> None:
+        """(Re)build the binding tables from settings. Safe to call live.
+        Profile-set bindings carry a "set:<index>" action (⌃⌥<digit> combos)."""
         masks = _mod_masks()
         flag_b, key_b = [], []
-        raw = [{"action": "__toggle__", **hotkey}] + [
-            {"action": h["action"], "keycode": h["keycode"], "mods": h.get("mods", [])}
-            for h in lang_hotkeys
-        ]
+        raw = (
+            [{"action": "__toggle__", **hotkey}]
+            + [
+                {"action": h["action"], "keycode": h["keycode"], "mods": h.get("mods", [])}
+                for h in lang_hotkeys
+            ]
+            + [
+                {"action": h["action"], "keycode": h["keycode"], "mods": h.get("mods", [])}
+                for h in (set_hotkeys or [])
+            ]
+        )
         for b in raw:
             kc, mods = b["keycode"], list(b.get("mods") or [])
             if kc is None:  # unassigned language slot — no binding
@@ -151,9 +171,11 @@ class HotkeyListener:
         self,
         on_toggle: Callable[[], None],
         on_mode: Callable[[str], None] | None = None,
+        on_set: Callable[[int], None] | None = None,
     ) -> None:
         self._on_toggle = on_toggle
         self._on_mode = on_mode
+        self._on_set = on_set
 
         event_mask = (1 << Quartz.kCGEventFlagsChanged) | (1 << Quartz.kCGEventKeyDown)
         tap = Quartz.CGEventTapCreate(
@@ -188,6 +210,9 @@ class HotkeyListener:
         if action == "__toggle__":
             if self._on_toggle:
                 self._on_toggle()
+        elif action.startswith("set:"):
+            if self._on_set:
+                self._on_set(int(action[4:]))
         elif self._on_mode:
             self._on_mode(action)
 
@@ -388,6 +413,10 @@ class Tray:
         lang_hotkeys: list[dict] | None = None,
         on_capture_hotkey: Callable[[str], None] | None = None,
         on_clear_hotkey: Callable[[str], None] | None = None,
+        profile_sets: list[dict] | None = None,
+        on_save_set: Callable[[int | None, str, list], tuple] | None = None,
+        on_delete_set: Callable[[int], list] | None = None,
+        on_activate_set: Callable[[int], None] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -425,6 +454,10 @@ class Tray:
         self._lang_hotkeys = lang_hotkeys or [dict(h) for h in DEFAULT_LANG_HOTKEYS]
         self._on_capture_hotkey = on_capture_hotkey
         self._on_clear_hotkey = on_clear_hotkey
+        self._profile_sets = profile_sets if profile_sets is not None else []
+        self._on_save_set = on_save_set
+        self._on_delete_set = on_delete_set
+        self._on_activate_set = on_activate_set
         self._settings_window = None  # built lazily on first open
 
         self._app = rumps.App("🎙", quit_button=self._t("tray.quit"))
@@ -501,6 +534,9 @@ class Tray:
                         "set_lang": self._set_lang,
                         "capture_hotkey": self._capture_hotkey,
                         "clear_hotkey": self._clear_hotkey,
+                        "save_set": self._win_save_set,
+                        "delete_set": self._win_delete_set,
+                        "activate_set": self._win_activate_set,
                     },
                 )
             self._settings_window.show()
@@ -529,7 +565,26 @@ class Tray:
             "active_profiles": {lng: sorted(v) for lng, v in self._active_by_lang.items()},
             "current_lang": self._lang(),
             "token_budget": PROMPT_TOKEN_BUDGET,
+            # Profile sets: each with its fixed ⌃⌥<digit> shortcut label by index,
+            # plus whether it's the currently-live selection (explicit "active"
+            # indicator — cleared once the user hand-edits a toggle).
+            "profile_sets": self._profile_sets_state(),
+            "max_sets": MAX_PROFILE_SETS,
         }
+
+    def _profile_sets_state(self) -> list[dict]:
+        active = {lng: list(v) for lng, v in self._active_by_lang.items()}
+        live = active_set_index(self._profile_sets, self._profiles, active)
+        return [
+            {
+                "name": s["name"],
+                "members": list(s.get("members", [])),
+                "label": set_hotkey_label(i, s),
+                "assigned": s.get("keycode") is not None,  # True = custom override
+                "active": i == live,
+            }
+            for i, s in enumerate(self._profile_sets)
+        ]
 
     # Settings handlers — invoked on the main thread from the JS bridge.
     def _set_mic(self, name: str | None) -> None:
@@ -656,6 +711,44 @@ class Tray:
         """Unassign a language slot's shortcut (back to no hotkey)."""
         if self._on_clear_hotkey:
             self._on_clear_hotkey(action)
+
+    # Profile-set handlers (from the Settings window's JS bridge) ───────────────
+    def _win_save_set(self, value: dict) -> None:
+        """Create/replace a profile set from the window editor. On error notify
+        and leave the window; on success store and re-render so the new ⌃⌥<digit>
+        badge and member summary show at once."""
+        if not self._on_save_set:
+            return
+        idx = value.get("index")
+        idx = int(idx) if isinstance(idx, int) else None
+        sets, err = self._on_save_set(idx, value.get("name", ""), value.get("members") or [])
+        if err:
+            self._refresh_settings_window(err)
+            return
+        self._profile_sets = sets
+        self._refresh_settings_window(self._t("notice.saved"))
+
+    def _win_delete_set(self, index: int) -> None:
+        if not self._on_delete_set:
+            return
+        self._profile_sets = self._on_delete_set(int(index))
+        self._refresh_settings_window()
+
+    def _win_activate_set(self, index: int) -> None:
+        if self._on_activate_set:
+            self._on_activate_set(int(index))
+
+    def set_active_profiles(self, active_profiles: dict) -> None:
+        """Mirror an externally-changed active selection (a set activated by its
+        ⌃⌥<digit> hotkey, possibly off the listener thread) into the menu
+        checkmarks and the open window. Marshalled to the main thread."""
+
+        def _apply() -> None:
+            self._active_by_lang = {lng: set(v) for lng, v in (active_profiles or {}).items()}
+            self._populate_profiles_menu(True)
+            self._refresh_settings_window()
+
+        AppHelper.callAfter(_apply)
 
     def update_hotkeys(self, hotkey: dict, lang_hotkeys: list[dict]) -> None:
         """Reflect a freshly-captured binding set: update the menu hint and push

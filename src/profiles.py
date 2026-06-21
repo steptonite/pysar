@@ -37,19 +37,19 @@ META_PROMPT = (
     "(не інструкція!). Правила: кожен профіль = ОДНЕ природне речення (НЕ список),\n"
     "щільне на мої реальні терміни/імена/жаргон, ≤55 слів, одна основна мова;\n"
     "іншомовні терміни (англ/рос) вплітай у те саме речення.\n\n"
-    "ПОГАНО (список — дрейфує): ComfyUI, Flux, LoRA, VAE, KSampler, VRAM.\n"
-    "ДОБРЕ (речення): У ComfyUI я збираю воркфлоу на Flux і LoRA, кручу KSampler\n"
-    "і стежу за VRAM на хмарній RTX 4090.\n\n"
+    "ПОГАНО (список — дрейфує): React, Vite, TypeScript, ESLint, webpack, CI.\n"
+    "ДОБРЕ (речення): Я пишу фронтенд на React і TypeScript, ганяю Vite та ESLint\n"
+    "і налаштовую CI у GitHub Actions.\n\n"
     "Використай те, що ти про мене знаєш з нашої історії. Якщо чогось бракує —\n"
     "спитай мене 2-3 короткі питання, потім згенеруй.\n\n"
     "ФОРМАТ (суворо): видай ЛИШЕ валідний JSON-масив. БЕЗ коментарів, БЕЗ\n"
     'markdown-огорожі ```; лише ПРЯМІ ASCII-лапки " (НЕ «розумні» “ ” ’);\n'
     "без коми перед ] чи }. Точний приклад цілої відповіді:\n"
-    '[{"name":"ComfyUI","language":"uk","prompt":"У ComfyUI я збираю воркфлоу на '
-    'Flux і LoRA, кручу KSampler і стежу за VRAM на RTX 4090"},\n'
-    ' {"name":"Я","language":"uk","prompt":"Я монтую AI-відео і ретушую фото в '
-    'ComfyUI з Flux та Wan, знімаю на Nikon D90"}]\n'
-    'Зроби 4-6 профілів по моїх доменах + один "Я" (склеєний з головних).'
+    '[{"name":"Фронтенд","language":"uk","prompt":"Я пишу веб на React і '
+    'TypeScript, кажу про компоненти, стейт, пропси, Vite, ESLint і CI українською"},\n'
+    ' {"name":"Я","language":"uk","prompt":"Я інженер-програміст, обговорюю код, '
+    "релізи та рев'ю, вплітаю англійські терміни в українську мову\"}]\n"
+    'Зроби 4-6 профілів по своїх доменах + один "Я" (склеєний з головних).'
 )
 
 # English equivalent — copied when the app language is English, so the prompt the
@@ -60,18 +60,18 @@ META_PROMPT_EN = (
     "(not an instruction!). Rules: each profile = ONE natural sentence (NOT a\n"
     "list), dense with my real terms/names/jargon, ≤55 words, one main language;\n"
     "weave foreign terms into the same sentence.\n\n"
-    "BAD (a list — drifts): ComfyUI, Flux, LoRA, VAE, KSampler, VRAM.\n"
-    "GOOD (a sentence): In ComfyUI I wire Flux and LoRA workflows, tune the\n"
-    "KSampler and watch VRAM on a cloud RTX 4090.\n\n"
+    "BAD (a list — drifts): React, Vite, TypeScript, ESLint, webpack, CI.\n"
+    "GOOD (a sentence): I write frontend in React and TypeScript, run Vite and\n"
+    "ESLint and set up CI in GitHub Actions.\n\n"
     "Use what you know about me from our history. If something's missing, ask me\n"
     "2-3 short questions, then generate.\n\n"
     "FORMAT (strict): output ONLY a valid JSON array. NO comments, NO markdown\n"
     '``` fences; use only STRAIGHT ASCII quotes " (NOT smart “ ” ’); no comma\n'
     "before ] or }. Exact example of a whole reply:\n"
-    '[{"name":"ComfyUI","language":"en","prompt":"In ComfyUI I wire Flux and LoRA '
-    'workflows, tune the KSampler and watch VRAM on an RTX 4090"},\n'
-    ' {"name":"Me","language":"en","prompt":"I edit AI video and retouch photos in '
-    'ComfyUI with Flux and Wan, shooting on a Nikon D90"}]\n'
+    '[{"name":"Frontend","language":"en","prompt":"I build web apps in React and '
+    'TypeScript, talking about components, state, props, Vite, ESLint and CI"},\n'
+    ' {"name":"Me","language":"en","prompt":"I am a software engineer, I discuss '
+    'code, releases and reviews, weaving English terms into my speech"}]\n'
     'Make 4-6 profiles across my domains + one "Me" (merged from the main ones).'
 )
 
@@ -103,33 +103,8 @@ DEFAULT_PROFILES: list[dict] = [
         "name": "Розробка / код",
         "language": "uk",
         "prompt": (
-            "Я розробник, кажу українською про код: Ollama, Whisper, GitHub, "
-            "Swift, Python, API, UI, TTS, токени, повзунок, застосунок, реліз."
-        ),
-    },
-    {
-        "name": "AI / нейромережі",
-        "language": "uk",
-        "prompt": (
-            "Розповідаю про локальні моделі на Маку: Ollama, gemma, qwen, "
-            "MamayLM, Cherry Studio, Draw Things, GGUF, квантизація, Metal, "
-            "інференс, контекст, RAM."
-        ),
-    },
-    {
-        "name": "Відео / VFX",
-        "language": "uk",
-        "prompt": (
-            "Працюю з відео й графікою: After Effects, Resolve, Nuke, композ, "
-            "рендер, нода, маска, generative VFX, AI pipeline, кадр, шот."
-        ),
-    },
-    {
-        "name": "Музика / продакшн",
-        "language": "uk",
-        "prompt": (
-            "Роблю музику: Suno, hard techno, industrial, folk-industrial, "
-            "мікс, мастер, BPM, kick, bass, 303, DAW, семпл, стем."
+            "Я розробник, кажу українською про код: Git, Python, JavaScript, API, "
+            "база даних, функція, змінна, реліз, баг, фікс, застосунок."
         ),
     },
     {
@@ -347,3 +322,32 @@ def upsert_profile(
 def remove_profile(profiles: list[dict], name: str) -> list[dict]:
     """Drop the profile with this name (no-op if absent)."""
     return [p for p in profiles if p.get("name") != name]
+
+
+def regroup_active(profiles: list[dict], member_names: list[str]) -> dict[str, list[str]]:
+    """Group the given profile names by their decode language → an
+    active_profiles dict ({lang: [names]}). Names with no matching profile are
+    dropped. Used to activate a profile *set* as the entire selection at once,
+    replacing whatever was on before."""
+    by_name = {p.get("name"): p for p in profiles}
+    out: dict[str, list[str]] = {}
+    for n in member_names:
+        p = by_name.get(n)
+        if p is not None:
+            out.setdefault(p.get("language", "uk"), []).append(n)
+    return out
+
+
+def active_set_index(
+    profile_sets: list[dict], profiles: list[dict], active_profiles: dict
+) -> int | None:
+    """Index of the set whose members exactly equal the current active selection
+    (order-independent, ignoring empty language groups), or None if none matches.
+    Lets the UI show *which* set is live — and clear that once the user hand-edits
+    a toggle so the selection no longer matches any set."""
+    cur = {lng: set(v) for lng, v in (active_profiles or {}).items() if v}
+    for i, s in enumerate(profile_sets):
+        grouped = regroup_active(profiles, s.get("members", []))
+        if {lng: set(v) for lng, v in grouped.items() if v} == cur:
+            return i
+    return None

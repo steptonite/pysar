@@ -16,12 +16,13 @@ This fork is packaged to be reproducible — it survives a clean macOS reinstall
 
 - **One-command launch** — `make up` (or the `cream` alias) starts the whisper server in the background *and* the app; quitting stops both. No two-terminal dance.
 - **Real `.app` in /Applications** — `make app` builds a Dock-less menu-bar agent (`LSUIElement`) with a custom icon, launchable from Spotlight/Launchpad. No Terminal window, no Dock tile, no Python rocket.
-- **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without opening the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag. Default mode is `uk`.
+- **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without opening the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag. Default mode is `uk`. Every shortcut (dictation toggle, language switches, profile sets) is freely **reassignable** in **Settings → Hotkeys** — captured live, no relaunch.
 - **VAD anti-hallucination** — the server runs with Silero VAD, so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
 - **Clean paste** — the transcriber only normalizes whitespace/newlines, so a word never lands split across a line. No content-based text filtering: real words are never dropped (the silence-hallucination problem is solved by VAD instead).
 - **Optional recording archive** — off by default (audio stays in memory). Toggle **💾 Save recordings** in the menu bar to keep the last N WAVs on disk (5/10/20, auto-pruned) in `~/Library/Application Support/Pysar/recordings/`, so a failed or aborted dictation can be re-transcribed instead of re-spoken. **📂 Open recordings folder** reveals them in Finder. Settings persist across launches.
 - **Speech profiles** — per-language priming sentences that bias Whisper toward your jargon (tool names, slang, proper nouns) so it stops mangling them. Toggle profiles per language; the composed prompt is capped to a token budget. A built-in **"Copy AI prompt"** hands any chat model a meta-prompt that returns importable profile JSON — pasted back, the import is tolerant of smart quotes and trailing commas.
-- **Drill-in Settings window** — a native WebKit panel (audio, save, folder, hotkeys, profile editor, theme, UI language) instead of a tall menu. **Auto / Light / Dark** themes with a live accent.
+- **Profile sets** — bundle several profiles into a named set and switch the whole set on with one key (`Ctrl+Option+<digit>` by default, reassignable). The Settings list shows which set is **currently active** and clears that mark the moment you hand-edit a toggle. The set editor shows a **per-language token meter** so you can see at a glance when a selection overflows Whisper's prompt budget.
+- **Drill-in Settings window** — a native WebKit panel instead of a tall menu, split into focused screens: a main page (audio, recordings, theme, UI language) with drill-ins for **Speech profiles** (profile editor + sets) and **Hotkeys** (dictation, language and profile-set shortcuts). **Auto / Light / Dark** themes with a live accent.
 - **Bilingual UI (🇺🇦/🌐)** — the whole interface — menu bar, status line, notifications, Settings window — switches between Ukrainian and English live, independent of the dictation output language.
 
 Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of unified memory.
@@ -47,10 +48,11 @@ Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** a
 
 - **Dictate** — Caps Lock → speak → Caps Lock. Text pastes at the cursor.
 - **Switch language** — `Ctrl+Option+U` (🇺🇦) · `Ctrl+Option+R` (🇷🇺) · `Ctrl+Option+E` (🌐 → English). The menu-bar flag shows the active mode.
-- **Settings** — open from the menu bar to manage audio, recordings, custom hotkeys, speech profiles, theme, and UI language.
+- **Settings** — open from the menu bar; the main page covers audio, recordings, theme and UI language, with drill-ins for **Speech profiles** (editor + sets) and **Hotkeys** (dictation, language and profile-set shortcuts, all reassignable).
+- **Profile sets** — in Speech profiles, group profiles into a set and trigger it anywhere with `Ctrl+Option+<digit>` (the active set is shown live).
 - **Quit** — from the menu-bar icon; it stops the whisper server too.
 
-More languages are available in the **🌍 Languages** submenu (15 targets + the `🌐 → English (from any)` shortcut). To change the set, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and the hotkeys in [src/config.py](src/config.py).
+More languages are available in the **🌍 Languages** submenu (17 languages + the `🌐 → English (from any)` shortcut). To change the set, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and the hotkeys in [src/config.py](src/config.py).
 
 ---
 
