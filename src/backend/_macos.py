@@ -52,6 +52,23 @@ def set_login_item(enable: bool) -> bool:
         return False
 
 
+def login_item_enabled() -> bool | None:
+    """Real registration status from SMAppService, or None if it can't be read
+    (not running as the .app, framework missing). Used to sync the menu/toggle
+    to the *actual* OS state on launch instead of trusting our settings file —
+    otherwise the checkmark drifts (resets) whenever registration silently
+    failed or the user toggled it in System Settings."""
+    try:
+        from ServiceManagement import (
+            SMAppService,
+            SMAppServiceStatusEnabled,
+        )
+
+        return SMAppService.mainAppService().status() == SMAppServiceStatusEnabled
+    except Exception:
+        return None
+
+
 def _set_app_name(name: str) -> None:
     """Override the Dock/menu name of the running process. Must run before the
     NSApplication main menu is built (AppKit caches the name then). Framework
@@ -298,38 +315,273 @@ class HotkeyListener:
 
 # ── Paste ────────────────────────────────────────────────────────────────────
 _KEYCODE_V = 9  # virtual keycode for 'v', layout-independent
+_KEYCODE_CMD = 0x37  # kVK_Command (left ⌘)
+
+
+def _utf16_slices(text: str, size: int):
+    """Yield `text` in slices of at most `size` code points. Cutting on a code
+    point (never inside a Python str index) keeps surrogate pairs intact."""
+    for i in range(0, len(text), size):
+        yield text[i : i + size]
 
 
 class Paster:
-    """Pastes via clipboard + Cmd+V, restoring the previous clipboard contents."""
+    """Delivers dictated text where it was started.
+
+    Two strategies, in order:
+      1. Accessibility (AX): write straight into the text element that was
+         focused when recording began. This is focus-independent — the text
+         lands in the right field even if the user has since switched to
+         Spotlight or another window — and never touches the clipboard.
+      2. Clipboard + Cmd+V fallback: only when AX can't insert (the app exposes
+         no settable text element — common in Electron/terminals). Refocuses the
+         target and verifies it before the keystroke; if focus can't be returned,
+         the text is LEFT on the clipboard and the caller notifies the user.
+    """
 
     @staticmethod
-    def capture_target():
-        """Remember the app that was frontmost when dictation began, so the text
-        lands there even if the user clicks elsewhere during a long transcription.
-        Returns an NSRunningApplication (or None) to hand back to paste_text."""
+    def capture_target() -> dict:
+        """Snapshot, at record start: the frontmost app *and* the focused AX text
+        element. Returned as a dict for paste_text. Cheap and never raises."""
+        from ..logsetup import log
+
+        app = None
+        with contextlib.suppress(Exception):
+            from AppKit import NSWorkspace
+
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        ax = Paster._capture_focused_ax(app)
+        name = app.localizedName() if app is not None else "?"
+        log(f"capture_target: app={name} ax={'yes' if ax is not None else 'none'}")
+        return {"app": app, "ax": ax, "name": name}
+
+    @staticmethod
+    def _capture_focused_ax(app):
+        """The focused UI element *inside `app`* (a text field/area when the caret
+        is in one), or None. Queries the app element by PID rather than the
+        system-wide element — the latter returns NoValue for Chromium/Electron
+        apps (Claude). For Electron we also poke AXManualAccessibility, which
+        wakes Chromium's accessibility tree (it sleeps until an AT asks)."""
+        from ..logsetup import log
+
+        if app is None:
+            return None
+        try:
+            from ApplicationServices import (
+                AXUIElementCopyAttributeValue,
+                AXUIElementCreateApplication,
+                AXUIElementSetAttributeValue,
+                kAXFocusedUIElementAttribute,
+            )
+
+            app_el = AXUIElementCreateApplication(app.processIdentifier())
+            # Wake Chromium's a11y tree (no-op / harmless on native apps).
+            with contextlib.suppress(Exception):
+                AXUIElementSetAttributeValue(app_el, "AXManualAccessibility", True)
+            err, focused = AXUIElementCopyAttributeValue(app_el, kAXFocusedUIElementAttribute, None)
+            if err == 0 and focused is not None:
+                return focused
+            log(f"_capture_focused_ax: no element (err={err})")
+        except Exception as e:
+            log(f"_capture_focused_ax: {e}")
+        return None
+
+    @staticmethod
+    def _ax_insert(element, text: str) -> bool:
+        """Insert `text` at the caret of `element` by setting its selected text
+        (replaces any selection, like a real paste). Returns True only when the
+        write is *verified* by reading the field value back — never just because
+        the API returned 0. Only AXSelectedText is used to write — never AXValue,
+        which would clobber the whole field. Unverified write → caller falls back
+        to Cmd+V.
+
+        Why verify: Electron/Chromium (Claude) returns err=0 from
+        AXUIElementSetAttributeValue even when the text lands nowhere — the node
+        we captured at record-start is stale/detached by paste time. A blind
+        "OK" then lies to the user (status says ✓ → Claude, field stays empty).
+
+        Logs the element role and whether the field reports AXSelectedText/AXValue
+        as settable, so we can tell from the log whether AX is viable per app."""
+        from ..logsetup import log
+
+        try:
+            from ApplicationServices import (
+                AXUIElementCopyAttributeValue,
+                AXUIElementIsAttributeSettable,
+                AXUIElementSetAttributeValue,
+                kAXRoleAttribute,
+                kAXSelectedTextAttribute,
+                kAXValueAttribute,
+            )
+
+            _, role = AXUIElementCopyAttributeValue(element, kAXRoleAttribute, None)
+            _, sel_settable = AXUIElementIsAttributeSettable(
+                element, kAXSelectedTextAttribute, None
+            )
+            _, val_settable = AXUIElementIsAttributeSettable(element, kAXValueAttribute, None)
+            log(
+                f"_ax_insert: role={role} selText_settable={sel_settable} value_settable={val_settable}"
+            )
+
+            def _value() -> str | None:
+                err, v = AXUIElementCopyAttributeValue(element, kAXValueAttribute, None)
+                return v if err == 0 and isinstance(v, str) else None
+
+            before = _value()
+
+            # Chromium/Electron ignores AXSelectedText when it has no concrete
+            # insertion point (the field isn't first-responder while we're in the
+            # background). Seed the caret at end-of-value first via a zero-length
+            # AXSelectedTextRange — that's what makes the subsequent write land.
+            with contextlib.suppress(Exception):
+                from ApplicationServices import (
+                    AXValueCreate,
+                    kAXSelectedTextRangeAttribute,
+                    kAXValueCFRangeType,
+                )
+
+                end = len(before) if before is not None else 0
+                rng = AXValueCreate(kAXValueCFRangeType, (end, 0))
+                if rng is not None:
+                    AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute, rng)
+
+            err = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute, text)
+            if err != 0:
+                log(f"_ax_insert: AXSelectedText set failed err={err}")
+                return False
+
+            # err==0 is not enough — confirm the value actually changed. We can't
+            # read it back → can't trust the write (Cmd+V is safer). Poll, since
+            # the a11y tree updates async.
+            if before is None:
+                log("_ax_insert: value unreadable → can't verify, fall back to Cmd+V")
+                return False
+            needle = text.strip()[:24]
+            for _ in range(15):  # ~0.3 s
+                after = _value()
+                if after is not None and after != before and (not needle or needle in after):
+                    log("_ax_insert: OK via AXSelectedText (verified)")
+                    return True
+                time.sleep(0.02)
+            log("_ax_insert: set returned 0 but value unchanged → fall back to Cmd+V")
+        except Exception as e:
+            log(f"_ax_insert: {e}")
+        return False
+
+    @staticmethod
+    def _frontmost_pid():
+        """PID of the app frontmost right now, or None. Used to verify focus
+        actually returned to the dictation target before we fire Cmd+V."""
         try:
             from AppKit import NSWorkspace
 
-            return NSWorkspace.sharedWorkspace().frontmostApplication()
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            return app.processIdentifier() if app is not None else None
         except Exception:
             return None
 
-    def paste_text(self, text: str, target=None) -> None:
+    @staticmethod
+    def _overlay_capturing_keys() -> str | None:
+        """Name of a system overlay (Spotlight, Siri) showing an on-screen
+        window right now, or None. Such overlays float *over* the frontmost
+        app: NSWorkspace.frontmostApplication() still reports the app behind
+        them (Claude), so a frontmost-pid check passes — yet the overlay eats
+        the keyboard and Cmd+V lands in *it*, not the field. Detect via the
+        window list and refuse to paste rather than dump text into Spotlight."""
+        try:
+            from Quartz import (
+                CGWindowListCopyWindowInfo,
+                kCGNullWindowID,
+                kCGWindowListOptionOnScreenOnly,
+            )
+
+            overlays = {"Spotlight", "Siri", "SiriNCService"}
+            info = (
+                CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) or []
+            )
+            for w in info:
+                owner = w.get("kCGWindowOwnerName")
+                layer = w.get("kCGWindowLayer", 0)
+                # overlays sit above normal windows (layer 0); a visible
+                # Spotlight panel is a real on-screen window at a high layer.
+                if owner in overlays and layer and layer > 0:
+                    return owner
+        except Exception:
+            pass
+        return None
+
+    def _refocus_target(self, target) -> bool:
+        """Bring `target` back to the front and confirm it actually became
+        frontmost. macOS 14+ often *silently ignores* programmatic activation of
+        a non-frontmost app, so we must verify rather than assume — otherwise a
+        Cmd+V lands in whatever stole focus (Spotlight, another window).
+
+        Returns True only when `target` is verified frontmost. None target means
+        "paste wherever we are" (no specific window to honor) → treated as ok."""
+        if target is None:
+            return True
+        want = target.processIdentifier()
+        try:
+            target.activateWithOptions_(2)  # NSApplicationActivateIgnoringOtherApps
+        except Exception as e:
+            print(f"⚠️ could not refocus paste target: {e}")
+        # Poll until the target is really frontmost (activation is async and can
+        # lag under memory pressure), up to ~0.6 s, then give up.
+        for _ in range(30):
+            if self._frontmost_pid() == want:
+                return True
+            time.sleep(0.02)
+        return False
+
+    def paste_text(self, text: str, target=None) -> bool:
+        """Deliver `text` to `target`. Returns True if it landed in the field
+        (via AX or Cmd+V), False if it could only be left on the clipboard for a
+        manual ⌘V (focus could not be returned and AX was unavailable). The
+        caller surfaces that to the user with a visible notification."""
+        from ..logsetup import log
+
+        # `target` is the dict from capture_target; tolerate a bare app / None
+        # (older callers, tests) so the AX path is simply skipped.
+        if isinstance(target, dict):
+            app, ax, name = target.get("app"), target.get("ax"), target.get("name", "?")
+        else:
+            app, ax, name = target, None, "?"
+        log(f"paste_text: target={name} ax={'yes' if ax is not None else 'none'} len={len(text)}")
+
+        # 1) AX first: write straight into the focused field. Focus-independent,
+        # no clipboard, lands exactly where dictation began. Best case.
+        # Re-resolve the focused element *now* rather than trusting the handle
+        # captured at record-start — by paste time (seconds later) a Chromium/
+        # Electron node is often stale/detached and silently rejects the write.
+        # An app-level AXFocusedUIElement query is per-app, so it still returns
+        # Claude's textarea even while we're sitting in Spotlight.
+        if ax is not None:
+            fresh = self._capture_focused_ax(app) if app is not None else None
+            if self._ax_insert(fresh if fresh is not None else ax, text):
+                return True
+
+        # 2) Clipboard + Cmd+V fallback (app has no settable AX text element).
         payload = text.encode("utf-8")
         saved = self._read_clipboard()
         self._write_clipboard(payload)
 
         # Restore focus to the app we were dictating into before pasting. A long
-        # transcription gives the user time to click away; without this the Cmd+V
-        # would fire into whatever window happens to be frontmost now. Clipboard
-        # still holds the text as a fallback if reactivation fails.
-        if target is not None:
-            try:
-                target.activateWithOptions_(2)  # NSApplicationActivateIgnoringOtherApps
-                time.sleep(0.12)  # let the app come forward before the keystroke
-            except Exception as e:
-                print(f"⚠️ could not refocus paste target: {e}")
+        # transcription gives the user time to click away. If we can't verify the
+        # target is frontmost again, we DON'T paste — the text stays on the
+        # clipboard so the user can ⌘V it into the right place themselves.
+        if not self._refocus_target(app):
+            log("paste_text: focus not returned and AX unavailable → left on clipboard")
+            return False  # leave `payload` on the clipboard; do NOT restore `saved`
+
+        # Even with the target frontmost, a Spotlight/Siri overlay may be
+        # floating above it, invisibly grabbing the keyboard. Cmd+V would land
+        # there, not in the field — so refuse and leave the text on the
+        # clipboard for the user to ⌘V once they dismiss the overlay.
+        overlay = self._overlay_capturing_keys()
+        if overlay is not None:
+            log(f"paste_text: {overlay} overlay grabbing keys → left on clipboard")
+            return False  # leave `payload` on the clipboard; do NOT restore `saved`
+        log("paste_text: pasting via Cmd+V")
 
         # Don't paste until our text is actually on the clipboard. Under memory
         # pressure (8 GB + Resolve/PS) the pbcopy write lags, and pressing Cmd+V
@@ -355,6 +607,7 @@ class Paster:
                 print(f"⚠️ failed to restore clipboard: {e}")
 
         threading.Thread(target=_restore, daemon=True).start()
+        return True
 
     @staticmethod
     def _read_clipboard() -> bytes:
@@ -366,17 +619,139 @@ class Paster:
 
     @staticmethod
     def _press_cmd_v() -> None:
-        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+        # Press ⌘ as a *real key* (down → V down → V up → ⌘ up) rather than just
+        # tagging the V events with a Command flag. Flag-only synthesis leaves no
+        # explicit "Command released" signal, so the target app keeps Command
+        # logically held after the paste — beeps on every key, tabs need a
+        # double-click, and Space becomes ⌘Space (opens Spotlight, so the next
+        # dictation lands there). The matching ⌘-up event below guarantees the
+        # modifier is cleared. Private source state keeps it isolated from the
+        # physical keyboard.
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+        cmd = Quartz.kCGEventFlagMaskCommand
+
+        cmd_down = Quartz.CGEventCreateKeyboardEvent(src, _KEYCODE_CMD, True)
+        Quartz.CGEventSetFlags(cmd_down, cmd)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, cmd_down)
+        time.sleep(0.005)
 
         down = Quartz.CGEventCreateKeyboardEvent(src, _KEYCODE_V, True)
-        Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
+        Quartz.CGEventSetFlags(down, cmd)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
-
         time.sleep(0.01)
 
         up = Quartz.CGEventCreateKeyboardEvent(src, _KEYCODE_V, False)
-        Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
+        Quartz.CGEventSetFlags(up, cmd)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+        time.sleep(0.005)
+
+        # Release Command explicitly with cleared flags — this is the signal the
+        # earlier flag-only version was missing, and what kept Command "stuck".
+        cmd_up = Quartz.CGEventCreateKeyboardEvent(src, _KEYCODE_CMD, False)
+        Quartz.CGEventSetFlags(cmd_up, 0)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, cmd_up)
+
+    @staticmethod
+    def type_text(text: str) -> None:
+        """Type `text` straight into the focused field as synthetic Unicode key
+        events — no clipboard, no Command modifier. Used by streaming dictation to
+        insert each sentence as it's transcribed, so nothing clobbers the user's
+        clipboard mid-dictation.
+
+        Goes wherever the keyboard focus is (same as the user typing). A *private*
+        event source keeps it isolated from the physical keyboard (the same
+        isolation lesson as the Cmd+V fix). Long strings are posted in small
+        UTF-16 slices — CGEventKeyboardSetUnicodeString truncates an over-long
+        buffer, so we keep each event short."""
+        if not text:
+            return
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+        for chunk in _utf16_slices(text, 16):
+            units = len(chunk.encode("utf-16-le")) // 2  # surrogate-pair safe length
+            down = Quartz.CGEventCreateKeyboardEvent(src, 0, True)
+            Quartz.CGEventKeyboardSetUnicodeString(down, units, chunk)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+            up = Quartz.CGEventCreateKeyboardEvent(src, 0, False)
+            Quartz.CGEventKeyboardSetUnicodeString(up, units, chunk)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+            time.sleep(0.002)
+
+    @staticmethod
+    def has_editable_focus(target=None) -> bool:
+        """Best-effort: can we safely type a streaming sentence into the keyboard
+        focus *right now*? Streaming types blind via CGEvent — wherever focus is —
+        so before each sentence we check there's a real text field to land in. No
+        field → the caller buffers the sentence on the clipboard instead.
+
+        Biased so the normal path is never silently swallowed:
+          • A Spotlight/Siri overlay grabbing the keyboard → False (typing would
+            land in it — exactly the bug we're fixing).
+          • Still in the app dictation started in (same PID as `target`) → True,
+            unconditionally. The field is there; this protects Claude/Electron,
+            whose AX roles we can't always read, on the main path.
+          • Switched elsewhere → True only if the new frontmost app's focused
+            element is an editable text control (a web page / Finder / the desktop
+            reads as non-editable → buffer).
+        """
+        from ..logsetup import log
+
+        if Paster._overlay_capturing_keys() is not None:
+            return False
+        front = None
+        with contextlib.suppress(Exception):
+            from AppKit import NSWorkspace
+
+            front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if front is None:
+            return False
+        # Same app we started in → trust it (don't depend on flaky Electron roles).
+        start_app = target.get("app") if isinstance(target, dict) else None
+        if start_app is not None:
+            with contextlib.suppress(Exception):
+                if front.processIdentifier() == start_app.processIdentifier():
+                    return True
+        el = Paster._capture_focused_ax(front)
+        if el is None:
+            log("has_editable_focus: no focused element → no field")
+            return False
+        return Paster._is_editable(el)
+
+    @staticmethod
+    def _is_editable(element) -> bool:
+        """True when `element` is a text-entry control: a known editable role, or
+        it reports AXValue/AXSelectedText as settable. Web areas and other
+        containers read as non-editable. On any read error, assume editable so the
+        live-typing path is never wrongly blocked."""
+        from ..logsetup import log
+
+        try:
+            from ApplicationServices import (
+                AXUIElementCopyAttributeValue,
+                AXUIElementIsAttributeSettable,
+                kAXRoleAttribute,
+                kAXSelectedTextAttribute,
+                kAXValueAttribute,
+            )
+
+            _, role = AXUIElementCopyAttributeValue(element, kAXRoleAttribute, None)
+            if role in _EDITABLE_ROLES:
+                return True
+            _, sel = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute, None)
+            _, val = AXUIElementIsAttributeSettable(element, kAXValueAttribute, None)
+            log(f"_is_editable: role={role} selText_settable={sel} value_settable={val}")
+            return bool(sel) or bool(val)
+        except Exception as e:
+            log(f"_is_editable: {e}")
+            return True
+
+    def set_clipboard(self, text: str) -> None:
+        """Put `text` on the system clipboard. Used by streaming buffer mode when
+        there's no field to type into — the user pastes it manually with ⌘V."""
+        self._write_clipboard(text.encode("utf-8"))
+
+
+# Text-entry AX roles that streaming may type into (see Paster._is_editable).
+_EDITABLE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 
 
 # ── Tray ─────────────────────────────────────────────────────────────────────
@@ -409,6 +784,8 @@ class Tray:
         on_set_theme: Callable[[str], None] | None = None,
         ui_lang: str = "uk",
         on_set_lang: Callable[[str], None] | None = None,
+        dictation_mode: str = "batch",
+        on_set_dictation_mode: Callable[[str], None] | None = None,
         hotkey: dict | None = None,
         lang_hotkeys: list[dict] | None = None,
         on_capture_hotkey: Callable[[str], None] | None = None,
@@ -450,6 +827,8 @@ class Tray:
         self._on_set_theme = on_set_theme
         self._ui_lang = ui_lang
         self._on_set_lang = on_set_lang
+        self._dictation_mode = dictation_mode
+        self._on_set_dictation_mode = on_set_dictation_mode
         self._hotkey = hotkey or dict(DEFAULT_HOTKEY)
         self._lang_hotkeys = lang_hotkeys or [dict(h) for h in DEFAULT_LANG_HOTKEYS]
         self._on_capture_hotkey = on_capture_hotkey
@@ -459,6 +838,7 @@ class Tray:
         self._on_delete_set = on_delete_set
         self._on_activate_set = on_activate_set
         self._settings_window = None  # built lazily on first open
+        self._hud = None  # streaming status overlay, built lazily on first show
 
         self._app = rumps.App("🎙", quit_button=self._t("tray.quit"))
         self._status = rumps.MenuItem(self._t("tray.ready"))
@@ -532,6 +912,7 @@ class Tray:
                         "copy_ai_prompt": self._win_copy_ai_prompt,
                         "set_theme": self._set_theme,
                         "set_lang": self._set_lang,
+                        "set_dictation_mode": self._set_dictation_mode,
                         "capture_hotkey": self._capture_hotkey,
                         "clear_hotkey": self._clear_hotkey,
                         "save_set": self._win_save_set,
@@ -554,6 +935,7 @@ class Tray:
             "launch_at_login": self._launch_at_login,
             "ui_theme": self._ui_theme,
             "ui_lang": self._ui_lang,
+            "dictation_mode": self._dictation_mode,
             "t": strings(self._ui_lang),
             "hotkey": dict(self._hotkey),
             "hotkey_label": binding_label(self._hotkey["keycode"], self._hotkey["mods"]),
@@ -613,6 +995,11 @@ class Tray:
                 self._t("notif.cantLogin"),
                 self._t("notif.cantLoginBody"),
             )
+
+    def _set_dictation_mode(self, mode: str) -> None:
+        self._dictation_mode = mode if mode in ("batch", "streaming") else "batch"
+        if self._on_set_dictation_mode:
+            self._on_set_dictation_mode(self._dictation_mode)
 
     def _set_theme(self, theme: str) -> None:
         self._ui_theme = theme if theme in ("auto", "light", "dark") else "auto"
@@ -874,6 +1261,36 @@ class Tray:
 
     def set_status(self, text: str) -> None:
         AppHelper.callAfter(setattr, self._status, "title", text)
+
+    def show_hud(self, text: str) -> None:
+        """Show/update the floating streaming-status overlay near the menu-bar
+        icon. Built lazily on the main thread; any AppKit failure is swallowed so
+        a missing overlay never breaks dictation."""
+
+        def _do() -> None:
+            with contextlib.suppress(Exception):
+                if self._hud is None:
+                    from ._hud import StatusHUD
+
+                    self._hud = StatusHUD()
+                self._hud.show(text)
+
+        AppHelper.callAfter(_do)
+
+    def hide_hud(self) -> None:
+        def _do() -> None:
+            with contextlib.suppress(Exception):
+                if self._hud is not None:
+                    self._hud.hide()
+
+        AppHelper.callAfter(_do)
+
+    def notify(self, title: str, subtitle: str, message: str) -> None:
+        """A real system notification — visible without opening the menu. Used
+        for the can't-paste fallback so the user knows the text is on the
+        clipboard awaiting a manual ⌘V."""
+        with contextlib.suppress(Exception):
+            AppHelper.callAfter(rumps.notification, title, subtitle, message)
 
     def set_current_mode(self, code: str) -> None:
         self._current = code

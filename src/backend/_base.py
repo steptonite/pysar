@@ -24,7 +24,26 @@ class PasteBackend(Protocol):
         """Snapshot the frontmost app to refocus before pasting (or None)."""
         ...
 
-    def paste_text(self, text: str, target=None) -> None: ...
+    def paste_text(self, text: str, target=None) -> bool:
+        """Returns True if pasted, False if it was left on the clipboard for a
+        manual ⌘V (focus could not be returned to `target`)."""
+        ...
+
+    def type_text(self, text: str) -> None:
+        """Type `text` into the focused field as synthetic key events, without
+        touching the clipboard. Used by streaming dictation (one sentence at a
+        time as it's transcribed)."""
+        ...
+
+    def has_editable_focus(self, target=None) -> bool:
+        """True when keyboard focus is in a text field safe to type into right
+        now. Streaming checks this before each sentence; False (no field, an
+        overlay grabbing keys) means buffer the sentence on the clipboard."""
+        ...
+
+    def set_clipboard(self, text: str) -> None:
+        """Put `text` on the system clipboard (streaming buffer mode)."""
+        ...
 
 
 class TrayBackend(Protocol):

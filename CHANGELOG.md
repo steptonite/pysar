@@ -6,7 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Streaming dictation mode** (opt-in via Settings → Dictation). Types each sentence into the focused field as you speak instead of one transcription at the end. New `src/segmenter.py` cuts audio on natural pauses (adaptive RMS noise floor, never mid-word; hard `MAX_SEG_SEC` cap for pause-free run-ons). A serialized queue worker transcribes and types segments one at a time so word order holds and whisper is never run concurrently on 8 GB. Sentences are inserted as synthetic Unicode key events (`Paster.type_text`) — no clipboard involvement, so the user's clipboard is never clobbered mid-dictation. Batch remains the default. Tunable params in `src/config.py` (`PAUSE_SEC`, `MIN_SEG_SEC`, `MAX_SEG_SEC`, `SILENCE_MARGIN`).
+- **Focus-aware buffering for streaming.** Before typing each sentence, `Paster.has_editable_focus()` checks the keyboard focus is a real text field (Spotlight/Siri overlay or a non-editable target ⇒ no field; same-app-as-start ⇒ trusted, to protect the Electron/Claude path). On loss it latches **buffer mode**: the rest of the take is collected and placed on the clipboard in one piece at Stop with a single notification — nothing is typed blind into the wrong place.
+- **Floating status HUD** (`src/backend/_hud.py`) near the menu-bar icon, showing listening / recognizing / buffering. A non-activating, click-through `NSPanel` that never steals focus; failures are swallowed so a missing overlay never breaks dictation.
+- **Launch at login** via `SMAppService` (macOS 13+), reconciled to the real OS registration status on launch so the toggle never silently drifts.
+- Speech-profiles user guide: `docs/speech-profiles.md`.
+- Dev tool `scripts/seg_replay.py` — replays saved recordings through the segmenter to tune pause cutting against real audio.
+
 ### Fixed
+- **Stuck Command modifier after paste.** Flag-only Cmd+V synthesis left Command logically held (beeps, double-clicks, Space → Spotlight). `_press_cmd_v` now presses ⌘ as a real key with an explicit ⌘-up, from an isolated private event source.
+- **Paste landing in Spotlight.** A Spotlight/Siri overlay floats over the frontmost app and eats the keyboard, so a frontmost-pid check passes but Cmd+V lands in the overlay. Now detected via the on-screen window list; the text is left on the clipboard with a notification instead.
+- **AX paste falsely reporting success in Electron (Claude).** `AXSelectedText` returns `err=0` even when the write lands nowhere. The AX path now verifies by reading the value back and falls back to Cmd+V when unconfirmed.
+- **Launch-at-login silently failing.** `ServiceManagement` was missing from the venv, so registration failed quietly and the toggle reset. Added `pyobjc-framework-ServiceManagement` and a real-status sync.
+
+### Fixed (earlier)
 - Crash (`Abort trap: 6` / NSException) when the transcription "too short" branch fired. Tray UI updates (`set_title`, `set_status`, checkmark refresh) were happening on background threads (CGEventTap CFRunLoop, `_finish` daemon, whisper health check); AppKit requires `NSStatusItem` / `NSMenuItem` mutations on the main thread. Now wrapped in `PyObjCTools.AppHelper.callAfter`.
 
 ### Added

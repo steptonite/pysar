@@ -110,6 +110,17 @@ SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz
 CHANNELS = 1
 CHUNK_SIZE = 1024
 
+# ── Streaming dictation ──────────────────────────────────────────────────────
+# Pause-based segmentation for the "streaming" dictation mode (see segmenter.py).
+# A segment is cut when trailing silence reaches PAUSE_SEC *and* it holds at
+# least MIN_SEG_SEC of voiced audio; MAX_SEG_SEC force-emits a run-on that never
+# pauses. SILENCE_MARGIN is how many times above the adaptive noise floor a
+# block's RMS must be to count as speech. Start values — tune against real audio.
+PAUSE_SEC = 0.6  # trailing silence that ends a segment
+MIN_SEG_SEC = 0.8  # min voiced audio before a pause can cut
+MAX_SEG_SEC = 18.0  # hard cap; force-emit without a pause (rare run-on fallback)
+SILENCE_MARGIN = 4.0  # block RMS > noise_floor × this ⇒ voiced
+
 # ── Whisper.cpp server ───────────────────────────────────────────────────────
 WHISPER_URL = "http://localhost:8080/inference"
 WHISPER_TIMEOUT = 180  # seconds — long dictations on 8 GB under load need headroom

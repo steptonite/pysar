@@ -265,6 +265,11 @@ _TEMPLATE = r"""<!doctype html>
 
     <div class="sec-title" data-i18n="sec.dictation">Dictation</div>
     <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="dict.mode">Dictation mode</div>
+          <div class="help" style="white-space:normal" data-i18n="dict.modeHelp">Batch transcribes the whole clip at the end; streaming types each sentence as you speak</div></div>
+        <select id="dictmode"></select>
+      </div>
       <div class="row nav" id="go-profiles">
         <div class="body"><div class="label" data-i18n="profiles.nav">Speech profiles</div>
           <div class="help" id="prof-sub">Prompt-priming for better recognition</div></div>
@@ -416,6 +421,8 @@ function applyI18n(){
   });
   const theme = $("theme"), TH = {auto:"theme.auto", light:"theme.light", dark:"theme.dark"};
   if (theme) [...theme.options].forEach(o => { o.textContent = T(TH[o.value]); });
+  const dm = $("dictmode"), DM = {batch:"dict.batch", streaming:"dict.streaming"};
+  if (dm) [...dm.options].forEach(o => { o.textContent = T(DM[o.value]); });
 }
 
 // ── Screen navigation ──────────────────────────────────────────────────────
@@ -481,6 +488,16 @@ $("back-hk").addEventListener("click", () => show("main"));
     lang.appendChild(o);
   });
   lang.addEventListener("change", () => send("set_lang", lang.value));
+
+  const dictmode = $("dictmode");
+  [["batch",T("dict.batch","Batch")],["streaming",T("dict.streaming","Streaming")]]
+    .forEach(([val,label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.dictation_mode || "batch")) o.selected = true;
+    dictmode.appendChild(o);
+  });
+  dictmode.addEventListener("change", () => send("set_dictation_mode", dictmode.value));
 
   $("rec-path").textContent = STATE.recordings_dir || "";
   $("open-folder").addEventListener("click", () => send("open_folder"));

@@ -10,7 +10,7 @@ Backends:
 import sys
 
 if sys.platform == "darwin":
-    from ._macos import HotkeyListener, Paster, Tray
+    from ._macos import HotkeyListener, Paster, Tray, login_item_enabled
 elif sys.platform == "win32":
     from ._windows import HotkeyListener, Paster, Tray  # type: ignore[no-redef]
 elif sys.platform.startswith("linux"):
@@ -18,4 +18,10 @@ elif sys.platform.startswith("linux"):
 else:
     raise RuntimeError(f"Platform {sys.platform!r} is not supported yet. See ROADMAP.md.")
 
-__all__ = ["HotkeyListener", "Paster", "Tray"]
+if sys.platform != "darwin":  # login items are macOS-only
+
+    def login_item_enabled() -> bool | None:  # type: ignore[no-redef]
+        return None
+
+
+__all__ = ["HotkeyListener", "Paster", "Tray", "login_item_enabled"]
