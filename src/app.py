@@ -237,7 +237,7 @@ class VoiceTyper:
         self._seg_worker = threading.Thread(target=self._seg_worker_loop, daemon=True)
         self._seg_worker.start()
         self._recorder.start(on_segment=self._enqueue_segment, on_error=self._on_mic_error)
-        self._tray.show_hud(self._t("hud.listening"))
+        self._tray.show_hud(self._t("hud.listening"), "listening")
 
     def _enqueue_segment(self, seg_wav: bytes) -> None:
         """Recorder thread → worker queue. A None sentinel (from stop) ends the worker."""
@@ -261,15 +261,15 @@ class VoiceTyper:
         it live; if the field is gone (Spotlight, desktop, no text box) hold it on
         the clipboard instead of typing blind into the wrong place. A failed
         segment is logged and skipped — the session stays alive."""
-        self._tray.show_hud(self._t("hud.recognizing"))
+        self._tray.show_hud(self._t("hud.recognizing"), "recognizing")
         text, err = transcribe(seg_wav, mode=self._mode, prompt=prompt)
         if err:
             self._stream_err = err
             self._tray.set_status(f"⚠️ {err[:60]}")
-            self._tray.show_hud(self._t("hud.listening"))
+            self._tray.show_hud(self._t("hud.listening"), "listening")
             return
         if not text:
-            self._tray.show_hud(self._t("hud.listening"))
+            self._tray.show_hud(self._t("hud.listening"), "listening")
             return
 
         target = getattr(self, "_paste_target", None)
@@ -291,7 +291,7 @@ class VoiceTyper:
                 )
             self._buffered.append(text)
             self._tray.set_status(self._t("st.buffering", n=len(self._buffered)))
-            self._tray.show_hud(self._t("hud.buffering", n=len(self._buffered)))
+            self._tray.show_hud(self._t("hud.buffering", n=len(self._buffered)), "buffering")
             return
 
         # First inserted chunk has no leading space; later ones join with one
@@ -302,7 +302,7 @@ class VoiceTyper:
         self._typed_chars += len(chunk)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.streaming", preview=preview))
-        self._tray.show_hud(self._t("hud.listening"))
+        self._tray.show_hud(self._t("hud.listening"), "listening")
 
     def _on_mic_error(self, msg: str) -> None:
         self._stream_err = msg

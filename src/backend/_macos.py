@@ -1262,10 +1262,11 @@ class Tray:
     def set_status(self, text: str) -> None:
         AppHelper.callAfter(setattr, self._status, "title", text)
 
-    def show_hud(self, text: str) -> None:
-        """Show/update the floating streaming-status overlay near the menu-bar
-        icon. Built lazily on the main thread; any AppKit failure is swallowed so
-        a missing overlay never breaks dictation."""
+    def show_hud(self, text: str, state: str = "listening") -> None:
+        """Show/update the floating streaming-status overlay, anchored under our
+        own menu-bar icon so it visually drops out of it. Built lazily on the main
+        thread; any AppKit failure is swallowed so a missing overlay never breaks
+        dictation."""
 
         def _do() -> None:
             with contextlib.suppress(Exception):
@@ -1273,9 +1274,19 @@ class Tray:
                     from ._hud import StatusHUD
 
                     self._hud = StatusHUD()
-                self._hud.show(text)
+                self._hud.show(text, self._ui_theme, state, self._status_item_frame())
 
         AppHelper.callAfter(_do)
+
+    def _status_item_frame(self):
+        """Screen frame (x, y, w, h) of our status-bar button, so the HUD can
+        anchor under the icon. None if it can't be read (HUD falls back to the
+        top-right corner)."""
+        with contextlib.suppress(Exception):
+            button = self._app._nsapp.nsstatusitem.button()
+            f = button.window().frame()
+            return (f.origin.x, f.origin.y, f.size.width, f.size.height)
+        return None
 
     def hide_hud(self) -> None:
         def _do() -> None:

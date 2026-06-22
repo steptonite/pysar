@@ -169,9 +169,9 @@ _UK = {
     "notif.bufferModeTitle": "Нема активного поля вводу",
     "notif.bufferModeMsg": "Друк зупинено — весь текст збираю в буфер, з'явиться разом після Стоп (⌘V)",
     # Floating status overlay (streaming).
-    "hud.listening": "🔴 Слухаю…",
-    "hud.recognizing": "✍️ Розпізнаю…",
-    "hud.buffering": "📋 Нема поля → буфер ({n})",
+    "hud.listening": "Слухаю…",
+    "hud.recognizing": "Розпізнаю…",
+    "hud.buffering": "Нема поля → буфер ({n})",
 }
 
 _EN = {
