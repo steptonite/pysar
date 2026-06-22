@@ -1,4 +1,8 @@
-.PHONY: setup install venv whisper-build whisper-model whisper-vad whisper run up app icon lint fmt test clean distclean
+.PHONY: all setup install venv whisper-build whisper-model whisper-vad whisper run up app icon lint fmt test clean distclean
+
+# Full install in one go: everything + the menu-bar app. (install.sh wraps this
+# with prerequisite + clone handling for a fresh Mac.)
+all: setup app
 
 # ── Config ──────────────────────────────────────────────────────────────────
 # Override any of these via env; defaults install everything into vendor/.

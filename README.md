@@ -33,14 +33,26 @@ Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of uni
 
 ## Install
 
-Needs `cmake`, `git`, and Python 3.10+ (`brew install cmake python@3.12`).
+**One command** (Apple Silicon Mac). It installs the prerequisites (Homebrew,
+`cmake`, `git`, Python) if they're missing, clones the repo, builds whisper.cpp,
+downloads the models, and installs the menu-bar app:
 
 ```bash
-git clone https://github.com/steptonite/cream-typer-custom.git ~/code/cream-typer
-cd ~/code/cream-typer
-make setup    # venv + whisper.cpp (Metal) + speech model (~550 MB) + Silero VAD model
-make app      # build "Cream Typer.app" into /Applications + install the `cream` alias
+curl -fsSL https://raw.githubusercontent.com/steptonite/cream-typer-custom/main/install.sh | bash
 ```
+
+Already have the repo cloned? Run the same script from inside it, or use the
+Makefile directly:
+
+```bash
+./install.sh        # bootstrap (deps + setup + app), idempotent
+# …or…
+make all            # setup + app, assuming cmake/git/python are already present
+```
+
+`make setup` (venv + whisper.cpp + ~550 MB speech model + Silero VAD) and
+`make app` (build `Cream Typer.app` into /Applications + the `cream` alias) can
+still be run separately.
 
 Then launch **Cream Typer** from Spotlight. On first run, grant **Input Monitoring** and **Accessibility** to *Cream Typer* in System Settings → Privacy & Security (macOS prompts for Microphone automatically), then relaunch it.
 
