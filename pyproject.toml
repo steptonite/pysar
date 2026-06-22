@@ -51,6 +51,11 @@ macos = [
     "rumps>=0.4.0",
     "pyobjc-framework-Quartz>=10.0",
     "pyobjc-framework-WebKit>=10.0",
+    # Accessibility API (AXUIElement…) — paste text straight into the focused
+    # field so it lands where dictation began, regardless of window focus.
+    "pyobjc-framework-ApplicationServices>=10.0",
+    # SMAppService — register the .app as a Launch-at-login item (macOS 13+).
+    "pyobjc-framework-ServiceManagement>=10.0",
 ]
 # Reserved for upcoming Windows/Linux backends.
 windows = [

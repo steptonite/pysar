@@ -7,10 +7,11 @@ Event flow:
 Platform-specific adapters (hotkey, paste, tray) live in cream_typer.backend.
 """
 
+import queue
 import threading
 import time
 
-from .backend import HotkeyListener, Paster, Tray
+from .backend import HotkeyListener, Paster, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
     IDLE_ICON_FALLBACK,
@@ -58,6 +59,13 @@ class VoiceTyper:
         self._paster = Paster()
         self._recording = False
         self._busy = False  # blocks re-entry while a transcription is in flight
+        self._streaming = False  # this session uses the streaming path
+        # Streaming session state (set up per session in _start_streaming).
+        self._seg_queue: queue.Queue | None = None
+        self._seg_worker: threading.Thread | None = None
+        self._first_typed = False
+        self._stream_err: str | None = None
+        self._typed_chars = 0
 
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
@@ -78,12 +86,14 @@ class VoiceTyper:
             mics=list_input_devices(),
             current_mic=self._settings.get("mic"),
             on_select_mic=self._on_select_mic,
-            launch_at_login=self._settings.get("launch_at_login", False),
+            launch_at_login=self._initial_launch_at_login(),
             on_toggle_login=self._on_toggle_login,
             ui_theme=self._settings.get("ui_theme", "auto"),
             on_set_theme=self._on_set_theme,
             ui_lang=self._settings.get("ui_lang", "uk"),
             on_set_lang=self._on_set_lang,
+            dictation_mode=self._settings.get("dictation_mode", "batch"),
+            on_set_dictation_mode=self._on_set_dictation_mode,
             hotkey=self._settings["hotkey"],
             lang_hotkeys=self._settings["lang_hotkeys"],
             on_capture_hotkey=self._on_capture_hotkey,
@@ -135,15 +145,20 @@ class VoiceTyper:
             # Remember the focused app now, so the result pastes back here even if
             # the user clicks away during a slow transcription.
             self._paste_target = self._paster.capture_target()
+            self._streaming = self._settings.get("dictation_mode", "batch") == "streaming"
             self._tray.set_title("🔴")
             self._tray.set_status(self._t("st.recording"))
-            self._recorder.start()
+            if self._streaming:
+                self._start_streaming()
+            else:
+                self._recorder.start()
         else:
             self._recording = False
             self._busy = True
             self._tray.set_title("⏳")
             self._tray.set_status(self._t("st.transcribing"))
-            threading.Thread(target=self._finish, daemon=True).start()
+            target = self._finish_streaming if self._streaming else self._finish
+            threading.Thread(target=target, daemon=True).start()
 
     def _finish(self) -> None:
         try:
@@ -180,9 +195,167 @@ class VoiceTyper:
                 self._tray.set_title(self._idle_title())
                 return
 
-            self._paster.paste_text(text, getattr(self, "_paste_target", None))
+            target = getattr(self, "_paste_target", None)
+            pasted = self._paster.paste_text(text, target)
             preview = text[:40] + ("…" if len(text) > 40 else "")
-            self._tray.set_status(f"✓ ({dur:.1f}s) {preview}")
+            if pasted:
+                # Name the app the text landed in — AX can deliver to a window in
+                # the background (Spotlight in front), so "✓" alone leaves the user
+                # hunting for where it went.
+                app_name = target.get("name", "?") if isinstance(target, dict) else "?"
+                self._tray.set_status(self._t("st.okIn", app=app_name, dur=dur, preview=preview))
+            else:
+                # Couldn't deliver to the field — the text is on the clipboard.
+                # The menu status line is invisible until the menu is opened, so
+                # raise a real notification too.
+                self._tray.set_status(self._t("st.inBuffer", preview=preview))
+                self._tray.notify(
+                    "Cream Typer", self._t("notif.inBufferTitle"), self._t("notif.inBufferMsg")
+                )
+            self._tray.set_title(self._idle_title())
+        finally:
+            self._busy = False
+
+    # ── Streaming dictation ───────────────────────────────────────────────────
+    def _start_streaming(self) -> None:
+        """Begin a streaming session: spin up a single serialized worker that
+        transcribes each segment and types it, in order, then start the recorder
+        in segment mode. Segments queue up; the worker drains them one at a time
+        so whisper is never hit concurrently (8 GB) and word order is preserved."""
+        self._seg_queue = queue.Queue()
+        self._first_typed = False
+        self._stream_err = None
+        self._typed_chars = 0
+        # Sentences captured while no field was focused (Spotlight, desktop, an
+        # app with no text box). Held here and handed over on the clipboard in one
+        # piece at stop — never typed blind into the wrong place.
+        self._buffered: list[str] = []
+        # Latched once the input field is lost (or was never there): from that
+        # point on every sentence goes to the buffer for the rest of the session,
+        # even if a field reappears — we can't trust where live typing would land.
+        self._buffer_mode = False
+        self._seg_worker = threading.Thread(target=self._seg_worker_loop, daemon=True)
+        self._seg_worker.start()
+        self._recorder.start(on_segment=self._enqueue_segment, on_error=self._on_mic_error)
+        self._tray.show_hud(self._t("hud.listening"))
+
+    def _enqueue_segment(self, seg_wav: bytes) -> None:
+        """Recorder thread → worker queue. A None sentinel (from stop) ends the worker."""
+        if self._seg_queue is not None:
+            self._seg_queue.put(seg_wav)
+
+    def _seg_worker_loop(self) -> None:
+        # Compose the whisper prompt once per session — the active profile group
+        # doesn't change mid-dictation.
+        lang = MODES.get(self._mode, MODES[DEFAULT_MODE])["language"]
+        active = self._settings["active_profiles"].get(lang, [])
+        prompt = compose_prompt(self._settings["profiles"], active, lang)
+        while True:
+            item = self._seg_queue.get()
+            if item is None:  # sentinel: stop() has queued the final segment already
+                break
+            self._process_segment(item, prompt)
+
+    def _process_segment(self, seg_wav: bytes, prompt: str) -> None:
+        """Transcribe one segment and deliver it. If a text field is focused, type
+        it live; if the field is gone (Spotlight, desktop, no text box) hold it on
+        the clipboard instead of typing blind into the wrong place. A failed
+        segment is logged and skipped — the session stays alive."""
+        self._tray.show_hud(self._t("hud.recognizing"))
+        text, err = transcribe(seg_wav, mode=self._mode, prompt=prompt)
+        if err:
+            self._stream_err = err
+            self._tray.set_status(f"⚠️ {err[:60]}")
+            self._tray.show_hud(self._t("hud.listening"))
+            return
+        if not text:
+            self._tray.show_hud(self._t("hud.listening"))
+            return
+
+        target = getattr(self, "_paste_target", None)
+        if self._buffer_mode or not self._paster.has_editable_focus(target):
+            # No field to type into → latch buffer mode for the rest of the
+            # session and accumulate this sentence. We don't write the clipboard
+            # per sentence (that would clobber it mid-dictation and surprise the
+            # user); the whole buffer is placed on the clipboard once, at stop.
+            # Don't touch _first_typed: the live-typing space logic stays about
+            # what actually went into the field, independent of buffered text.
+            if not self._buffer_mode:
+                self._buffer_mode = True
+                # One-time push so the user knows live typing has stopped and the
+                # rest is being collected for a single ⌘V after Stop.
+                self._tray.notify(
+                    "Cream Typer",
+                    self._t("notif.bufferModeTitle"),
+                    self._t("notif.bufferModeMsg"),
+                )
+            self._buffered.append(text)
+            self._tray.set_status(self._t("st.buffering", n=len(self._buffered)))
+            self._tray.show_hud(self._t("hud.buffering", n=len(self._buffered)))
+            return
+
+        # First inserted chunk has no leading space; later ones join with one
+        # (whisper supplies in-sentence punctuation).
+        chunk = text if not self._first_typed else " " + text
+        self._paster.type_text(chunk)
+        self._first_typed = True
+        self._typed_chars += len(chunk)
+        preview = text[:40] + ("…" if len(text) > 40 else "")
+        self._tray.set_status(self._t("st.streaming", preview=preview))
+        self._tray.show_hud(self._t("hud.listening"))
+
+    def _on_mic_error(self, msg: str) -> None:
+        self._stream_err = msg
+        self._tray.set_status(self._t("st.micError"))
+        self._tray.notify(
+            "Cream Typer", self._t("notif.micErrorTitle"), self._t("notif.micErrorMsg")
+        )
+
+    def _finish_streaming(self) -> None:
+        try:
+            wav = self._recorder.stop()  # flushes the final segment through _enqueue_segment
+
+            # Persist the full clip for recoverability, as in batch mode.
+            if wav is not None and self._settings["save_recordings"]:
+                try:
+                    save_recording(wav, self._settings["keep_last"])
+                except Exception as e:
+                    print(f"⚠️ save_recording failed: {e}")
+
+            # No more segments coming → tell the worker to finish, then wait for it
+            # to drain the queue so the last sentence is typed before we go idle.
+            if self._seg_queue is not None:
+                self._seg_queue.put(None)
+            if self._seg_worker is not None:
+                self._seg_worker.join(timeout=60)
+
+            self._tray.hide_hud()
+
+            # Sentences captured while no field was focused stay on the clipboard;
+            # tell the user with a visible notification so the away-portion isn't
+            # forgotten (the menu status line is invisible until the menu opens).
+            buffered = getattr(self, "_buffered", [])
+            if buffered:
+                self._paster.set_clipboard(" ".join(buffered))
+                self._tray.notify(
+                    "Cream Typer",
+                    self._t("notif.bufferTitle"),
+                    self._t("notif.bufferMsg", n=len(buffered)),
+                )
+
+            if self._first_typed:
+                app_name = (
+                    self._paste_target.get("name", "?")
+                    if isinstance(getattr(self, "_paste_target", None), dict)
+                    else "?"
+                )
+                self._tray.set_status(self._t("st.streamDone", app=app_name, n=self._typed_chars))
+            elif buffered:
+                self._tray.set_status(self._t("st.bufferDone", n=len(buffered)))
+            elif self._stream_err:
+                self._tray.set_status(f"⚠️ {self._stream_err[:60]}")
+            else:
+                self._tray.set_status(self._t("st.silence"))
             self._tray.set_title(self._idle_title())
         finally:
             self._busy = False
@@ -271,6 +444,19 @@ class VoiceTyper:
         self._recorder.set_device(name)
         self._tray.set_status(self._t("st.mic", name=name) if name else self._t("st.defaultMic"))
 
+    def _initial_launch_at_login(self) -> bool:
+        """The checkmark's starting state. Prefer the OS's real SMAppService
+        status so the toggle reflects reality after a reboot (and after the user
+        changes it in System Settings); fall back to our saved setting only when
+        the status can't be read. Reconcile the saved value to what we found."""
+        real = login_item_enabled()
+        if real is None:
+            return bool(self._settings.get("launch_at_login", False))
+        if self._settings.get("launch_at_login") != real:
+            self._settings["launch_at_login"] = real
+            save_settings(self._settings)
+        return real
+
     def _on_toggle_login(self, enabled: bool) -> None:
         self._settings["launch_at_login"] = enabled
         save_settings(self._settings)
@@ -284,6 +470,13 @@ class VoiceTyper:
         self._settings["ui_lang"] = lang
         self._ui_lang = lang  # keep status-line strings in the new language
         save_settings(self._settings)
+
+    def _on_set_dictation_mode(self, mode: str) -> None:
+        self._settings["dictation_mode"] = mode if mode in ("batch", "streaming") else "batch"
+        save_settings(self._settings)
+        self._tray.set_status(
+            self._t("st.dictStreaming" if mode == "streaming" else "st.dictBatch")
+        )
 
     def _on_capture_hotkey(self, slot: str) -> None:
         """Capture the next keypress and rebind `slot` to it, live (no relaunch).
@@ -395,6 +588,11 @@ class VoiceTyper:
 
 def main() -> None:
     """Console-script entry point (see pyproject.toml [project.scripts])."""
+    from .logsetup import setup_logging
+
+    log = setup_logging()  # tee stdout/stderr to a file + catch crashes
+    if log:
+        print(f"📝 logging to {log}")
     VoiceTyper().run()
 
 

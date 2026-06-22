@@ -52,6 +52,9 @@ DEFAULTS = {
     "ui_theme": "auto",
     # App language — currently drives only the copied AI prompt's language.
     "ui_lang": "uk",
+    # Dictation mode: "batch" transcribes the whole clip once at the end (default,
+    # highest quality); "streaming" cuts on pauses and types each sentence live.
+    "dictation_mode": "batch",
     # Profile sets: named bundles of profile names, each activated all-at-once by
     # ⌃⌥<digit> (digit = 1-based index). Empty until the user creates one.
     "profile_sets": [],
@@ -154,6 +157,8 @@ def load_settings() -> dict:
             merged["ui_theme"] = DEFAULTS["ui_theme"]
         if merged["ui_lang"] not in UI_LANGS:
             merged["ui_lang"] = DEFAULTS["ui_lang"]
+        if merged["dictation_mode"] not in ("batch", "streaming"):
+            merged["dictation_mode"] = DEFAULTS["dictation_mode"]
     except Exception:
         pass  # missing/invalid settings file → fall back to defaults
     # Normalise hotkeys into fresh dicts (also migrates the legacy int keycode).
