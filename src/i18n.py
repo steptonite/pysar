@@ -168,10 +168,13 @@ _UK = {
     "notif.bufferMsg": "Поле вводу зникло — {n} реч. лежить у буфері, встав ⌘V",
     "notif.bufferModeTitle": "Нема активного поля вводу",
     "notif.bufferModeMsg": "Друк зупинено — весь текст збираю в буфер, з'явиться разом після Стоп (⌘V)",
+    "notif.serverDownTitle": "Сервер розпізнавання впав",
+    "notif.serverDownMsg": "Whisper не відповідає — мова зараз НЕ записується. Зупини й перезапусти Pysar.",
     # Floating status overlay (streaming).
     "hud.listening": "Слухаю…",
     "hud.recognizing": "Розпізнаю…",
     "hud.buffering": "Нема поля → буфер ({n})",
+    "hud.serverDown": "Сервер недоступний",
 }
 
 _EN = {
@@ -329,10 +332,13 @@ _EN = {
     "notif.bufferMsg": "Input field was gone — {n} sentence(s) on the clipboard, paste with ⌘V",
     "notif.bufferModeTitle": "No active input field",
     "notif.bufferModeMsg": "Typing paused — collecting the rest into the buffer; it appears together after Stop (⌘V)",
+    "notif.serverDownTitle": "Recognition server crashed",
+    "notif.serverDownMsg": "Whisper isn't responding — speech is NOT being captured right now. Stop and relaunch Pysar.",
     # Floating status overlay (streaming).
-    "hud.listening": "🔴 Listening…",
-    "hud.recognizing": "✍️ Recognizing…",
-    "hud.buffering": "📋 No field → buffer ({n})",
+    "hud.listening": "Listening…",
+    "hud.recognizing": "Recognizing…",
+    "hud.buffering": "No field → buffer ({n})",
+    "hud.serverDown": "Server unavailable",
 }
 
 _STRINGS = {"uk": _UK, "en": _EN}

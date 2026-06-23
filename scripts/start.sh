@@ -19,7 +19,12 @@ health() { curl -s -o /dev/null "http://127.0.0.1:$PORT/"; }
 cleanup() {
     if [ "$STARTED_SERVER" = "1" ] && [ -n "$SERVER_PID" ]; then
         echo "🛑 stopping whisper server (pid $SERVER_PID)…"
-        kill "$SERVER_PID" 2>/dev/null || true
+        # SIGKILL, not SIGTERM: whisper-server's own signal handler calls exit(),
+        # which aborts inside the Metal teardown (ggml_metal_rsets_free → ggml_abort
+        # → SIGABRT) and litters DiagnosticReports with a crash report on every
+        # quit. A hard kill skips the handler — the server is stateless, so there's
+        # nothing to flush — and dies cleanly with no crash report.
+        kill -9 "$SERVER_PID" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT INT TERM
@@ -28,7 +33,10 @@ if health; then
     echo "✅ whisper server already running on :$PORT"
 else
     echo "🚀 starting whisper server (log: $LOG)…"
-    bash "$ROOT/scripts/whisper_server.sh" >"$LOG" 2>&1 &
+    # nohup so an incidental SIGHUP (terminal/login session going away on sleep or
+    # logout) doesn't reach the server and tear it down mid-dictation. We still
+    # stop it deliberately via the saved PID in cleanup().
+    nohup bash "$ROOT/scripts/whisper_server.sh" >"$LOG" 2>&1 &
     SERVER_PID=$!
     STARTED_SERVER=1
 

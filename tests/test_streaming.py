@@ -56,6 +56,7 @@ def _vt(paster):
     vt._stream_err = None
     vt._buffered = []
     vt._buffer_mode = False
+    vt._server_down = False
     vt._paste_target = None
     vt._t = lambda key, **kw: key
     return vt
@@ -81,6 +82,25 @@ def test_transcription_error_is_skipped(monkeypatch):
     assert p.typed == []
     assert vt._first_typed is False
     assert vt._stream_err == "Whisper down"
+
+
+def test_server_down_notifies_once_then_rearms(monkeypatch):
+    # A dead server must surface immediately (not only at Stop): one push on the
+    # first failed segment, none on the next failure, and the latch re-arms once a
+    # segment succeeds — so a second outage notifies again.
+    p = _FakePaster()
+    vt = _vt(p)
+    monkeypatch.setattr(app_mod, "transcribe", lambda *a, **k: (None, "Whisper down"))
+    vt._process_segment(b"w1", "prompt")
+    vt._process_segment(b"w2", "prompt")
+    assert len(vt._tray.notifications) == 1  # one push, not one per failed segment
+    assert vt._server_down is True
+    monkeypatch.setattr(app_mod, "transcribe", lambda *a, **k: ("ок", None))
+    vt._process_segment(b"w3", "prompt")  # recovers → re-arms the notice
+    assert vt._server_down is False
+    monkeypatch.setattr(app_mod, "transcribe", lambda *a, **k: (None, "Whisper down"))
+    vt._process_segment(b"w4", "prompt")  # second outage → notifies again
+    assert len(vt._tray.notifications) == 2
 
 
 def test_empty_text_skipped_keeps_first_flag(monkeypatch):

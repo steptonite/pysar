@@ -58,6 +58,7 @@ def _dot_color(state: str):
         "listening": NSColor.systemRedColor,
         "recognizing": NSColor.systemOrangeColor,
         "buffering": NSColor.systemBlueColor,
+        "error": NSColor.systemRedColor,
     }.get(state, NSColor.systemGrayColor)()
 
 

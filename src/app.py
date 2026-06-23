@@ -234,6 +234,10 @@ class VoiceTyper:
         # point on every sentence goes to the buffer for the rest of the session,
         # even if a field reappears — we can't trust where live typing would land.
         self._buffer_mode = False
+        # Latched the first time a segment fails to transcribe (server down), so
+        # we fire exactly one notification instead of one per failed segment.
+        # Cleared again as soon as a segment succeeds (server recovered).
+        self._server_down = False
         self._seg_worker = threading.Thread(target=self._seg_worker_loop, daemon=True)
         self._seg_worker.start()
         self._recorder.start(on_segment=self._enqueue_segment, on_error=self._on_mic_error)
@@ -264,13 +268,26 @@ class VoiceTyper:
         self._tray.show_hud(self._t("hud.recognizing"), "recognizing")
         text, err = transcribe(seg_wav, mode=self._mode, prompt=prompt)
         if err:
+            # The server is unreachable mid-take. Surface it *now* — not only at
+            # Stop — with a red HUD state and a single push, so the user isn't
+            # left talking to a dead server thinking it's still listening. The
+            # full clip is still saved (if enabled) for re-transcription.
             self._stream_err = err
             self._tray.set_status(f"⚠️ {err[:60]}")
-            self._tray.show_hud(self._t("hud.listening"), "listening")
+            if not self._server_down:
+                self._server_down = True
+                self._tray.notify(
+                    "Pysar",
+                    self._t("notif.serverDownTitle"),
+                    self._t("notif.serverDownMsg"),
+                )
+            self._tray.show_hud(self._t("hud.serverDown"), "error")
             return
         if not text:
             self._tray.show_hud(self._t("hud.listening"), "listening")
             return
+        # A segment came back → the server is alive again; re-arm the notice.
+        self._server_down = False
 
         target = getattr(self, "_paste_target", None)
         if self._buffer_mode or not self._paster.has_editable_focus(target):
