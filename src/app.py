@@ -15,6 +15,7 @@ from .backend import HotkeyListener, Paster, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
     IDLE_ICON_FALLBACK,
+    LANG_SEED,
     MAX_PROFILE_SETS,
     MENU_MODES,
     MODE_ICONS,
@@ -238,6 +239,10 @@ class VoiceTyper:
         # we fire exactly one notification instead of one per failed segment.
         # Cleared again as soon as a segment succeeds (server recovered).
         self._server_down = False
+        # Rolling tail of what we've already transcribed this take, fed to whisper
+        # as context on the next segment so it keeps continuity across cuts (far
+        # fewer reformulated/invented words on short fragments).
+        self._ctx_tail = ""
         self._seg_worker = threading.Thread(target=self._seg_worker_loop, daemon=True)
         self._seg_worker.start()
         self._recorder.start(on_segment=self._enqueue_segment, on_error=self._on_mic_error)
@@ -248,17 +253,31 @@ class VoiceTyper:
         if self._seg_queue is not None:
             self._seg_queue.put(seg_wav)
 
+    # Whisper keeps ~224 prompt tokens. Reserve the tail of that for rolling
+    # context (~last spoken sentence) so the vocabulary prompt still fits in front.
+    _CTX_TAIL_CHARS = 180
+
     def _seg_worker_loop(self) -> None:
-        # Compose the whisper prompt once per session — the active profile group
-        # doesn't change mid-dictation.
+        # Vocabulary prompt is composed once — the active profile group doesn't
+        # change mid-dictation. With no profile for this language, fall back to a
+        # neutral language seed so the decoder keeps the right script (uk vs ru).
         lang = MODES.get(self._mode, MODES[DEFAULT_MODE])["language"]
         active = self._settings["active_profiles"].get(lang, [])
-        prompt = compose_prompt(self._settings["profiles"], active, lang)
+        base = compose_prompt(self._settings["profiles"], active, lang) or LANG_SEED.get(lang, "")
+        self._base_prompt = base
         while True:
             item = self._seg_queue.get()
             if item is None:  # sentinel: stop() has queued the final segment already
                 break
-            self._process_segment(item, prompt)
+            self._process_segment(item, base)
+
+    def _stream_prompt(self, base: str) -> str:
+        """Per-segment whisper prompt: the vocabulary/seed base, then the rolling
+        tail of what was already said this take. Base goes first and the recent
+        context last — whisper keeps the END of an over-long prompt, so the
+        nearest context survives truncation."""
+        tail = self._ctx_tail[-self._CTX_TAIL_CHARS :]
+        return f"{base} {tail}".strip() if base or tail else ""
 
     def _process_segment(self, seg_wav: bytes, prompt: str) -> None:
         """Transcribe one segment and deliver it. If a text field is focused, type
@@ -266,7 +285,7 @@ class VoiceTyper:
         the clipboard instead of typing blind into the wrong place. A failed
         segment is logged and skipped — the session stays alive."""
         self._tray.show_hud(self._t("hud.recognizing"), "recognizing")
-        text, err = transcribe(seg_wav, mode=self._mode, prompt=prompt)
+        text, err = transcribe(seg_wav, mode=self._mode, prompt=self._stream_prompt(prompt))
         if err:
             # The server is unreachable mid-take. Surface it *now* — not only at
             # Stop — with a red HUD state and a single push, so the user isn't
@@ -288,6 +307,9 @@ class VoiceTyper:
             return
         # A segment came back → the server is alive again; re-arm the notice.
         self._server_down = False
+        # Extend the rolling context with what was just recognized (typed or
+        # buffered alike — continuity is about the words, not where they landed).
+        self._ctx_tail = f"{self._ctx_tail} {text}".strip()[-self._CTX_TAIL_CHARS :]
 
         target = getattr(self, "_paste_target", None)
         if self._buffer_mode or not self._paster.has_editable_focus(target):

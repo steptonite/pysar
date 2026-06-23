@@ -69,7 +69,10 @@ def pcm_to_wav(float32_bytes: bytes) -> bytes | None:
 
     peak = float(np.max(np.abs(data)))
     if peak > 1e-3:
-        gain = min(0.95 / peak, 8.0)  # ≤ +18 dB
+        # ≤ +12 dB. Higher gain (was +18) over-amplifies a quiet/short segment's
+        # room tone until turbo hallucinates words out of the noise; +12 lifts the
+        # hot-and-low Air mic enough without blowing up the noise bed.
+        gain = min(0.95 / peak, 4.0)
         data = data * gain
 
     data_i16 = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)

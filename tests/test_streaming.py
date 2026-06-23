@@ -57,6 +57,7 @@ def _vt(paster):
     vt._buffered = []
     vt._buffer_mode = False
     vt._server_down = False
+    vt._ctx_tail = ""
     vt._paste_target = None
     vt._t = lambda key, **kw: key
     return vt
@@ -156,6 +157,35 @@ def test_buffer_mode_is_sticky_after_field_returns(monkeypatch):
     assert p.typed == []
     assert vt._buffered == ["геть", "ще"]
     assert len(vt._tray.notifications) == 1
+
+
+def test_rolling_context_is_fed_to_the_next_segment(monkeypatch):
+    # Each recognized segment extends the rolling context, and that context is
+    # passed to whisper as the prompt on the *next* segment (continuity across
+    # cuts). Capture the prompt the transcriber sees.
+    seen_prompts = []
+
+    def fake_transcribe(wav, mode="uk", prompt=""):
+        seen_prompts.append(prompt)
+        return ("Привіт", None)
+
+    monkeypatch.setattr(app_mod, "transcribe", fake_transcribe)
+    p = _FakePaster()
+    vt = _vt(p)
+    vt._process_segment(b"w1", "БАЗА")  # first: only the base prompt, no context yet
+    vt._process_segment(b"w2", "БАЗА")  # second: base + the tail from the first
+    assert seen_prompts[0] == "БАЗА"
+    assert seen_prompts[1] == "БАЗА Привіт"
+    assert vt._ctx_tail.endswith("Привіт")
+
+
+def test_rolling_context_is_length_capped(monkeypatch):
+    monkeypatch.setattr(app_mod, "transcribe", lambda *a, **k: ("слово " * 20, None))
+    p = _FakePaster()
+    vt = _vt(p)
+    for _ in range(5):
+        vt._process_segment(b"w", "")
+    assert len(vt._ctx_tail) <= VoiceTyper._CTX_TAIL_CHARS
 
 
 def test_pcm_to_wav_roundtrip():

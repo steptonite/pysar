@@ -116,10 +116,24 @@ CHUNK_SIZE = 1024
 # least MIN_SEG_SEC of voiced audio; MAX_SEG_SEC force-emits a run-on that never
 # pauses. SILENCE_MARGIN is how many times above the adaptive noise floor a
 # block's RMS must be to count as speech. Start values — tune against real audio.
-PAUSE_SEC = 0.6  # trailing silence that ends a segment
-MIN_SEG_SEC = 0.8  # min voiced audio before a pause can cut
+# PAUSE/MIN raised from 0.6/0.8: cutting too eagerly sliced sub-sentence
+# fragments, and whisper on a 1-second scrap with no context guesses (wrong words,
+# random punctuation). Waiting for a fuller clause costs a little latency but the
+# recognition is far better — and streaming carries the previous text forward as
+# context (see VoiceTyper._stream_prompt), so the small extra wait is worth it.
+PAUSE_SEC = 0.9  # trailing silence that ends a segment
+MIN_SEG_SEC = 1.6  # min voiced audio before a pause can cut
 MAX_SEG_SEC = 18.0  # hard cap; force-emit without a pause (rare run-on fallback)
 SILENCE_MARGIN = 4.0  # block RMS > noise_floor × this ⇒ voiced
+
+# Minimal per-language priming so the decoder keeps the right script even when no
+# speech profile is active. large-v3-turbo drifts to Russian on Ukrainian audio
+# with an empty prompt; a neutral one-line seed in the target language anchors it.
+# Only languages that share a script with a "louder" neighbour need this.
+LANG_SEED = {
+    "uk": "Розшифровка диктовки українською мовою.",
+    "ru": "Расшифровка диктовки на русском языке.",
+}
 
 # ── Whisper.cpp server ───────────────────────────────────────────────────────
 WHISPER_URL = "http://localhost:8080/inference"
