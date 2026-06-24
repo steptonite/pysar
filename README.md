@@ -1,10 +1,10 @@
-# Pysar — custom build
+# Pysar
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?logo=apple)](https://www.apple.com/mac/)
 
-My personal, customized macOS build of [**pysar**](https://github.com/steptonite/pysar) by Pysar (MIT — see [Attribution](#attribution--license)).
+**Pysar** (Ukrainian for *scribe*) is my personal macOS build, grown out of [**pysar**](https://github.com/steptonite/pysar) by Pysar (MIT — see [Attribution](#attribution--license)).
 
 Offline voice dictation: tap **Caps Lock**, speak, tap again — text is transcribed locally by whisper.cpp (Metal GPU) and pasted at your cursor in any app. No cloud, no telemetry, audio never leaves the Mac. Tuned for an **Apple M2 / 8 GB**.
 

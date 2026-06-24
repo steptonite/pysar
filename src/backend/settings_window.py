@@ -232,7 +232,7 @@ _TEMPLATE = r"""<!doctype html>
 <body>
   <!-- ── Main screen ──────────────────────────────────────────────────────── -->
   <div id="screen-main" class="screen on">
-    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar Custom</span></header>
+    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar</span></header>
 
     <div class="sec-title" data-i18n="sec.audio">Audio</div>
     <section>
