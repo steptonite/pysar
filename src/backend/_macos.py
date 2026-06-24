@@ -130,6 +130,8 @@ class HotkeyListener:
         self._cap_pending: int | None = None  # a bare modifier seen down, awaiting up
         self._flag_bindings: list[dict] = []  # bare caps/modifier bindings
         self._key_bindings: list[dict] = []  # key-down bindings (combos, F-keys)
+        self._tap = None  # CGEventTap handle, kept so we can re-enable it if macOS
+        # disables it after a slow callback / a stalled run loop (see _callback).
         self.set_bindings(
             hotkey or dict(DEFAULT_HOTKEY), lang_hotkeys or DEFAULT_LANG_HOTKEYS, set_hotkeys
         )
@@ -210,6 +212,7 @@ class HotkeyListener:
                 "Add Terminal (or iTerm) and toggle the switch on."
             )
 
+        self._tap = tap
         source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
         Quartz.CFRunLoopAddSource(
             Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopDefaultMode
@@ -235,6 +238,19 @@ class HotkeyListener:
 
     def _callback(self, proxy, event_type, event, refcon):
         try:
+            # macOS disables a listen-only tap if a callback runs long or the run
+            # loop stalls (e.g. a TCC permission prompt during meeting-capture
+            # start). It then delivers one final "disabled" event and goes silent —
+            # the hotkey is dead until we switch it back on right here.
+            if event_type in (
+                Quartz.kCGEventTapDisabledByTimeout,
+                Quartz.kCGEventTapDisabledByUserInput,
+            ):
+                if self._tap is not None:
+                    Quartz.CGEventTapEnable(self._tap, True)
+                    print("⚠️ hotkey tap was disabled by macOS — re-enabled")
+                return event
+
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             flags = Quartz.CGEventGetFlags(event)
 
