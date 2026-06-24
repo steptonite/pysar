@@ -16,7 +16,7 @@ This fork is packaged to be reproducible — it survives a clean macOS reinstall
 
 - **Streaming dictation (opt-in)** — a second mode that types each sentence into the field *as you speak* instead of one transcription at the end. Audio is cut on natural pauses (never mid-word), transcribed sentence-by-sentence by a serialized worker (so word order is preserved and whisper is never hit concurrently on 8 GB), and typed via synthetic Unicode key events — **no clipboard involved**, so your clipboard is never clobbered mid-dictation. Pick **Batch** (default) or **Streaming** in **Settings → Dictation**. See [Streaming dictation](#streaming-dictation).
 - **Focus-aware buffering + status HUD** — streaming watches where the keyboard focus is. If you switch away to somewhere with no text field (Spotlight, the desktop, a window with no input), it *stops typing blind* and latches into **buffer mode**: the rest of the dictation is collected and dropped onto the clipboard in one piece at Stop, so nothing lands in the wrong place. A small floating **status pill** near the menu-bar icon shows the live state (listening / recognizing / buffering) — visible even when your dictation hotkey is a silent key with no Caps-Lock LED.
-- **One-command launch** — `make up` (or the `cream` alias) starts the whisper server in the background *and* the app; quitting stops both. No two-terminal dance.
+- **One-command launch** — `make up` (or the `pysar` alias) starts the whisper server in the background *and* the app; quitting stops both. No two-terminal dance.
 - **Real `.app` in /Applications** — `make app` builds a Dock-less menu-bar agent (`LSUIElement`) with a custom icon, launchable from Spotlight/Launchpad. No Terminal window, no Dock tile, no Python rocket.
 - **Language hotkeys** — hold `Ctrl+Option` + a letter to switch output language without opening the menu: `U` → 🇺🇦 Ukrainian, `R` → 🇷🇺 Russian, `E` → 🌐 any-language → English. The menu-bar icon shows the active language's flag. Default mode is `uk`. Every shortcut (dictation toggle, language switches, profile sets) is freely **reassignable** in **Settings → Hotkeys** — captured live, no relaunch.
 - **VAD anti-hallucination** — the server runs with Silero VAD, so silence never reaches the model and Whisper stops inventing YouTube-style "subtitle credits" on quiet input. Also uses `--split-on-word` (no mid-word splits) and `--suppress-nst`.
@@ -51,7 +51,7 @@ make all            # setup + app, assuming cmake/git/python are already present
 ```
 
 `make setup` (venv + whisper.cpp + ~550 MB speech model + Silero VAD) and
-`make app` (build `Pysar.app` into /Applications + the `cream` alias) can
+`make app` (build `Pysar.app` into /Applications + the `pysar` alias) can
 still be run separately.
 
 Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** and **Accessibility** to *Pysar* in System Settings → Privacy & Security (macOS prompts for Microphone automatically), then relaunch it.
@@ -146,7 +146,7 @@ Grant these to **Pysar** (the app), not Python or Terminal. macOS does not promp
 
 ```
 make setup        # full install: venv + whisper.cpp + speech & VAD models
-make app          # install /Applications/Pysar.app + `cream` alias
+make app          # install /Applications/Pysar.app + `pysar` alias
 make up           # run server (bg) + app from this terminal
 make icon         # regenerate the app icon from scripts/make_icon.py
 make whisper-vad  # (re)download the Silero VAD model
