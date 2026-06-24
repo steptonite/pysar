@@ -21,7 +21,7 @@ User-facing strings and docs now say **Pysar**.
 
 ---
 
-## Phase 2 — Python package `pysar` → `pysar` ✅ (commit `77febf4`)
+## Phase 2 — Python package `pysar` → `pysar` ✅ (commit `5c67225`)
 
 **Done:** `pyproject.toml` (`name`, `packages`, `package-dir`, `[project.scripts]`
 `pysar = "pysar.app:main"`, ruff `known-first-party`); all `tests/*` imports;
@@ -49,7 +49,7 @@ the setuptools mapping + console-script + test imports + `python -m`, NOT a dir 
 
 ---
 
-## Phase 3 — app bundle + infra cosmetics ✅ (commit `b15bf67`)
+## Phase 3 — app bundle + infra cosmetics ✅ (commit `a351120`)
 
 **Done:** `scripts/install_app.sh` rewritten — builds `/Applications/Pysar.app`
 (`CFBundleName`/`DisplayName`=Pysar, `CFBundleExecutable`=pysar,
@@ -77,7 +77,7 @@ runs `make up`); GitHub repo `pysar-custom` not renamed so `REPO_URL` is unchang
 
 ---
 
-## Phase 4 — Bundle ID ✅ (commit `aa1aea8`)
+## Phase 4 — Bundle ID ✅ (commit `4162dca`)
 
 **Done:** `CFBundleIdentifier` `com.steptonite.pysar` → `com.steptonite.pysar`
 (own namespace, drops the upstream steptonite one) in `scripts/install_app.sh`; NOTE
@@ -95,7 +95,7 @@ id, so they almost certainly need re-granting:
 
 ---
 
-## Phase 5 — data folder migration ✅ (commit `5a28603`)
+## Phase 5 — data folder migration ✅ (commit `3120367`)
 
 **Done:** new dependency-free `src/paths.py` with `data_dir()` — one-time atomic
 rename of `Application Support/Pysar` → `Pysar` (guarded: old exists AND new
