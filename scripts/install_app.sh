@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build "/Applications/Pysar.app" — a Dock-less menu-bar launcher that
 # starts the whisper server and the app with one click (Spotlight/Launchpad).
-# Also installs a `cream` shell alias. Idempotent: safe to re-run.
+# Also installs a `pysar` shell alias. Idempotent: safe to re-run.
 #
 # Everything it needs lives in the repo, so a fresh Mac just does:
 #   make setup && make app
@@ -9,6 +9,7 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="/Applications/Pysar.app"
+OLD_APP="/Applications/Pysar.app"   # pre-rebrand bundle, removed below
 ICNS="$ROOT/assets/Pysar.icns"
 VENV_PY="$ROOT/venv/bin/python"
 
@@ -25,17 +26,20 @@ fi
 PY_SRC="$("$VENV_PY" -c 'import sys,os;print(os.path.join(sys.base_prefix,"Resources/Python.app/Contents/MacOS/Python"))')"
 SITE_DIR="$("$VENV_PY" -c 'import site;print(site.getsitepackages()[0])')"
 
-rm -rf "$APP"
+rm -rf "$APP" "$OLD_APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # ── Info.plist (LSUIElement = menu-bar agent, no Dock icon) ───────────────────
+# NOTE: CFBundleIdentifier is still com.steptonite.pysar so that macOS keeps the
+# existing TCC permissions (Input Monitoring / Accessibility) across the rename.
+# Changing the bundle id is a separate, deliberate step (see docs/rebrand-pysar.md).
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Pysar Custom</string>
-    <key>CFBundleDisplayName</key><string>Pysar Custom</string>
+    <key>CFBundleName</key><string>Pysar</string>
+    <key>CFBundleDisplayName</key><string>Pysar</string>
     <key>CFBundleIdentifier</key><string>com.steptonite.pysar</string>
     <key>CFBundleExecutable</key><string>pysar</string>
     <key>CFBundleIconFile</key><string>Pysar</string>
@@ -69,10 +73,10 @@ if [ ! -f "\$ROOT/scripts/start.sh" ]; then
     exit 1
 fi
 # Run the bundled python copy (Contents/MacOS/Python) so the GUI process lives
-# *inside* this .app — that is what makes the Dock/⌘-Tab show "Pysar Custom"
-# and our icon natively. PYSAR_SITE hands that bare interpreter the venv's
-# packages (see scripts/_app_main.py). bash stays the parent (no exec) so the
-# start.sh EXIT trap can still stop the whisper server on quit.
+# *inside* this .app — that is what makes the Dock/⌘-Tab show "Pysar" and our
+# icon natively. PYSAR_SITE hands that bare interpreter the venv's packages
+# (see scripts/_app_main.py). bash stays the parent (no exec) so the start.sh
+# EXIT trap can still stop the whisper server on quit.
 export PYSAR_PYTHON="\$DIR/Python"
 export PYSAR_SITE="$SITE_DIR"
 /bin/bash "\$ROOT/scripts/start.sh" >>"\$HOME/Library/Logs/pysar.log" 2>&1
@@ -92,12 +96,12 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$APP" || true
 touch "$APP"
 
-# ── `cream` alias (launch from any terminal) ──────────────────────────────────
+# ── `pysar` alias (launch from any terminal) ──────────────────────────────────
 ZRC="$HOME/.zshrc"
-if ! grep -q "alias cream=" "$ZRC" 2>/dev/null; then
-    printf '\n# Pysar voice dictation\nalias cream="make -C %s up"\n' "$ROOT" >> "$ZRC"
-    echo "🔗 added 'cream' alias to ~/.zshrc"
+if ! grep -q "alias pysar=" "$ZRC" 2>/dev/null; then
+    printf '\n# Pysar voice dictation\nalias pysar="make -C %s up"\n' "$ROOT" >> "$ZRC"
+    echo "🔗 added 'pysar' alias to ~/.zshrc"
 fi
 
-echo "✅ Done. Launch via Spotlight → “Pysar”, or run 'cream' in a new terminal."
+echo "✅ Done. Launch via Spotlight → “Pysar”, or run 'pysar' in a new terminal."
 echo "   First run: grant Input Monitoring + Accessibility to Pysar in System Settings."

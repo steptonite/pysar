@@ -42,7 +42,7 @@ run:
 up:
 	@bash scripts/start.sh
 
-# Install the Dock-less menu-bar app into /Applications + `cream` alias.
+# Install the Dock-less menu-bar app into /Applications + `pysar` alias.
 app:
 	@bash scripts/install_app.sh
 

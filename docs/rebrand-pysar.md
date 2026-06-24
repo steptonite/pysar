@@ -49,20 +49,31 @@ the setuptools mapping + console-script + test imports + `python -m`, NOT a dir 
 
 ---
 
-## Phase 3 — app bundle + infra cosmetics ⏳
+## Phase 3 — app bundle + infra cosmetics ✅ (commit `b15bf67`)
 
-`.app` display name, executable, icon, shell alias, env vars, log files.
-**Bundle ID and the data folder are intentionally NOT touched here.**
+**Done:** `scripts/install_app.sh` rewritten — builds `/Applications/Pysar.app`
+(`CFBundleName`/`DisplayName`=Pysar, `CFBundleExecutable`=pysar,
+`CFBundleIconFile`=Pysar, mic-usage text), and now also `rm -rf` the old
+`Pysar.app`. Env `PYSAR_PYTHON`/`PYSAR_SITE` → `PYSAR_PYTHON`/`PYSAR_SITE`
+across `install_app.sh` / `start.sh` / `_app_main.py`. Logs `/tmp/cream-whisper.log`
+→ `/tmp/pysar-whisper.log` (`start.sh`, `src/server.py`) and `~/Library/Logs/pysar.log`
+→ `pysar.log`. Icon asset `git mv assets/Pysar.icns → Pysar.icns`; updated
+`Makefile` icon target **and the two code paths that load it**
+(`src/backend/_macos.py`, `src/backend/settings_window.py`). Alias `cream`→`pysar`;
+`install.sh` `CREAM_DIR`→`PYSAR_DIR`, comments.
+**Verified:** `make test` → 128 passed; `make app` clean; `/Applications/Pysar.app`
+gone, `Pysar.app` present; plist DisplayName/Executable/IconFile = Pysar (id kept
+`com.steptonite.pysar`); launched → whisper server up in 3 s, process runs from
+`Pysar.app`, logs land in the new paths.
+**Deliberately left:** Bundle ID (Phase 4); data dir `Application Support/Pysar`
++ `cream.log` (Phase 5); upstream attribution (`pyproject.urls`, LICENSE, README,
+`_macos.py` upstream comment); internal WebKit JS bridge names `pysarApply`/`pysarBridge`
+(not brand-facing — renaming risks breaking the native↔JS bridge for zero user benefit);
+`make_icon.py` "cream"/"amber-cream" = colour names, not the brand.
+**Can break:** an old `alias cream=` may still sit in `~/.zshrc` (harmless — still
+runs `make up`); GitHub repo `pysar-custom` not renamed so `REPO_URL` is unchanged.
 
-- `.app`: `Pysar.app` → `Pysar.app`; `CFBundleName`/`DisplayName`
-  `Pysar Custom` → `Pysar`; `CFBundleExecutable` `pysar` → `pysar`;
-  icon `Pysar.icns` → `Pysar.icns`; `NSMicrophoneUsageDescription` text.
-- alias `cream` → `pysar`; env `PYSAR_PYTHON`/`PYSAR_SITE` → `PYSAR_*`;
-  logs `/tmp/cream-whisper.log` + `pysar.log` → `pysar` names.
-- `install.sh` `CLONE_DIR`/`CREAM_DIR`. (GitHub repo rename is a manual action —
-  `REPO_URL` left until the repo itself is renamed; flagged, not broken.)
-- Rebuild `.app` (`make app`), relaunch, confirm menu bar + Dock/⌘-Tab say Pysar.
-- Can break: stale old `.app` left in /Applications; alias duplicate in `.zshrc`.
+### original plan
 
 ---
 

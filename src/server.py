@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .transcriber import is_alive
 
-_LOG = "/tmp/cream-whisper.log"
+_LOG = "/tmp/pysar-whisper.log"
 _lock = threading.Lock()
 _proc: subprocess.Popen | None = None
 

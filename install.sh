@@ -13,11 +13,11 @@
 #      missing ones via Homebrew),
 #   3. clones the repo if you ran it via curl (skips if already in a clone),
 #   4. runs `make setup` (venv + whisper.cpp + speech & VAD models),
-#   5. runs `make app` (the menu-bar app into /Applications + the `cream` alias).
+#   5. runs `make app` (the menu-bar app into /Applications + the `pysar` alias).
 set -euo pipefail
 
 REPO_URL="https://github.com/steptonite/pysar-custom.git"
-CLONE_DIR="${CREAM_DIR:-$HOME/code/pysar}"
+CLONE_DIR="${PYSAR_DIR:-$HOME/code/pysar}"
 
 say()  { printf "\033[1m%s\033[0m\n" "$1"; }
 die()  { printf "\033[31m❌ %s\033[0m\n" "$1" >&2; exit 1; }
@@ -70,7 +70,7 @@ make app
 cat <<DONE
 
 ✅ Pysar is installed.
-   • Launch it from Spotlight → "Pysar" (or run: cream)
+   • Launch it from Spotlight → "Pysar" (or run: pysar)
    • First run: grant Input Monitoring + Accessibility to Pysar
      in System Settings → Privacy & Security, then relaunch.
    • Dictate: tap Caps Lock, speak, tap again.

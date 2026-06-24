@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PORT="${WHISPER_PORT:-8080}"
-LOG="/tmp/cream-whisper.log"
+LOG="/tmp/pysar-whisper.log"
 STARTED_SERVER=0
 SERVER_PID=""
 
@@ -54,7 +54,7 @@ fi
 echo "🎙  launching Pysar — Caps Lock to dictate, Ctrl+Option+U/R/E to switch language."
 # Not exec'd, so the EXIT trap still fires to stop the server we started.
 # When launched from the .app, PYSAR_PYTHON points at the bundled python copy
-# (so NSBundle.mainBundle resolves to our .app → Dock shows "Pysar Custom"
+# (so NSBundle.mainBundle resolves to our .app → Dock shows "Pysar"
 # + our icon, not "Python") and PYSAR_SITE feeds it the venv's packages. In dev
 # (`make up`) neither is set → use the venv directly.
 if [ -n "$PYSAR_PYTHON" ]; then
