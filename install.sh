@@ -2,7 +2,7 @@
 # One-command install for Pysar.
 #
 # From a clean Mac, with nothing checked out:
-#   curl -fsSL https://raw.githubusercontent.com/steptonite/pysar-custom/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/steptonite/pysar/main/install.sh | bash
 #
 # Or, from inside a clone:
 #   ./install.sh
@@ -16,7 +16,7 @@
 #   5. runs `make app` (the menu-bar app into /Applications + the `pysar` alias).
 set -euo pipefail
 
-REPO_URL="https://github.com/steptonite/pysar-custom.git"
+REPO_URL="https://github.com/steptonite/pysar.git"
 CLONE_DIR="${PYSAR_DIR:-$HOME/code/pysar}"
 
 say()  { printf "\033[1m%s\033[0m\n" "$1"; }

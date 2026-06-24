@@ -38,7 +38,7 @@ Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of uni
 downloads the models, and installs the menu-bar app:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/steptonite/pysar-custom/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/steptonite/pysar/main/install.sh | bash
 ```
 
 Already have the repo cloned? Run the same script from inside it, or use the
