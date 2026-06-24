@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 
+from . import server
 from .backend import HotkeyListener, Paster, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
@@ -147,6 +148,10 @@ class VoiceTyper:
             # the user clicks away during a slow transcription.
             self._paste_target = self._paster.capture_target()
             self._streaming = self._settings.get("dictation_mode", "batch") == "streaming"
+            # Lazy-start whisper: standby's jetsam reaps the server overnight on
+            # 8 GB. Warm it up now, while the user is speaking, so it's ready by
+            # the time they stop (no background daemon — it dies with the app).
+            self._warm_whisper()
             self._tray.set_title("🔴")
             self._tray.set_status(self._t("st.recording"))
             if self._streaming:
@@ -623,6 +628,19 @@ class VoiceTyper:
         if not is_alive():
             self._tray.set_status(self._t("st.whisperDown"))
             self._tray.set_title("⚠️")
+
+    def _warm_whisper(self) -> None:
+        """If the server is down (jetsam reaped it during standby), bring it back
+        on a background thread so model load overlaps with the user speaking. The
+        normal case — server already up — returns instantly without a thread."""
+        if server.is_up():
+            return
+
+        def _go() -> None:
+            self._tray.set_status(self._t("st.whisperStarting"))
+            server.ensure_running()
+
+        threading.Thread(target=_go, daemon=True).start()
 
 
 def main() -> None:
