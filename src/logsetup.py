@@ -17,8 +17,10 @@ import threading
 import traceback
 from pathlib import Path
 
-_LOG_DIR = Path.home() / "Library" / "Application Support" / "Pysar"
-_LOG = _LOG_DIR / "cream.log"
+from .paths import data_dir
+
+_LOG_DIR = data_dir()
+_LOG = _LOG_DIR / "pysar.log"
 _MAX_BYTES = 2 * 1024 * 1024  # rotate past ~2 MB; keep one .1 backup
 _installed = False
 
@@ -46,7 +48,7 @@ class _Tee:
 
 
 def _rotate() -> None:
-    """Keep the log bounded: once it passes the cap, move it to cream.log.1
+    """Keep the log bounded: once it passes the cap, move it to pysar.log.1
     (overwriting any previous backup) and start fresh."""
     with contextlib.suppress(Exception):
         if _LOG.exists() and _LOG.stat().st_size > _MAX_BYTES:

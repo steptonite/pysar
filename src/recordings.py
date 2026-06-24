@@ -20,9 +20,10 @@ from .config import (
     MAX_PROFILE_SETS,
 )
 from .i18n import UI_LANGS
+from .paths import data_dir
 from .profiles import DEFAULT_PROFILES
 
-_BASE = Path.home() / "Library" / "Application Support" / "Pysar"
+_BASE = data_dir()
 _SETTINGS = _BASE / "settings.json"
 _RECORDINGS = _BASE / "recordings"
 

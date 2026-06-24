@@ -95,11 +95,17 @@ id, so they almost certainly need re-granting:
 
 ---
 
-## Phase 5 — data folder migration ⏳ (RISKY — isolated on purpose)
+## Phase 5 — data folder migration ✅ (commit `5a28603`)
 
-`~/Library/Application Support/Pysar/` → `Pysar/` (logs + recordings).
-
-- Add one-time migration: if old dir exists and new doesn't, rename it; else create new.
-- Update `src/logsetup.py`, `src/recordings.py`, `scripts/seg_replay.py`.
-- Verify: existing recordings still visible via the menu; new logs land in Pysar/.
-- Can break: orphaned recordings if migration skipped — migration guard prevents data loss.
+**Done:** new dependency-free `src/paths.py` with `data_dir()` — one-time atomic
+rename of `Application Support/Pysar` → `Pysar` (guarded: old exists AND new
+absent), preserving `settings.json` + `recordings/` as a unit. Wired into
+`src/logsetup.py` (log now `pysar.log`, "Pysar start" banner), `src/recordings.py`
+(`_BASE = data_dir()`), `scripts/seg_replay.py` (`REC_DIR = data_dir()/recordings`).
+**Verified on the real machine:** migration ran — old `Pysar` dir gone, `Pysar`
+dir holds the same `settings.json` (17318 bytes, unchanged) + all 10 recordings;
+ruff clean; `make test` → 128 passed; relaunched, new `pysar.log` written, hotkey
+listener started. The old `cream.log` rode along inside the moved folder as a
+harmless orphan (new logs go to `pysar.log`).
+**Can break:** nothing outstanding — migration is idempotent (guard no-ops once
+`Pysar` exists). A fresh install with no old folder just creates `Pysar` on first write.

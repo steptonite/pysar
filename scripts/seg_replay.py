@@ -26,11 +26,12 @@ from pysar.config import (
     SAMPLE_RATE,
     SILENCE_MARGIN,
 )
+from pysar.paths import data_dir
 from pysar.recorder import pcm_to_wav
 from pysar.segmenter import Segmenter
 from pysar.transcriber import is_alive, transcribe
 
-REC_DIR = Path.home() / "Library" / "Application Support" / "Pysar" / "recordings"
+REC_DIR = data_dir() / "recordings"
 
 
 def load_wav_float32(path: Path) -> np.ndarray:
