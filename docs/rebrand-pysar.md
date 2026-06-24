@@ -77,14 +77,21 @@ runs `make up`); GitHub repo `pysar-custom` not renamed so `REPO_URL` is unchang
 
 ---
 
-## Phase 4 — Bundle ID ⏳ (RISKY — isolated on purpose)
+## Phase 4 — Bundle ID ✅ (commit `aa1aea8`)
 
-`CFBundleIdentifier` `com.steptonite.pysar` → `com.steptonite.pysar`.
-
-- ⚠️ macOS keys TCC permissions by bundle ID → **Input Monitoring + Accessibility
-  must be granted again** to the new Pysar.app on first launch.
-- Verify: launch, re-grant perms, confirm Caps Lock dictation + paste work.
-- Can break: dictation silently dead until perms re-granted (expected, documented).
+**Done:** `CFBundleIdentifier` `com.steptonite.pysar` → `com.steptonite.pysar`
+(own namespace, drops the upstream steptonite one) in `scripts/install_app.sh`; NOTE
+comment updated. No other refs to the old id in code/tests. Rebuilt + re-registered
+via `lsregister -f`, relaunched.
+**Verified (by me):** plist id = `com.steptonite.pysar`; app runs from `Pysar.app`;
+whisper server up in 3 s. TCC.db not introspectable without Full Disk Access.
+**Needs YOU to verify + act:** macOS keys Input Monitoring / Accessibility by bundle
+id, so they almost certainly need re-granting:
+  1. System Settings → Privacy & Security → **Input Monitoring** → enable **Pysar**
+     (add with `+` → /Applications/Pysar.app if absent); remove stale "Pysar"/"Python".
+  2. Same under **Accessibility**.
+  3. Relaunch Pysar, test Caps Lock dictation + paste.
+**Can break:** dictation silently dead until perms re-granted (expected).
 
 ---
 
