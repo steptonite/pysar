@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-command install for Cream Typer.
+# One-command install for Pysar.
 #
 # From a clean Mac, with nothing checked out:
 #   curl -fsSL https://raw.githubusercontent.com/steptonite/cream-typer-custom/main/install.sh | bash
@@ -69,9 +69,9 @@ make app
 
 cat <<DONE
 
-✅ Cream Typer is installed.
-   • Launch it from Spotlight → "Cream Typer" (or run: cream)
-   • First run: grant Input Monitoring + Accessibility to Cream Typer
+✅ Pysar is installed.
+   • Launch it from Spotlight → "Pysar" (or run: cream)
+   • First run: grant Input Monitoring + Accessibility to Pysar
      in System Settings → Privacy & Security, then relaunch.
    • Dictate: tap Caps Lock, speak, tap again.
 DONE

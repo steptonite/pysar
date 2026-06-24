@@ -51,7 +51,7 @@ else
     if ! health; then echo ""; echo "❌ server didn't come up in time. See $LOG"; exit 1; fi
 fi
 
-echo "🎙  launching Cream Typer — Caps Lock to dictate, Ctrl+Option+U/R/E to switch language."
+echo "🎙  launching Pysar — Caps Lock to dictate, Ctrl+Option+U/R/E to switch language."
 # Not exec'd, so the EXIT trap still fires to stop the server we started.
 # When launched from the .app, CREAM_PYTHON points at the bundled python copy
 # (so NSBundle.mainBundle resolves to our .app → Dock shows "Cream Typer Custom"

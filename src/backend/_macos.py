@@ -799,7 +799,7 @@ class Tray:
         # the bundle/process name once, when the main menu is first created, so a
         # later override (e.g. in run()) is ignored. "Custom" makes clear this is
         # our fork of the upstream Cream Typer, not the original.
-        _set_app_name("Cream Typer Custom")
+        _set_app_name("Pysar")
 
         self._current = current_mode
         self._on_mode_select = on_mode_select
@@ -922,7 +922,7 @@ class Tray:
                 )
             self._settings_window.show()
         except Exception as e:
-            rumps.notification("Cream Typer", self._t("notif.cantOpenSettings"), str(e)[:120])
+            rumps.notification("Pysar", self._t("notif.cantOpenSettings"), str(e)[:120])
 
     def _settings_state(self) -> dict:
         """Fresh snapshot for the settings window each time it opens."""
@@ -991,7 +991,7 @@ class Tray:
             self._on_toggle_login(self._launch_at_login)
         if enabled and not ok:
             rumps.notification(
-                "Cream Typer",
+                "Pysar",
                 self._t("notif.cantLogin"),
                 self._t("notif.cantLoginBody"),
             )
@@ -1042,7 +1042,7 @@ class Tray:
             value.get("name", ""), value.get("language", "uk"), value.get("prompt", ""), original
         )
         if err:
-            rumps.notification("Cream Typer", self._t("notif.cantSaveProfile"), err)
+            rumps.notification("Pysar", self._t("notif.cantSaveProfile"), err)
             return
         self._profiles = updated
         AppHelper.callAfter(self._populate_profiles_menu, True)
@@ -1312,7 +1312,7 @@ class Tray:
     def run(self) -> None:
         # When run as a bare python process (dev) the Dock/⌘-Tab name is "Python"
         # with a generic icon. Override both at runtime so that whenever the
-        # Settings window flips us to a Regular app, we show as "Cream Typer".
+        # Settings window flips us to a Regular app, we show as "Pysar".
         self._brand_app()
         # Hide the Dock icon — this is a menu-bar agent, not a windowed app.
         # NSApplicationActivationPolicyAccessory (= 1) keeps the status-bar item

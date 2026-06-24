@@ -1,4 +1,4 @@
-# Contributing to Cream Typer
+# Contributing to Pysar
 
 Thanks for stopping by. PRs are welcome — from typo fixes to new platform backends.
 

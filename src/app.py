@@ -216,7 +216,7 @@ class VoiceTyper:
                 # raise a real notification too.
                 self._tray.set_status(self._t("st.inBuffer", preview=preview))
                 self._tray.notify(
-                    "Cream Typer", self._t("notif.inBufferTitle"), self._t("notif.inBufferMsg")
+                    "Pysar", self._t("notif.inBufferTitle"), self._t("notif.inBufferMsg")
                 )
             self._tray.set_title(self._idle_title())
         finally:
@@ -301,7 +301,7 @@ class VoiceTyper:
             if not self._server_down:
                 self._server_down = True
                 self._tray.notify(
-                    "Cream Typer",
+                    "Pysar",
                     self._t("notif.serverDownTitle"),
                     self._t("notif.serverDownMsg"),
                 )
@@ -329,7 +329,7 @@ class VoiceTyper:
                 # One-time push so the user knows live typing has stopped and the
                 # rest is being collected for a single ⌘V after Stop.
                 self._tray.notify(
-                    "Cream Typer",
+                    "Pysar",
                     self._t("notif.bufferModeTitle"),
                     self._t("notif.bufferModeMsg"),
                 )
@@ -352,7 +352,7 @@ class VoiceTyper:
         self._stream_err = msg
         self._tray.set_status(self._t("st.micError"))
         self._tray.notify(
-            "Cream Typer", self._t("notif.micErrorTitle"), self._t("notif.micErrorMsg")
+            "Pysar", self._t("notif.micErrorTitle"), self._t("notif.micErrorMsg")
         )
 
     def _finish_streaming(self) -> None:
@@ -382,7 +382,7 @@ class VoiceTyper:
             if buffered:
                 self._paster.set_clipboard(" ".join(buffered))
                 self._tray.notify(
-                    "Cream Typer",
+                    "Pysar",
                     self._t("notif.bufferTitle"),
                     self._t("notif.bufferMsg", n=len(buffered)),
                 )

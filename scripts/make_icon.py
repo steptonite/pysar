@@ -1,4 +1,4 @@
-"""Generate a clean macOS app icon (1024px) for Cream Typer.
+"""Generate a clean macOS app icon (1024px) for Pysar.
 
 A warm 'cream' gradient squircle with a simple white microphone glyph.
 Run with the venv active: `python scripts/make_icon.py out.png`.

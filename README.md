@@ -1,10 +1,10 @@
-# Cream Typer — custom build
+# Pysar
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?logo=apple)](https://www.apple.com/mac/)
 
-My personal, customized macOS build of [**cream-typer**](https://github.com/adjacentai/cream-typer) by NeCL (MIT — see [Attribution](#attribution--license)).
+**Pysar** (Ukrainian for *scribe*) is my personal macOS build, grown out of [**cream-typer**](https://github.com/adjacentai/cream-typer) by NeCL (MIT — see [Attribution](#attribution--license)).
 
 Offline voice dictation: tap **Caps Lock**, speak, tap again — text is transcribed locally by whisper.cpp (Metal GPU) and pasted at your cursor in any app. No cloud, no telemetry, audio never leaves the Mac. Tuned for an **Apple M2 / 8 GB**.
 
@@ -54,7 +54,7 @@ make all            # setup + app, assuming cmake/git/python are already present
 `make app` (build `Cream Typer.app` into /Applications + the `cream` alias) can
 still be run separately.
 
-Then launch **Cream Typer** from Spotlight. On first run, grant **Input Monitoring** and **Accessibility** to *Cream Typer* in System Settings → Privacy & Security (macOS prompts for Microphone automatically), then relaunch it.
+Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** and **Accessibility** to *Pysar* in System Settings → Privacy & Security (macOS prompts for Microphone automatically), then relaunch it.
 
 ---
 
@@ -73,7 +73,7 @@ More languages are available in the **🌍 Languages** submenu (17 languages + t
 
 ## Streaming dictation
 
-By default Cream Typer is **Batch**: record, stop, transcribe the whole clip, paste
+By default Pysar is **Batch**: record, stop, transcribe the whole clip, paste
 once. **Streaming** (opt-in, **Settings → Dictation → Dictation mode**) instead
 types each sentence into the field *while you keep talking*.
 
@@ -124,7 +124,7 @@ The trick behind "speak any language, get any other": Whisper's encoder produces
 | **Microphone** | Settings → Privacy → Microphone | audio capture |
 | **Accessibility** | Settings → Privacy → Accessibility | Cmd+V paste (batch) and synthetic key typing (streaming), both via CGEventPost |
 
-Grant these to **Cream Typer** (the app), not Python or Terminal. macOS does not prompt for Accessibility automatically — add it manually, then relaunch the app.
+Grant these to **Pysar** (the app), not Python or Terminal. macOS does not prompt for Accessibility automatically — add it manually, then relaunch the app.
 
 ---
 
@@ -132,8 +132,8 @@ Grant these to **Cream Typer** (the app), not Python or Terminal. macOS does not
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Caps Lock does nothing | No Input Monitoring permission | grant it to Cream Typer, relaunch |
-| Captured text shown in menu bar but not pasted | No Accessibility permission | grant it to Cream Typer, relaunch |
+| Caps Lock does nothing | No Input Monitoring permission | grant it to Pysar, relaunch |
+| Captured text shown in menu bar but not pasted | No Accessibility permission | grant it to Pysar, relaunch |
 | `⚠️ Whisper not running` | Server isn't up | relaunch the app (it starts the server) |
 | Words split mid-word, e.g. `перен осит` | Server segmenting on tokens | already fixed via `--split-on-word`; relaunch to restart the server |
 | Subtitle-credit junk on silence | Whisper silence hallucination | VAD handles it; make sure the server restarted with the new flags |

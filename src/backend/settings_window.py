@@ -232,7 +232,7 @@ _TEMPLATE = r"""<!doctype html>
 <body>
   <!-- ── Main screen ──────────────────────────────────────────────────────── -->
   <div id="screen-main" class="screen on">
-    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Cream Typer Custom</span></header>
+    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar</span></header>
 
     <div class="sec-title" data-i18n="sec.audio">Audio</div>
     <section>
@@ -296,7 +296,7 @@ _TEMPLATE = r"""<!doctype html>
       </div>
       <div class="row">
         <div class="body"><div class="label" data-i18n="login.label">Launch at login</div>
-          <div class="help" data-i18n="login.help">Start Cream Typer automatically when you log in</div></div>
+          <div class="help" data-i18n="login.help">Start Pysar automatically when you log in</div></div>
         <label class="toggle"><input type="checkbox" id="login">
           <span class="track"></span><span class="knob"></span></label>
       </div>
@@ -881,7 +881,7 @@ renderHotkeys();
 
 
 def _apply_dock_icon() -> None:
-    """Set the running app's Dock icon to the Cream Typer mark. Must be called
+    """Set the running app's Dock icon to the Pysar mark. Must be called
     *after* switching to a Regular activation policy (the tile is recreated then,
     discarding any icon set earlier while accessory)."""
     from pathlib import Path
@@ -915,9 +915,9 @@ def _install_main_menu() -> None:
         main.addItem_(app_item)
         app_menu = NSMenu.alloc().init()
         app_item.setSubmenu_(app_menu)
-        app_menu.addItemWithTitle_action_keyEquivalent_("Hide Cream Typer", "hide:", "h")
+        app_menu.addItemWithTitle_action_keyEquivalent_("Hide Pysar", "hide:", "h")
         app_menu.addItem_(NSMenuItem.separatorItem())
-        app_menu.addItemWithTitle_action_keyEquivalent_("Quit Cream Typer", "terminate:", "q")
+        app_menu.addItemWithTitle_action_keyEquivalent_("Quit Pysar", "terminate:", "q")
 
         edit_item = NSMenuItem.alloc().init()
         main.addItem_(edit_item)
@@ -1087,7 +1087,7 @@ class SettingsWindow:
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False
         )
-        win.setTitle_("Cream Typer — Settings")
+        win.setTitle_("Pysar — Settings")
         win.setContentView_(self._webview)
         win.setReleasedWhenClosed_(False)  # we reuse it; don't let AppKit free it
         win.setDelegate_(self._bridge)

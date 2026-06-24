@@ -59,7 +59,7 @@ _UK = {
     "applang.label": "Мова застосунку",
     "applang.help": "Мова інтерфейсу та скопійованого AI-промпту",
     "login.label": "Запуск при вході",
-    "login.help": "Запускати Cream Typer автоматично при вході в систему",
+    "login.help": "Запускати Pysar автоматично при вході в систему",
     # ── Settings · profiles screen ──────────────────────────────────────────
     "back": "Налаштування",
     "pscreen.title": "Профілі мовлення",
@@ -170,7 +170,7 @@ _UK = {
     "notif.bufferModeTitle": "Нема активного поля вводу",
     "notif.bufferModeMsg": "Друк зупинено — весь текст збираю в буфер, з'явиться разом після Стоп (⌘V)",
     "notif.serverDownTitle": "Сервер розпізнавання впав",
-    "notif.serverDownMsg": "Whisper не відповідає — мова зараз НЕ записується. Зупини й перезапусти Cream Typer.",
+    "notif.serverDownMsg": "Whisper не відповідає — мова зараз НЕ записується. Зупини й перезапусти Pysar.",
     # Floating status overlay (streaming).
     "hud.listening": "Слухаю…",
     "hud.recognizing": "Розпізнаю…",
@@ -224,7 +224,7 @@ _EN = {
     "applang.label": "App language",
     "applang.help": "Language of the interface and the copied AI prompt",
     "login.label": "Launch at login",
-    "login.help": "Start Cream Typer automatically when you log in",
+    "login.help": "Start Pysar automatically when you log in",
     # ── Settings · profiles screen ──────────────────────────────────────────
     "back": "Settings",
     "pscreen.title": "Speech profiles",
@@ -335,7 +335,7 @@ _EN = {
     "notif.bufferModeTitle": "No active input field",
     "notif.bufferModeMsg": "Typing paused — collecting the rest into the buffer; it appears together after Stop (⌘V)",
     "notif.serverDownTitle": "Recognition server crashed",
-    "notif.serverDownMsg": "Whisper isn't responding — speech is NOT being captured right now. Stop and relaunch Cream Typer.",
+    "notif.serverDownMsg": "Whisper isn't responding — speech is NOT being captured right now. Stop and relaunch Pysar.",
     # Floating status overlay (streaming).
     "hud.listening": "Listening…",
     "hud.recognizing": "Recognizing…",
