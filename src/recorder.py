@@ -156,11 +156,20 @@ class AudioRecorder:
         return self._to_wav()
 
     def _open_stream(self):
-        """Open the input stream, retrying once on failure. A transient CoreAudio
-        glitch (PaErrorCode -9986 / AUHAL) on a freshly-(re)opened device clears
-        on a second attempt; a persistent failure raises so the caller reports it."""
+        """Open the input stream, retrying on failure. Two failure modes are handled:
+
+        1. A transient CoreAudio glitch (PaErrorCode -9986 / AUHAL) on a
+           freshly-(re)opened device that clears on a second attempt.
+        2. A stale PortAudio context. PortAudio is initialized once per process
+           and caches the device list + HAL state at that time. If the input
+           device was held by another process (e.g. a leaked ScreenCaptureKit
+           capture) when we started, the cached context stays broken and every
+           open keeps failing in *this* process even after the device is free —
+           a freshly-spawned process opens fine. Tearing down and rebuilding the
+           PortAudio context (`_terminate`/`_initialize`) re-enumerates devices
+           and lets us recover without an app restart."""
         last: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 stream = sd.InputStream(
                     channels=CHANNELS,
@@ -174,6 +183,12 @@ class AudioRecorder:
             except Exception as e:
                 last = e
                 print(f"⚠️ mic open failed (attempt {attempt + 1}): {e}")
+                # Rebuild the PortAudio context in case it went stale (mode 2
+                # above). Safe here: no stream is open at this point in the
+                # recorder.
+                with contextlib.suppress(Exception):
+                    sd._terminate()
+                    sd._initialize()
                 time.sleep(0.3)
         raise last if last else RuntimeError("mic open failed")
 
