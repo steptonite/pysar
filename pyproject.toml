@@ -56,6 +56,13 @@ macos = [
     "pyobjc-framework-ApplicationServices>=10.0",
     # SMAppService — register the .app as a Launch-at-login item (macOS 13+).
     "pyobjc-framework-ServiceManagement>=10.0",
+    # ScreenCaptureKit — capture system audio (+ mic) for the meeting-transcription
+    # mode; CoreMedia/AVFoundation decode the delivered CMSampleBuffers to PCM.
+    "pyobjc-framework-ScreenCaptureKit>=10.0",
+    "pyobjc-framework-CoreMedia>=10.0",
+    "pyobjc-framework-AVFoundation>=10.0",
+    # libdispatch — SCStream delivers sample buffers on a dispatch queue we own.
+    "pyobjc-framework-libdispatch>=10.0",
 ]
 # Reserved for upcoming Windows/Linux backends.
 windows = [
@@ -125,6 +132,9 @@ ignore = [
 # PyObjC selector methods (initWithOwner_, userContentController_did…_) must keep
 # their Objective-C camelCase names — that's how the bridge is wired, not style.
 "src/backend/settings_window.py" = ["N802"]
+"src/syscap.py" = ["N802", "N814", "N817"]  # Obj-C selector + framework import names
+"src/backend/transcript_window.py" = ["N802"]  # NSWindowDelegate selector name
+"scripts/sck_spike.py" = ["N802", "N814", "N816", "N817"]  # throwaway SCK diagnostic
 
 [tool.ruff.lint.isort]
 known-first-party = ["pysar"]

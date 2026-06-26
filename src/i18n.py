@@ -37,6 +37,24 @@ _UK = {
     "profiles.navHelp": "Праймінг промпту для кращого розпізнавання",
     "hotkeys.nav": "Хоткеї",
     "hotkeys.navHelp": "Диктовка, мова та набори профілів",
+    "sec.meeting": "Зустрічі та дзвінки",
+    "meeting.nav": "Транскрибувати все",
+    "meeting.navHelp": "Звук зустрічей і дзвінків у живий транскрипт",
+    "mscreen.title": "Транскрибувати все",
+    "mscreen.intro": "Системний звук (і мікрофон) розпізнаються локально й течуть у вікно транскрипту. Старт і стоп — у меню в треї; тут лише налаштування.",
+    "meeting.mic.label": "Захоплювати мікрофон",
+    "meeting.mic.help": "Разом із системним звуком; вимкнено — лише система",
+    "meeting.save.label": "Зберігати транскрипт у файл",
+    "meeting.save.help": "Markdown у теці транскриптів",
+    "meeting.openFolder": "Відкрити теку",
+    "meeting.onTop.label": "Вікно поверх усіх",
+    "meeting.onTop.help": "Транскрипт лишається над іншими вікнами",
+    "meeting.lang.label": "Мова транскрипції",
+    "meeting.lang.help": "За замовчуванням — як у диктовці",
+    "meeting.lang.inherit": "Як у диктовці",
+    "meeting.prompt.label": "Контекст-підказка",
+    "meeting.prompt.help": "Імена, терміни, жаргон — зміщує розпізнавання",
+    "meeting.prompt.ph": "Напр.: Олексій, ComfyUI, ребрендинг…",
     "hkscreen.title": "Хоткеї",
     "hotkey.label": "Хоткей диктовки",
     "hotkey.help": "Тап — старт, ще тап — стоп",
@@ -133,6 +151,11 @@ _UK = {
         "Додай вручну: System Settings → General → Login Items "
         "(працює лише з встановленого застосунку, не з терміналу)."
     ),
+    "notif.loginApprove": "Підтверди Pysar у Login Items",
+    "notif.loginApproveBody": (
+        "Відкрив System Settings → General → Login Items. Увімкни там Pysar — "
+        "macOS вимагає підтвердження для незапідписаного застосунку."
+    ),
     # ── Status line ─────────────────────────────────────────────────────────
     "st.recording": "● Запис…",
     "st.transcribing": "⏳ Розпізнаю…",
@@ -176,6 +199,17 @@ _UK = {
     "hud.recognizing": "Розпізнаю…",
     "hud.buffering": "Нема поля → буфер ({n})",
     "hud.serverDown": "Сервер недоступний",
+    # Transcribe everything (system audio + mic → transcript window).
+    "tray.meetingStart": "🎧 Транскрибувати все",
+    "tray.meetingStop": "🎧 Зупинити транскрипцію",
+    "transcript.title": "Pysar — Транскрипт",
+    "st.meetingOn": "🎧 Транскрибую звук системи + мікрофон…",
+    "st.meetingOff": "🎧 Транскрипцію збережено",
+    "st.meetingLine": "🎧 {preview}",
+    "notif.meetingSavedTitle": "Транскрипт збережено",
+    "notif.meetingSavedMsg": "Файл: {path}",
+    "notif.captureErrorTitle": "Не вдалося захопити звук",
+    "notif.captureErrorMsg": "Дай дозвіл «Запис екрана» для Pysar у Системних налаштуваннях, тоді перезапусти.",
 }
 
 _EN = {
@@ -202,6 +236,24 @@ _EN = {
     "profiles.navHelp": "Prompt-priming for better recognition",
     "hotkeys.nav": "Hotkeys",
     "hotkeys.navHelp": "Dictation, language and profile sets",
+    "sec.meeting": "Meetings & calls",
+    "meeting.nav": "Transcribe everything",
+    "meeting.navHelp": "Meetings & calls into a live transcript",
+    "mscreen.title": "Transcribe everything",
+    "mscreen.intro": "System audio (and the mic) are recognized locally and stream into the transcript window. Start and stop from the menu-bar item; this screen is settings only.",
+    "meeting.mic.label": "Capture microphone",
+    "meeting.mic.help": "Along with system audio; off — system only",
+    "meeting.save.label": "Save transcript to file",
+    "meeting.save.help": "Markdown in the transcripts folder",
+    "meeting.openFolder": "Open folder",
+    "meeting.onTop.label": "Window always on top",
+    "meeting.onTop.help": "Keep the transcript above other windows",
+    "meeting.lang.label": "Transcription language",
+    "meeting.lang.help": "Defaults to the dictation language",
+    "meeting.lang.inherit": "Same as dictation",
+    "meeting.prompt.label": "Context hint",
+    "meeting.prompt.help": "Names, terms, jargon — biases recognition",
+    "meeting.prompt.ph": "e.g. Alex, ComfyUI, rebrand…",
     "hkscreen.title": "Hotkeys",
     "hotkey.label": "Dictation hotkey",
     "hotkey.help": "Tap to start, tap again to stop",
@@ -298,6 +350,11 @@ _EN = {
         "Add it manually: System Settings → General → Login Items "
         "(only works from the installed app, not a terminal run)."
     ),
+    "notif.loginApprove": "Approve Pysar in Login Items",
+    "notif.loginApproveBody": (
+        "Opened System Settings → General → Login Items. Switch Pysar on there — "
+        "macOS requires a confirmation for an unsigned app."
+    ),
     # ── Status line ─────────────────────────────────────────────────────────
     "st.recording": "● Recording…",
     "st.transcribing": "⏳ Transcribing…",
@@ -341,6 +398,17 @@ _EN = {
     "hud.recognizing": "Recognizing…",
     "hud.buffering": "No field → buffer ({n})",
     "hud.serverDown": "Server unavailable",
+    # Transcribe everything (system audio + mic → transcript window).
+    "tray.meetingStart": "🎧 Transcribe everything",
+    "tray.meetingStop": "🎧 Stop transcribing",
+    "transcript.title": "Pysar — Transcript",
+    "st.meetingOn": "🎧 Transcribing system audio + mic…",
+    "st.meetingOff": "🎧 Transcript saved",
+    "st.meetingLine": "🎧 {preview}",
+    "notif.meetingSavedTitle": "Transcript saved",
+    "notif.meetingSavedMsg": "File: {path}",
+    "notif.captureErrorTitle": "Couldn't capture audio",
+    "notif.captureErrorMsg": "Grant Screen Recording to Pysar in System Settings, then relaunch.",
 }
 
 _STRINGS = {"uk": _UK, "en": _EN}

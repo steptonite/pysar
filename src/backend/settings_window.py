@@ -282,6 +282,15 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </section>
 
+    <div class="sec-title" data-i18n="sec.meeting">Meetings &amp; calls</div>
+    <section>
+      <div class="row nav" id="go-meeting">
+        <div class="body"><div class="label" data-i18n="meeting.nav">Transcribe everything</div>
+          <div class="help" data-i18n="meeting.navHelp">Meetings &amp; calls into a live transcript</div></div>
+        <span class="chev">›</span>
+      </div>
+    </section>
+
     <div class="sec-title" data-i18n="sec.system">System</div>
     <section>
       <div class="row">
@@ -382,6 +391,60 @@ _TEMPLATE = r"""<!doctype html>
     <div id="set-shortcuts"></div>
   </div>
 
+  <!-- ── Transcribe-everything screen (drill-in) ──────────────────────────── -->
+  <div id="screen-meeting" class="screen">
+    <header>
+      <span class="back" id="back-mt">
+        <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+          stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
+      <h1 style="flex:0 1 auto" data-i18n="mscreen.title">Transcribe everything</h1>
+      <span style="flex:1"></span>
+    </header>
+    <div class="ai" data-i18n="mscreen.intro">System audio (and the mic) are recognized
+      locally and stream into the transcript window. Start and stop from the menu-bar
+      item; this screen is settings only.</div>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.mic.label">Capture microphone</div>
+          <div class="help" data-i18n="meeting.mic.help">Along with system audio; off — system only</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-mic">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.onTop.label">Window always on top</div>
+          <div class="help" data-i18n="meeting.onTop.help">Keep the transcript above other windows</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-ontop">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.lang.label">Transcription language</div>
+          <div class="help" data-i18n="meeting.lang.help">Defaults to the dictation language</div></div>
+        <select id="mt-lang"></select>
+      </div>
+    </section>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.save.label">Save transcript to file</div>
+          <div class="help" data-i18n="meeting.save.help">Markdown in the transcripts folder</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-save">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="folder.label">Storage folder</div>
+          <div class="help" id="mt-path"></div></div>
+        <button id="mt-open" data-i18n="meeting.openFolder">Open folder</button>
+      </div>
+    </section>
+    <section>
+      <div class="row" style="display:block">
+        <div class="label" data-i18n="meeting.prompt.label">Context hint</div>
+        <div class="help" style="white-space:normal" data-i18n="meeting.prompt.help">Names, terms, jargon — biases recognition</div>
+        <textarea id="mt-prompt" style="margin-top:8px"></textarea>
+      </div>
+    </section>
+  </div>
+
 <script>
 let STATE = /*__STATE__*/null;
 let view = "main";
@@ -423,6 +486,10 @@ function applyI18n(){
   if (theme) [...theme.options].forEach(o => { o.textContent = T(TH[o.value]); });
   const dm = $("dictmode"), DM = {batch:"dict.batch", streaming:"dict.streaming"};
   if (dm) [...dm.options].forEach(o => { o.textContent = T(DM[o.value]); });
+  const mtl = $("mt-lang");  // only the "inherit" option (value "") is localized
+  if (mtl) [...mtl.options].forEach(o => {
+    if (o.value === "") o.textContent = T("meeting.lang.inherit", "Same as dictation");
+  });
 }
 
 // ── Screen navigation ──────────────────────────────────────────────────────
@@ -431,12 +498,15 @@ function show(name){
   $("screen-main").classList.toggle("on", name === "main");
   $("screen-profiles").classList.toggle("on", name === "profiles");
   $("screen-hotkeys").classList.toggle("on", name === "hotkeys");
+  $("screen-meeting").classList.toggle("on", name === "meeting");
   window.scrollTo(0, 0);
 }
 $("go-profiles").addEventListener("click", () => show("profiles"));
 $("go-hotkeys").addEventListener("click", () => show("hotkeys"));
+$("go-meeting").addEventListener("click", () => show("meeting"));
 $("back").addEventListener("click", () => show("main"));
 $("back-hk").addEventListener("click", () => show("main"));
+$("back-mt").addEventListener("click", () => show("main"));
 
 // ── Static general controls (built once) ───────────────────────────────────
 (function(){
@@ -501,6 +571,40 @@ $("back-hk").addEventListener("click", () => show("main"));
 
   $("rec-path").textContent = STATE.recordings_dir || "";
   $("open-folder").addEventListener("click", () => send("open_folder"));
+
+  // ── Transcribe-everything (meeting) controls ──────────────────────────────
+  const mtMic = $("mt-mic");
+  mtMic.checked = STATE.meeting_capture_mic !== false;
+  mtMic.addEventListener("change", () => send("set_meeting_mic", mtMic.checked));
+
+  const mtTop = $("mt-ontop");
+  mtTop.checked = !!STATE.meeting_on_top;
+  mtTop.addEventListener("change", () => send("set_meeting_on_top", mtTop.checked));
+
+  const mtSave = $("mt-save");
+  mtSave.checked = STATE.meeting_save_file !== false;
+  mtSave.addEventListener("change", () => send("set_meeting_save", mtSave.checked));
+
+  $("mt-path").textContent = STATE.transcripts_dir || "";
+  $("mt-open").addEventListener("click", () => send("open_transcripts_folder"));
+
+  const mtLang = $("mt-lang");
+  const inheritOpt = document.createElement("option");
+  inheritOpt.value = ""; inheritOpt.textContent = T("meeting.lang.inherit", "Same as dictation");
+  if (!STATE.meeting_mode) inheritOpt.selected = true;
+  mtLang.appendChild(inheritOpt);
+  (STATE.meeting_modes || []).forEach(m => {
+    const o = document.createElement("option");
+    o.value = m.value; o.textContent = m.label;
+    if (m.value === STATE.meeting_mode) o.selected = true;
+    mtLang.appendChild(o);
+  });
+  mtLang.addEventListener("change", () => send("set_meeting_lang", mtLang.value || null));
+
+  const mtPrompt = $("mt-prompt");
+  mtPrompt.placeholder = T("meeting.prompt.ph", "");
+  mtPrompt.value = STATE.meeting_prompt || "";
+  mtPrompt.addEventListener("change", () => send("set_meeting_prompt", mtPrompt.value));
 
   // Capture the dictation toggle: ask Python to record the next keypress. The
   // kbd label and the language rows are refreshed by renderHotkeys() once the

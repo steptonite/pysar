@@ -31,21 +31,58 @@ from ..i18n import strings, t
 from ..profiles import PROMPT_TOKEN_BUDGET, active_set_index, budget_usage, meta_prompt
 
 
+def login_item_status() -> str | None:
+    """Raw SMAppService status as a simple string: "enabled" | "requires_approval"
+    | "not_registered" | "not_found" | "unknown", or None if it can't be read
+    (not running as the .app / framework missing)."""
+    try:
+        from ServiceManagement import (
+            SMAppService,
+            SMAppServiceStatusEnabled,
+            SMAppServiceStatusNotFound,
+            SMAppServiceStatusNotRegistered,
+            SMAppServiceStatusRequiresApproval,
+        )
+
+        return {
+            SMAppServiceStatusEnabled: "enabled",
+            SMAppServiceStatusRequiresApproval: "requires_approval",
+            SMAppServiceStatusNotRegistered: "not_registered",
+            SMAppServiceStatusNotFound: "not_found",
+        }.get(SMAppService.mainAppService().status(), "unknown")
+    except Exception:
+        return None
+
+
+def open_login_items_settings() -> None:
+    """Open System Settings → General → Login Items so the user can flip on an
+    unsigned app's pending (RequiresApproval) login-item registration."""
+    with contextlib.suppress(Exception):
+        from ServiceManagement import SMAppService
+
+        SMAppService.openSystemSettingsLoginItems()
+
+
 def set_login_item(enable: bool) -> bool:
     """Register/unregister this .app as a macOS login item via SMAppService
-    (macOS 13+). Explicit opt-in only, fully reversible. Returns True on success.
+    (macOS 13+). Explicit opt-in only, fully reversible.
 
-    Works only when running as the installed .app bundle (mainAppService points
-    at the bundle); from a `make up` terminal run it returns False, and the
-    caller surfaces a "add it manually" hint."""
+    Returns True when the item is registered — *including* the RequiresApproval
+    state an unsigned app lands in: the registration is real, macOS just needs the
+    user to confirm it in Login Items (we deep-link there). Works only as the
+    installed .app bundle; a `make up` terminal run returns False and the caller
+    surfaces an "add it manually" hint."""
     try:
         from ServiceManagement import SMAppService
 
         svc = SMAppService.mainAppService()
         if enable:
             ok, err = svc.registerAndReturnError_(None)
-        else:
-            ok, err = svc.unregisterAndReturnError_(None)
+            if login_item_status() == "requires_approval":
+                open_login_items_settings()  # unsigned: nudge the user to approve
+                return True
+            return bool(ok) and err is None
+        ok, err = svc.unregisterAndReturnError_(None)
         return bool(ok) and err is None
     except Exception as e:
         print(f"⚠️ login item: {e}")
@@ -53,20 +90,15 @@ def set_login_item(enable: bool) -> bool:
 
 
 def login_item_enabled() -> bool | None:
-    """Real registration status from SMAppService, or None if it can't be read
-    (not running as the .app, framework missing). Used to sync the menu/toggle
-    to the *actual* OS state on launch instead of trusting our settings file —
-    otherwise the checkmark drifts (resets) whenever registration silently
-    failed or the user toggled it in System Settings."""
-    try:
-        from ServiceManagement import (
-            SMAppService,
-            SMAppServiceStatusEnabled,
-        )
-
-        return SMAppService.mainAppService().status() == SMAppServiceStatusEnabled
-    except Exception:
+    """Whether the login item is registered, syncing the menu/toggle to the real
+    OS state on launch. Counts RequiresApproval as on, so the checkmark reflects
+    the user's intent and no longer drifts off just because approval is pending
+    (the bug where an unsigned app "enabled but didn't start at login"). None if
+    it can't be read (not the .app)."""
+    status = login_item_status()
+    if status is None:
         return None
+    return status in ("enabled", "requires_approval")
 
 
 def _set_app_name(name: str) -> None:
@@ -810,6 +842,17 @@ class Tray:
         on_save_set: Callable[[int | None, str, list], tuple] | None = None,
         on_delete_set: Callable[[int], list] | None = None,
         on_activate_set: Callable[[int], None] | None = None,
+        on_toggle_meeting: Callable[[], None] | None = None,
+        meeting_capture_mic: bool = True,
+        meeting_save_file: bool = True,
+        meeting_on_top: bool = False,
+        meeting_mode: str | None = None,
+        meeting_prompt: str = "",
+        on_set_meeting_mic: Callable[[bool], None] | None = None,
+        on_set_meeting_save: Callable[[bool], None] | None = None,
+        on_set_meeting_on_top: Callable[[bool], None] | None = None,
+        on_set_meeting_lang: Callable[[str | None], None] | None = None,
+        on_set_meeting_prompt: Callable[[str], None] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -853,8 +896,23 @@ class Tray:
         self._on_save_set = on_save_set
         self._on_delete_set = on_delete_set
         self._on_activate_set = on_activate_set
+        self._on_toggle_meeting = on_toggle_meeting
+        # Meeting / "Transcribe everything" settings — plain mirrors, same pattern
+        # as the dictation ones; the Settings screen reads them via _settings_state.
+        self._modes = list(modes)  # (code, label) — reused for the language picker
+        self._meeting_capture_mic = meeting_capture_mic
+        self._meeting_save_file = meeting_save_file
+        self._meeting_on_top = meeting_on_top
+        self._meeting_mode = meeting_mode
+        self._meeting_prompt = meeting_prompt
+        self._on_set_meeting_mic = on_set_meeting_mic
+        self._on_set_meeting_save = on_set_meeting_save
+        self._on_set_meeting_on_top = on_set_meeting_on_top
+        self._on_set_meeting_lang = on_set_meeting_lang
+        self._on_set_meeting_prompt = on_set_meeting_prompt
         self._settings_window = None  # built lazily on first open
         self._hud = None  # streaming status overlay, built lazily on first show
+        self._wake_obs = None  # retained NSWorkspace wake-notification token
 
         self._app = rumps.App("🎙", quit_button=self._t("tray.quit"))
         self._status = rumps.MenuItem(self._t("tray.ready"))
@@ -892,12 +950,20 @@ class Tray:
 
         settings_item = rumps.MenuItem(self._t("tray.settings"), callback=self._open_settings)
 
+        # "Transcribe everything" — a separate on/off capture of system audio + mic
+        # into a live transcript window (meetings, calls), independent of dictation.
+        self._meeting_item = rumps.MenuItem(
+            self._t("tray.meetingStart"),
+            callback=self._toggle_meeting if self._on_toggle_meeting else None,
+        )
+
         self._app.menu = [
             self._status,
             self._hint,
             None,
             lang_submenu,
             self._profiles_submenu,
+            self._meeting_item,
             settings_item,
             None,
         ]
@@ -905,6 +971,20 @@ class Tray:
     def _t(self, key: str, **kw) -> str:
         """Localized UI string in the current app language (see i18n.py)."""
         return t(self._ui_lang, key, **kw)
+
+    # ── Transcribe everything ─────────────────────────────────────────────────
+    def _toggle_meeting(self, _sender) -> None:
+        if self._on_toggle_meeting:
+            with contextlib.suppress(Exception):
+                self._on_toggle_meeting()
+
+    def set_meeting_active(self, active: bool) -> None:
+        """Reflect capture on/off in the menu — checkmark + Start/Stop label."""
+        with contextlib.suppress(Exception):
+            self._meeting_item.state = 1 if active else 0
+            self._meeting_item.title = self._t(
+                "tray.meetingStop" if active else "tray.meetingStart"
+            )
 
     # ── Settings window ───────────────────────────────────────────────────────
     def _open_settings(self, _sender) -> None:
@@ -934,6 +1014,12 @@ class Tray:
                         "save_set": self._win_save_set,
                         "delete_set": self._win_delete_set,
                         "activate_set": self._win_activate_set,
+                        "set_meeting_mic": self._set_meeting_mic,
+                        "set_meeting_save": self._set_meeting_save,
+                        "set_meeting_on_top": self._set_meeting_on_top,
+                        "set_meeting_lang": self._set_meeting_lang,
+                        "set_meeting_prompt": self._set_meeting_prompt,
+                        "open_transcripts_folder": self._open_transcripts_folder,
                     },
                 )
             self._settings_window.show()
@@ -968,7 +1054,24 @@ class Tray:
             # indicator — cleared once the user hand-edits a toggle).
             "profile_sets": self._profile_sets_state(),
             "max_sets": MAX_PROFILE_SETS,
+            # Transcribe-everything (meeting) screen: current values + the language
+            # options (same list as the dictation menu) and the transcripts folder.
+            "meeting_capture_mic": self._meeting_capture_mic,
+            "meeting_save_file": self._meeting_save_file,
+            "meeting_on_top": self._meeting_on_top,
+            "meeting_mode": self._meeting_mode,
+            "meeting_prompt": self._meeting_prompt,
+            "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
+            "transcripts_dir": self._transcripts_dir(),
         }
+
+    @staticmethod
+    def _transcripts_dir() -> str:
+        from ..transcripts import transcripts_dir
+
+        with contextlib.suppress(Exception):
+            return str(transcripts_dir())
+        return ""
 
     def _profile_sets_state(self) -> list[dict]:
         active = {lng: list(v) for lng, v in self._active_by_lang.items()}
@@ -1005,7 +1108,15 @@ class Tray:
         self._launch_at_login = bool(enabled) and ok
         if self._on_toggle_login:
             self._on_toggle_login(self._launch_at_login)
-        if enabled and not ok:
+        if enabled and ok and login_item_status() == "requires_approval":
+            # Unsigned app: registered but macOS needs a confirm; we already opened
+            # the Login Items pane — tell the user what to click.
+            rumps.notification(
+                "Pysar",
+                self._t("notif.loginApprove"),
+                self._t("notif.loginApproveBody"),
+            )
+        elif enabled and not ok:
             rumps.notification(
                 "Pysar",
                 self._t("notif.cantLogin"),
@@ -1028,6 +1139,38 @@ class Tray:
     def _open_recordings_folder(self) -> None:
         if self._recordings_dir:
             subprocess.run(["open", self._recordings_dir], check=False)
+
+    # Transcribe-everything (meeting) handlers — same mirror+callback shape ─────
+    def _set_meeting_mic(self, on: bool) -> None:
+        self._meeting_capture_mic = bool(on)
+        if self._on_set_meeting_mic:
+            self._on_set_meeting_mic(self._meeting_capture_mic)
+
+    def _set_meeting_save(self, on: bool) -> None:
+        self._meeting_save_file = bool(on)
+        if self._on_set_meeting_save:
+            self._on_set_meeting_save(self._meeting_save_file)
+
+    def _set_meeting_on_top(self, on: bool) -> None:
+        self._meeting_on_top = bool(on)
+        if self._on_set_meeting_on_top:
+            self._on_set_meeting_on_top(self._meeting_on_top)
+
+    def _set_meeting_lang(self, mode: str | None) -> None:
+        valid = {code for code, _ in self._modes}
+        self._meeting_mode = mode if mode in valid else None
+        if self._on_set_meeting_lang:
+            self._on_set_meeting_lang(self._meeting_mode)
+
+    def _set_meeting_prompt(self, text: str) -> None:
+        self._meeting_prompt = (text or "").strip()
+        if self._on_set_meeting_prompt:
+            self._on_set_meeting_prompt(self._meeting_prompt)
+
+    def _open_transcripts_folder(self) -> None:
+        path = self._transcripts_dir()
+        if path:
+            subprocess.run(["open", path], check=False)
 
     # Profile editor handlers (from the Settings window's JS bridge) ───────────
     def _win_toggle_profile(self, value: dict) -> None:
@@ -1312,6 +1455,30 @@ class Tray:
 
         AppHelper.callAfter(_do)
 
+    def _install_wake_observer(self) -> None:
+        """Drop the cached HUD panel when the Mac wakes from sleep.
+
+        The status pill is built once and kept. After display sleep/wake its
+        window-server backing goes stale: dictation still works but the panel's
+        orderFront silently no-ops, so the pill never reappears until an app
+        restart (which builds it fresh). Releasing it on wake makes the next
+        show_hud rebuild it — same as a restart, no restart needed."""
+        with contextlib.suppress(Exception):
+            from AppKit import NSWorkspace
+
+            def _on_wake(_note) -> None:
+                with contextlib.suppress(Exception):
+                    if self._hud is not None:
+                        self._hud.hide()
+                self._hud = None
+
+            nc = NSWorkspace.sharedWorkspace().notificationCenter()
+            # Block-based observer (no Obj-C selector target needed); the token is
+            # retained so the observer isn't deallocated. Fires on the main thread.
+            self._wake_obs = nc.addObserverForName_object_queue_usingBlock_(
+                "NSWorkspaceDidWakeNotification", None, None, _on_wake
+            )
+
     def notify(self, title: str, subtitle: str, message: str) -> None:
         """A real system notification — visible without opening the menu. Used
         for the can't-paste fallback so the user knows the text is on the
@@ -1330,6 +1497,8 @@ class Tray:
         # with a generic icon. Override both at runtime so that whenever the
         # Settings window flips us to a Regular app, we show as "Pysar".
         self._brand_app()
+        # Rebuild the status pill after sleep/wake (stale window backing).
+        self._install_wake_observer()
         # Hide the Dock icon — this is a menu-bar agent, not a windowed app.
         # NSApplicationActivationPolicyAccessory (= 1) keeps the status-bar item
         # alive while removing the Dock tile and the ⌘-Tab entry.

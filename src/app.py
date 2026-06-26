@@ -7,12 +7,13 @@ Event flow:
 Platform-specific adapters (hotkey, paste, tray) live in pysar.backend.
 """
 
+import contextlib
 import queue
 import threading
 import time
 
 from . import server
-from .backend import HotkeyListener, Paster, Tray, login_item_enabled
+from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
     IDLE_ICON_FALLBACK,
@@ -43,7 +44,9 @@ from .recordings import (
     save_recording,
     save_settings,
 )
+from .syscap import SystemAudioRecorder
 from .transcriber import is_alive, transcribe
+from .transcripts import TranscriptFile
 
 
 class VoiceTyper:
@@ -68,6 +71,18 @@ class VoiceTyper:
         self._first_typed = False
         self._stream_err: str | None = None
         self._typed_chars = 0
+
+        # "Transcribe everything": system audio + mic → live transcript window +
+        # file. A separate on/off capture, independent of the dictation hotkey,
+        # built lazily on first use so the normal dictation path pays nothing.
+        self._meeting = False
+        self._sysrec: SystemAudioRecorder | None = None
+        self._transcript_window: TranscriptWindow | None = None
+        self._transcript_file: TranscriptFile | None = None
+        self._meeting_queue: queue.Queue | None = None
+        self._meeting_worker: threading.Thread | None = None
+        self._meeting_tail = ""  # rolling context fed back to whisper
+        self._meeting_server_down = False
 
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
@@ -104,6 +119,17 @@ class VoiceTyper:
             on_save_set=self._on_save_set,
             on_delete_set=self._on_delete_set,
             on_activate_set=self._on_activate_set,
+            on_toggle_meeting=self._on_toggle_meeting,
+            meeting_capture_mic=self._settings.get("meeting_capture_mic", True),
+            meeting_save_file=self._settings.get("meeting_save_file", True),
+            meeting_on_top=self._settings.get("meeting_on_top", False),
+            meeting_mode=self._settings.get("meeting_mode"),
+            meeting_prompt=self._settings.get("meeting_prompt", ""),
+            on_set_meeting_mic=self._on_set_meeting_mic,
+            on_set_meeting_save=self._on_set_meeting_save,
+            on_set_meeting_on_top=self._on_set_meeting_on_top,
+            on_set_meeting_lang=self._on_set_meeting_lang,
+            on_set_meeting_prompt=self._on_set_meeting_prompt,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -139,7 +165,7 @@ class VoiceTyper:
 
     # ── Hotkey ───────────────────────────────────────────────────────────────
     def _on_toggle(self) -> None:
-        if self._busy:
+        if self._busy or self._meeting:
             return
 
         if not self._recording:
@@ -351,9 +377,7 @@ class VoiceTyper:
     def _on_mic_error(self, msg: str) -> None:
         self._stream_err = msg
         self._tray.set_status(self._t("st.micError"))
-        self._tray.notify(
-            "Pysar", self._t("notif.micErrorTitle"), self._t("notif.micErrorMsg")
-        )
+        self._tray.notify("Pysar", self._t("notif.micErrorTitle"), self._t("notif.micErrorMsg"))
 
     def _finish_streaming(self) -> None:
         try:
@@ -403,6 +427,146 @@ class VoiceTyper:
             self._tray.set_title(self._idle_title())
         finally:
             self._busy = False
+
+    # ── Transcribe everything (system audio + mic → transcript) ───────────────
+    def _on_toggle_meeting(self) -> None:
+        """Menu toggle. Start/stop a system-audio + mic capture into the live
+        transcript window. Independent of the dictation hotkey."""
+        if self._meeting:
+            threading.Thread(target=self._stop_meeting, daemon=True).start()
+        else:
+            self._start_meeting()
+
+    def _start_meeting(self) -> None:
+        # One whisper server, 8 GB — never run a meeting capture and a dictation
+        # transcription concurrently.
+        if self._recording or self._busy:
+            self._tray.set_status(self._t("st.transcribing"))
+            return
+        self._meeting = True
+        self._meeting_tail = ""
+        self._meeting_server_down = False
+        self._warm_whisper()
+
+        if self._transcript_window is None:
+            self._transcript_window = TranscriptWindow(self._t("transcript.title"))
+        self._transcript_window.clear()
+        self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
+        self._transcript_window.show(self._t("transcript.title"))
+        if self._settings.get("meeting_save_file", True):
+            self._transcript_file = TranscriptFile()
+            try:
+                self._transcript_file.open()
+            except Exception as e:
+                print(f"⚠️ transcript file open failed: {e}")
+                self._transcript_file = None
+        else:
+            self._transcript_file = None
+
+        # Single serialized worker drains segments one at a time (whisper is never
+        # hit concurrently), mirroring the streaming dictation path.
+        self._meeting_queue = queue.Queue()
+        self._meeting_worker = threading.Thread(target=self._meeting_worker_loop, daemon=True)
+        self._meeting_worker.start()
+
+        capture_mic = self._settings.get("meeting_capture_mic", True)
+        if self._sysrec is None:
+            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic)
+        else:
+            self._sysrec.set_capture_mic(capture_mic)
+        self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
+
+        self._tray.set_meeting_active(True)
+        self._tray.set_title("🎧")
+        self._tray.set_status(self._t("st.meetingOn"))
+
+    def _enqueue_meeting(self, seg_wav: bytes) -> None:
+        if self._meeting_queue is not None:
+            self._meeting_queue.put(seg_wav)
+
+    def _on_meeting_error(self, msg: str) -> None:
+        print(f"⚠️ system capture: {msg}")
+        self._tray.notify(
+            "Pysar", self._t("notif.captureErrorTitle"), self._t("notif.captureErrorMsg")
+        )
+        threading.Thread(target=self._stop_meeting, daemon=True).start()
+
+    def _meeting_worker_loop(self) -> None:
+        # Meeting language is its own setting; None / unknown falls back to the live
+        # dictation mode. Resolved once per capture so it's stable for the session.
+        mode = self._settings.get("meeting_mode") or self._mode
+        if mode not in MODES:
+            mode = self._mode
+        lang = MODES.get(mode, MODES[DEFAULT_MODE])["language"]
+        # A custom context hint wins outright; empty falls back to the active speech
+        # profiles for that language (the pre-settings behaviour).
+        custom = (self._settings.get("meeting_prompt") or "").strip()
+        if custom:
+            base = custom
+        else:
+            active = self._settings["active_profiles"].get(lang, [])
+            base = compose_prompt(self._settings["profiles"], active, lang) or LANG_SEED.get(
+                lang, ""
+            )
+        while True:
+            item = self._meeting_queue.get()
+            if item is None:  # sentinel queued by _stop_meeting
+                break
+            self._process_meeting_segment(item, base, mode)
+
+    def _process_meeting_segment(self, seg_wav: bytes, base: str, mode: str) -> None:
+        tail = self._meeting_tail[-self._CTX_TAIL_CHARS :]
+        prompt = f"{base} {tail}".strip() if (base or tail) else ""
+        text, err = transcribe(seg_wav, mode=mode, prompt=prompt)
+        if err:
+            if not self._meeting_server_down:
+                self._meeting_server_down = True
+                self._tray.notify(
+                    "Pysar", self._t("notif.serverDownTitle"), self._t("notif.serverDownMsg")
+                )
+            self._tray.set_status(f"⚠️ {err[:60]}")
+            return
+        if not text:
+            return
+        self._meeting_server_down = False
+        self._meeting_tail = f"{self._meeting_tail} {text}".strip()[-self._CTX_TAIL_CHARS :]
+        if self._transcript_window is not None:
+            self._transcript_window.append(text)
+        if self._transcript_file is not None:
+            with contextlib.suppress(Exception):
+                self._transcript_file.append(text)
+        preview = text[:40] + ("…" if len(text) > 40 else "")
+        self._tray.set_status(self._t("st.meetingLine", preview=preview))
+
+    def _stop_meeting(self) -> None:
+        if not self._meeting:
+            return
+        self._meeting = False
+        # Stop capture first (flushes the trailing segment into the queue), then
+        # drain the worker so the final sentence lands before the file is closed.
+        if self._sysrec is not None:
+            with contextlib.suppress(Exception):
+                self._sysrec.stop()
+        if self._meeting_queue is not None:
+            self._meeting_queue.put(None)
+        if self._meeting_worker is not None:
+            self._meeting_worker.join(timeout=60)
+
+        saved_path = None
+        if self._transcript_file is not None:
+            saved_path = str(self._transcript_file.path or "")
+            self._transcript_file.close()
+            self._transcript_file = None
+
+        self._tray.set_meeting_active(False)
+        self._tray.set_status(self._t("st.meetingOff"))
+        self._tray.set_title(self._idle_title())
+        if saved_path:
+            self._tray.notify(
+                "Pysar",
+                self._t("notif.meetingSavedTitle"),
+                self._t("notif.meetingSavedMsg", path=saved_path),
+            )
 
     # ── Mode selection ───────────────────────────────────────────────────────
     def _on_mode_select(self, code: str) -> None:
@@ -521,6 +685,28 @@ class VoiceTyper:
         self._tray.set_status(
             self._t("st.dictStreaming" if mode == "streaming" else "st.dictBatch")
         )
+
+    # ── Transcribe-everything (meeting) settings ──────────────────────────────
+    def _on_set_meeting_mic(self, on: bool) -> None:
+        self._settings["meeting_capture_mic"] = bool(on)
+        save_settings(self._settings)
+
+    def _on_set_meeting_save(self, on: bool) -> None:
+        self._settings["meeting_save_file"] = bool(on)
+        save_settings(self._settings)
+
+    def _on_set_meeting_on_top(self, on: bool) -> None:
+        self._settings["meeting_on_top"] = bool(on)
+        save_settings(self._settings)
+
+    def _on_set_meeting_lang(self, mode: str | None) -> None:
+        # None / unknown → inherit the live dictation mode at capture time.
+        self._settings["meeting_mode"] = mode if mode in MODES else None
+        save_settings(self._settings)
+
+    def _on_set_meeting_prompt(self, text: str) -> None:
+        self._settings["meeting_prompt"] = (text or "").strip()
+        save_settings(self._settings)
 
     def _on_capture_hotkey(self, slot: str) -> None:
         """Capture the next keypress and rebind `slot` to it, live (no relaunch).

@@ -59,6 +59,20 @@ DEFAULTS = {
     # Profile sets: named bundles of profile names, each activated all-at-once by
     # ⌃⌥<digit> (digit = 1-based index). Empty until the user creates one.
     "profile_sets": [],
+    # "Transcribe everything" (meeting/call) mode — system audio + mic → live
+    # transcript window. Configurable from its own Settings screen:
+    #   meeting_capture_mic — also capture the mic, not just system audio
+    #   meeting_save_file   — write the transcript to ~/…/Pysar/transcripts
+    #   meeting_on_top      — float the transcript window above other windows
+    #   meeting_mode        — transcription language; None = inherit the dictation
+    #                         mode live (so the picker can stay out of the way)
+    #   meeting_prompt      — custom names/jargon to bias decoding (our edge; empty
+    #                         falls back to the active speech profiles, as before)
+    "meeting_capture_mic": True,
+    "meeting_save_file": True,
+    "meeting_on_top": False,
+    "meeting_mode": None,
+    "meeting_prompt": "",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
