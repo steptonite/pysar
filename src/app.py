@@ -577,8 +577,8 @@ class VoiceTyper:
         self._tray.set_current_mode(code)  # update the menu checkmark
         self._tray.set_status(self._t("st.mode", label=MODE_LABELS[code]))
         # Reflect the language in the menu-bar icon for instant confirmation,
-        # unless a record/transcribe cycle owns the title right now.
-        if not self._recording and not self._busy:
+        # unless a record/transcribe cycle or an active meeting owns the title.
+        if not self._recording and not self._busy and not self._meeting:
             self._tray.set_title(self._idle_title())
 
     # ── Recording-archive settings ───────────────────────────────────────────
