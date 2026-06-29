@@ -179,7 +179,7 @@ MODES = {
 # Endonym labels — every language is named in its own script. This is the
 # conventional best practice for language pickers.
 MODE_LABELS = {
-    "auto": "🌐 Auto",
+    "auto": "🅰️ Auto (detect)",
     "ru": "🇷🇺 Русский",
     "en": "🇬🇧 English",
     "translate": "🌐 → English (from any)",
@@ -291,7 +291,7 @@ def set_hotkey_label(index: int, profile_set: dict | None = None) -> str:
 # Idle menu-bar icon per mode — shows the active language at a glance so a
 # hotkey switch gives instant visual confirmation. Fallback to the mic glyph.
 MODE_ICONS = {
-    "auto": "🌐",
+    "auto": "🅰️",
     "uk": "🇺🇦",
     "ru": "🇷🇺",
     "en": "🇬🇧",
