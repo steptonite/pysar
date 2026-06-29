@@ -307,6 +307,10 @@ class VoiceTyper:
         tail of what was already said this take. Base goes first and the recent
         context last — whisper keeps the END of an over-long prompt, so the
         nearest context survives truncation."""
+        # In auto mode, rolling tail can prime the decoder and cause cross-language
+        # translation bleed; skip tail to keep language detection fresh.
+        if MODES.get(self._mode, {}).get("language") == "auto":
+            return base.strip()
         tail = self._ctx_tail[-self._CTX_TAIL_CHARS :]
         return f"{base} {tail}".strip() if base or tail else ""
 
@@ -515,8 +519,13 @@ class VoiceTyper:
             self._process_meeting_segment(item, base, mode)
 
     def _process_meeting_segment(self, seg_wav: bytes, base: str, mode: str) -> None:
-        tail = self._meeting_tail[-self._CTX_TAIL_CHARS :]
-        prompt = f"{base} {tail}".strip() if (base or tail) else ""
+        # In auto mode, rolling tail primes decoder and causes cross-language
+        # bleed; use only base to keep language detection fresh.
+        if MODES.get(mode, {}).get("language") == "auto":
+            prompt = base.strip()
+        else:
+            tail = self._meeting_tail[-self._CTX_TAIL_CHARS :]
+            prompt = f"{base} {tail}".strip() if (base or tail) else ""
         text, err = transcribe(seg_wav, mode=mode, prompt=prompt)
         if err:
             if not self._meeting_server_down:
