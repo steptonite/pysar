@@ -202,6 +202,14 @@ _TEMPLATE = r"""<!doctype html>
     margin-bottom:11px; resize:vertical}
   .pform textarea{min-height:70px; line-height:1.4}
   .pform input:focus, .pform textarea:focus{outline:2px solid var(--accent); outline-offset:1px}
+  /* Meeting context-hint textarea — same look as profile prompts; box-sizing +
+     resize:vertical keep width:100% inside the container and stop the user from
+     dragging it past the window edge. */
+  #mt-prompt{width:100%; max-width:100%; box-sizing:border-box; min-height:70px;
+    font:inherit; color:var(--ink); background:var(--panel);
+    border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px;
+    line-height:1.4; resize:vertical}
+  #mt-prompt:focus{outline:2px solid var(--accent); outline-offset:1px}
   .pform .frow{display:flex; gap:9px; align-items:center; justify-content:flex-end}
   .pform .frow .est{margin-right:auto; font-size:11px; color:var(--muted)}
 
@@ -440,7 +448,7 @@ _TEMPLATE = r"""<!doctype html>
       <div class="row" style="display:block">
         <div class="label" data-i18n="meeting.prompt.label">Context hint</div>
         <div class="help" style="white-space:normal" data-i18n="meeting.prompt.help">Names, terms, jargon — biases recognition</div>
-        <textarea id="mt-prompt" style="margin-top:8px;width:100%"></textarea>
+        <textarea id="mt-prompt" style="margin-top:8px"></textarea>
       </div>
     </section>
   </div>
