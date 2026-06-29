@@ -31,8 +31,12 @@ import contextlib
 _NONACTIVATING_PANEL = 1 << 7
 _BACKING_BUFFERED = 2  # NSBackingStoreBuffered
 _STATUS_WINDOW_LEVEL = 25  # floats above normal windows, near the menu bar
-# CanJoinAllSpaces | Stationary — stay put and visible on every Space.
-_COLLECTION_ALL_SPACES = (1 << 0) | (1 << 4)
+# CanJoinAllSpaces | Stationary | FullScreenAuxiliary — stay put and visible on
+# every Space *including* another app's full-screen Space. Without the
+# FullScreenAuxiliary bit a status-level panel silently won't paint over a
+# full-screen app (Claude maximized into its own Space), so the pill appears over
+# a normal-window app (Safari) but vanishes over a full-screen one.
+_COLLECTION_ALL_SPACES = (1 << 0) | (1 << 4) | (1 << 8)
 
 # NSVisualEffectView material/blending/state — a native HUD material the system
 # tints for the active appearance (light vs dark) on its own.
