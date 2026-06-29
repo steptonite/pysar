@@ -158,6 +158,7 @@ MODES = {
     "ru": {"language": "ru", "translate": "false"},
     "en": {"language": "en", "translate": "false"},
     "translate": {"language": "en", "translate": "false"},  # alias for en, kept for UX clarity
+    "auto": {"language": "auto", "translate": "false"},  # whisper auto-detects the spoken language
     "uk": {"language": "uk", "translate": "false"},
     "es": {"language": "es", "translate": "false"},
     "de": {"language": "de", "translate": "false"},
@@ -178,6 +179,7 @@ MODES = {
 # Endonym labels — every language is named in its own script. This is the
 # conventional best practice for language pickers.
 MODE_LABELS = {
+    "auto": "🌐 Auto",
     "ru": "🇷🇺 Русский",
     "en": "🇬🇧 English",
     "translate": "🌐 → English (from any)",
@@ -200,6 +202,7 @@ MODE_LABELS = {
 
 # Order of items in the «🌍 Languages» submenu. The current one gets a checkmark.
 MENU_MODES = [
+    "auto",
     "translate",
     "en",
     "uk",
@@ -288,6 +291,7 @@ def set_hotkey_label(index: int, profile_set: dict | None = None) -> str:
 # Idle menu-bar icon per mode — shows the active language at a glance so a
 # hotkey switch gives instant visual confirmation. Fallback to the mic glyph.
 MODE_ICONS = {
+    "auto": "🌐",
     "uk": "🇺🇦",
     "ru": "🇷🇺",
     "en": "🇬🇧",
