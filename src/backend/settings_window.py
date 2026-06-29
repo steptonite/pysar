@@ -440,7 +440,7 @@ _TEMPLATE = r"""<!doctype html>
       <div class="row" style="display:block">
         <div class="label" data-i18n="meeting.prompt.label">Context hint</div>
         <div class="help" style="white-space:normal" data-i18n="meeting.prompt.help">Names, terms, jargon — biases recognition</div>
-        <textarea id="mt-prompt" style="margin-top:8px"></textarea>
+        <textarea id="mt-prompt" style="margin-top:8px;width:100%"></textarea>
       </div>
     </section>
   </div>
