@@ -80,3 +80,18 @@ def test_multiple_segments():
     blocks = _silence(2) + _voiced(4) + _silence(4) + _voiced(4) + _silence(4)
     emitted = _feed(seg, blocks)
     assert len(emitted) == 2
+
+
+def test_soft_cap_cuts_on_micro_pause():
+    # Past the soft cap a micro-pause (shorter than the full pause) cuts, so a
+    # run-on lands in a word gap instead of mid-word at the hard cap.
+    seg = Segmenter(
+        SR, BLOCK, pause_sec=0.5, min_seg_sec=0.2, max_seg_sec=2.0,
+        silence_margin=4.0, soft_seg_sec=0.6, micro_pause_sec=0.1,
+    )
+    # Leading silence calibrates the noise floor (as in a real recording), then
+    # 8 voiced (0.8s > soft 0.6) + 1 silence (0.1s micro-pause < full 0.5s) → cut.
+    emitted = _feed(seg, _silence(3) + _voiced(8) + _silence(1))
+    assert len(emitted) == 1
+    first = np.frombuffer(emitted[0], dtype=np.float32)
+    assert first.size == BLOCK * 9  # leading silence dropped; 8 voiced + 1 silence

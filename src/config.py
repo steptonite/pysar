@@ -124,6 +124,9 @@ CHUNK_SIZE = 1024
 PAUSE_SEC = 0.9  # trailing silence that ends a segment
 MIN_SEG_SEC = 1.6  # min voiced audio before a pause can cut
 MAX_SEG_SEC = 18.0  # hard cap; force-emit without a pause (rare run-on fallback)
+SOFT_SEG_SEC = 10.0  # past this, a short MICRO_PAUSE_SEC (not full PAUSE_SEC) can
+#                      cut — so a run-on lands in a word gap, not mid-word at the cap
+MICRO_PAUSE_SEC = 0.3  # trailing silence that ends a segment once past the soft cap
 SILENCE_MARGIN = 4.0  # block RMS > noise_floor × this ⇒ voiced
 
 # Minimal per-language priming so the decoder keeps the right script even when no
