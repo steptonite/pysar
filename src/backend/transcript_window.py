@@ -78,11 +78,14 @@ class TranscriptWindow:
 
             self._window.setLevel_(NSFloatingWindowLevel if self._on_top else NSNormalWindowLevel)
 
-    def append(self, text: str, source: str | None = None) -> None:
+    def append(self, text: str, source: str | None = None, ts=None) -> None:
         text = (text or "").strip()
         if not text:
             return
-        _main_async(lambda: self._append_main(text, source))
+        from datetime import datetime
+
+        clock = (ts or datetime.now()).strftime("%H:%M")
+        _main_async(lambda: self._append_main(text, source, clock))
 
     def clear(self) -> None:
         _main_async(self._clear_main)
@@ -93,7 +96,7 @@ class TranscriptWindow:
             self._labels.update({k: v for k, v in labels.items() if v})
 
     # ── main-thread bodies ──────────────────────────────────────────────────────
-    def _append_main(self, text: str, source: str | None) -> None:
+    def _append_main(self, text: str, source: str | None, clock: str = "") -> None:
         if self._textview is None:
             return
         with contextlib.suppress(Exception):
@@ -110,28 +113,27 @@ class TranscriptWindow:
 
             storage = self._textview.textStorage()
 
-            # Append a speaker label when the source changes (non-None and different)
-            if source is not None and source != self._last_source:
-                # ---- muted speaker label ----
-                label_attrs = {}
-                # Font: bold system ~12.5pt
-                label_attrs[NSFontAttributeName] = NSFont.boldSystemFontOfSize_(12.5)
-                # Color: systemBlue for "sys", systemOrange for "mic"
-                color_map = {"sys": NSColor.systemBlueColor(), "mic": NSColor.systemOrangeColor()}
-                label_attrs[NSForegroundColorAttributeName] = color_map.get(
-                    source, NSColor.systemGrayColor()
-                )
-                # Paragraph spacing before 8.0
-                para = NSMutableParagraphStyle.alloc().init()
-                para.setParagraphSpacingBefore_(8.0)
-                label_attrs[NSParagraphStyleAttributeName] = para
-                # Build the label string: "● System\n" or "● You\n"
-                label_text = "● " + self._labels.get(source, source) + "\n"
-                label_str = NSAttributedString.alloc().initWithString_attributes_(
-                    label_text, label_attrs
-                )
-                storage.appendAttributedString_(label_str)
-                self._last_source = source
+            # A small header before every block: "● Source · HH:MM" (or just the
+            # time when the source is unknown). Each block is stamped — consecutive
+            # lines are no longer grouped silently under one label.
+            label_attrs = {}
+            label_attrs[NSFontAttributeName] = NSFont.boldSystemFontOfSize_(12.5)
+            color_map = {"sys": NSColor.systemBlueColor(), "mic": NSColor.systemOrangeColor()}
+            label_attrs[NSForegroundColorAttributeName] = (
+                color_map.get(source, NSColor.systemGrayColor())
+                if source is not None
+                else NSColor.systemGrayColor()
+            )
+            para = NSMutableParagraphStyle.alloc().init()
+            para.setParagraphSpacingBefore_(8.0)
+            label_attrs[NSParagraphStyleAttributeName] = para
+            if source is not None:
+                head = "● " + self._labels.get(source, source) + " · " + clock + "\n"
+            else:
+                head = "● " + clock + "\n"
+            label_str = NSAttributedString.alloc().initWithString_attributes_(head, label_attrs)
+            storage.appendAttributedString_(label_str)
+            self._last_source = source
 
             # Append the body text using the established typing attributes
             body_attrs = self._textview.typingAttributes()

@@ -11,6 +11,7 @@ import contextlib
 import queue
 import threading
 import time
+from datetime import datetime
 
 from . import server
 from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
@@ -533,6 +534,10 @@ class VoiceTyper:
     def _process_meeting_segment(
         self, seg_wav: bytes, source: str | None, base: str, mode: str
     ) -> None:
+        # When the mic is off the whole stream is system audio, so label it
+        # "System" even in the mixed ("off") mode where syscap can't tag a source.
+        if source is None and not self._settings.get("meeting_capture_mic", True):
+            source = "sys"
         # In auto mode, rolling tail primes decoder and causes cross-language
         # bleed; use only base to keep language detection fresh. Otherwise feed
         # this source's own rolling tail (keeping each speaker's context separate).
@@ -553,13 +558,14 @@ class VoiceTyper:
         if not text:
             return
         self._meeting_server_down = False
+        ts = datetime.now()  # stamp at transcription time = when the line was said
         prev = self._meeting_tails.get(source, "")
         self._meeting_tails[source] = f"{prev} {text}".strip()[-self._CTX_TAIL_CHARS :]
         if self._transcript_window is not None:
-            self._transcript_window.append(text, source)
+            self._transcript_window.append(text, source, ts)
         if self._transcript_file is not None:
             with contextlib.suppress(Exception):
-                self._transcript_file.append(text, source)
+                self._transcript_file.append(text, source, ts)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 

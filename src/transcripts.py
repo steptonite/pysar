@@ -49,14 +49,19 @@ class TranscriptFile:
         self._last_source = None
         return self.path
 
-    def append(self, text: str, source: str | None = None) -> None:
+    def append(
+        self, text: str, source: str | None = None, ts: datetime | None = None
+    ) -> None:
         text = (text or "").strip()
         if not text or self._fh is None:
             return
-        if source is not None and source != self._last_source:
-            label = self._labels.get(source, source)
-            self._fh.write(f"**{label}**\n\n")
-            self._last_source = source
+        # A small header before every block: "Source · HH:MM" (or just the time
+        # when the source is unknown — e.g. the mixed "off" mode). The user wants
+        # each block stamped, not consecutive lines grouped under one label.
+        clock = (ts or datetime.now()).strftime("%H:%M")
+        head = f"{self._labels.get(source, source)} · {clock}" if source is not None else clock
+        self._fh.write(f"**{head}**\n\n")
+        self._last_source = source
         self._fh.write(text + "\n\n")
         self._fh.flush()
 
