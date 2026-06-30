@@ -438,7 +438,10 @@ class TranscriptWindow:
             ds.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)  # pinned to top
             fx.addSubview_(ds)
 
-        # ── corner grip (visual affordance only; the panel resizes from edges) ──
+        # ── corner resize affordance (subtle native grow-box hint) ──
+        # Inset well inside the 16px corner radius so masksToBounds doesn't clip the
+        # lines along the curve (the previous grip sat ON the arc → looked broken).
+        # Three thin, low-opacity diagonal lines decreasing toward the corner.
         with contextlib.suppress(Exception):
             from AppKit import NSView
             from Quartz import (
@@ -449,18 +452,19 @@ class TranscriptWindow:
             )
 
             grip = NSView.alloc().initWithFrame_(
-                NSMakeRect(fx.bounds().size.width - 16, 2, 14, 14)
+                NSMakeRect(fx.bounds().size.width - 22, 7, 14, 14)
             )
             grip.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
             grip.setWantsLayer_(True)
-            for sx, sy, ex, ey in ((3, 11, 11, 3), (6, 11, 11, 6)):
+            for sx, sy, ex, ey in ((3, 12, 12, 3), (7, 12, 12, 7), (11, 12, 12, 11)):
                 path = CGPathCreateMutable()
                 CGPathMoveToPoint(path, None, sx, sy)
                 CGPathAddLineToPoint(path, None, ex, ey)
                 line = CAShapeLayer.alloc().init()
-                line.setStrokeColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.25).CGColor())
+                line.setStrokeColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).CGColor())
                 line.setFillColor_(NSColor.clearColor().CGColor())
-                line.setLineWidth_(1.5)
+                line.setLineWidth_(1.0)
+                line.setLineCap_("round")
                 line.setPath_(path)
                 grip.layer().addSublayer_(line)
             fx.addSubview_(grip)
