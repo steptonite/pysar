@@ -848,11 +848,13 @@ class Tray:
         meeting_on_top: bool = False,
         meeting_mode: str | None = None,
         meeting_prompt: str = "",
+        meeting_prompt_source: str = "custom",
         on_set_meeting_mic: Callable[[bool], None] | None = None,
         on_set_meeting_save: Callable[[bool], None] | None = None,
         on_set_meeting_on_top: Callable[[bool], None] | None = None,
         on_set_meeting_lang: Callable[[str | None], None] | None = None,
         on_set_meeting_prompt: Callable[[str], None] | None = None,
+        on_set_meeting_prompt_source: Callable[[str], None] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -905,11 +907,13 @@ class Tray:
         self._meeting_on_top = meeting_on_top
         self._meeting_mode = meeting_mode
         self._meeting_prompt = meeting_prompt
+        self._meeting_prompt_source = meeting_prompt_source
         self._on_set_meeting_mic = on_set_meeting_mic
         self._on_set_meeting_save = on_set_meeting_save
         self._on_set_meeting_on_top = on_set_meeting_on_top
         self._on_set_meeting_lang = on_set_meeting_lang
         self._on_set_meeting_prompt = on_set_meeting_prompt
+        self._on_set_meeting_prompt_source = on_set_meeting_prompt_source
         self._settings_window = None  # built lazily on first open
         self._hud = None  # streaming status overlay, built lazily on first show
         self._wake_obs = None  # retained NSWorkspace wake-notification token
@@ -1019,6 +1023,7 @@ class Tray:
                         "set_meeting_on_top": self._set_meeting_on_top,
                         "set_meeting_lang": self._set_meeting_lang,
                         "set_meeting_prompt": self._set_meeting_prompt,
+                        "set_meeting_prompt_source": self._set_meeting_prompt_source,
                         "open_transcripts_folder": self._open_transcripts_folder,
                     },
                 )
@@ -1061,6 +1066,7 @@ class Tray:
             "meeting_on_top": self._meeting_on_top,
             "meeting_mode": self._meeting_mode,
             "meeting_prompt": self._meeting_prompt,
+            "meeting_prompt_source": self._meeting_prompt_source,
             "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
             "transcripts_dir": self._transcripts_dir(),
         }
@@ -1166,6 +1172,11 @@ class Tray:
         self._meeting_prompt = (text or "").strip()
         if self._on_set_meeting_prompt:
             self._on_set_meeting_prompt(self._meeting_prompt)
+
+    def _set_meeting_prompt_source(self, source: str) -> None:
+        self._meeting_prompt_source = source if source in ("custom", "profiles") else "custom"
+        if self._on_set_meeting_prompt_source:
+            self._on_set_meeting_prompt_source(self._meeting_prompt_source)
 
     def _open_transcripts_folder(self) -> None:
         path = self._transcripts_dir()

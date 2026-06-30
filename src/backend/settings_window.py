@@ -445,6 +445,11 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </section>
     <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.promptSrc.label">Context source</div>
+          <div class="help" data-i18n="meeting.promptSrc.help">Dictation profiles of the active language, or a custom hint</div></div>
+        <select id="mt-prompt-src"></select>
+      </div>
       <div class="row" style="display:block">
         <div class="label" data-i18n="meeting.prompt.label">Context hint</div>
         <div class="help" style="white-space:normal" data-i18n="meeting.prompt.help">Names, terms, jargon — biases recognition</div>
@@ -630,6 +635,22 @@ $("back-mt").addEventListener("click", () => show("main"));
   };
   mtPrompt.addEventListener("input", refreshMtMeter);
   refreshMtMeter();
+  const mtSrc = $("mt-prompt-src");
+  [["custom", T("meeting.promptSrc.custom", "Custom hint")],
+   ["profiles", T("meeting.promptSrc.profiles", "Dictation profiles")]].forEach(([val, label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.meeting_prompt_source || "custom")) o.selected = true;
+    mtSrc.appendChild(o);
+  });
+  const applyMtSrc = () => {
+    const custom = mtSrc.value === "custom";
+    mtPrompt.disabled = !custom;
+    mtPrompt.style.opacity = custom ? "1" : "0.5";
+    mtMeterBox.style.opacity = custom ? "1" : "0.5";
+  };
+  mtSrc.addEventListener("change", () => { send("set_meeting_prompt_source", mtSrc.value); applyMtSrc(); });
+  applyMtSrc();
 
   // Capture the dictation toggle: ask Python to record the next keypress. The
   // kbd label and the language rows are refreshed by renderHotkeys() once the

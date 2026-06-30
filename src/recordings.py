@@ -73,6 +73,9 @@ DEFAULTS = {
     "meeting_on_top": False,
     "meeting_mode": None,
     "meeting_prompt": "",
+    #   meeting_prompt_source — "custom" = use the field above; "profiles" = use
+    #                           the active dictation profiles of the meeting language
+    "meeting_prompt_source": "custom",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)

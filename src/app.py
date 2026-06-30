@@ -125,11 +125,13 @@ class VoiceTyper:
             meeting_on_top=self._settings.get("meeting_on_top", False),
             meeting_mode=self._settings.get("meeting_mode"),
             meeting_prompt=self._settings.get("meeting_prompt", ""),
+            meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
             on_set_meeting_mic=self._on_set_meeting_mic,
             on_set_meeting_save=self._on_set_meeting_save,
             on_set_meeting_on_top=self._on_set_meeting_on_top,
             on_set_meeting_lang=self._on_set_meeting_lang,
             on_set_meeting_prompt=self._on_set_meeting_prompt,
+            on_set_meeting_prompt_source=self._on_set_meeting_prompt_source,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -502,10 +504,12 @@ class VoiceTyper:
         if mode not in MODES:
             mode = self._mode
         lang = MODES.get(mode, MODES[DEFAULT_MODE])["language"]
-        # A custom context hint wins outright; empty falls back to the active speech
-        # profiles for that language (the pre-settings behaviour).
+        # Source switch: "custom" uses the context-hint field (falling back to
+        # profiles only when it's empty); "profiles" always uses the active speech
+        # profiles for the meeting language.
+        source = self._settings.get("meeting_prompt_source", "custom")
         custom = (self._settings.get("meeting_prompt") or "").strip()
-        if custom:
+        if source == "custom" and custom:
             base = custom
         else:
             active = self._settings["active_profiles"].get(lang, [])
@@ -715,6 +719,12 @@ class VoiceTyper:
 
     def _on_set_meeting_prompt(self, text: str) -> None:
         self._settings["meeting_prompt"] = (text or "").strip()
+        save_settings(self._settings)
+
+    def _on_set_meeting_prompt_source(self, source: str) -> None:
+        self._settings["meeting_prompt_source"] = (
+            source if source in ("custom", "profiles") else "custom"
+        )
         save_settings(self._settings)
 
     def _on_capture_hotkey(self, slot: str) -> None:
