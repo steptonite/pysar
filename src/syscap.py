@@ -12,10 +12,13 @@ How it works:
     types are delivered on a single serial dispatch queue, so mixing needs no
     locking against itself.
   * Each delivered CMSampleBuffer is decoded to float32, downmixed to mono and
-    resampled to 16 kHz. The two sources are summed sample-for-sample (rough
-    wall-clock alignment by sample count, with a 1 s de-drift guard).
-  * The mixed 16 kHz stream is re-blocked into fixed CHUNK_SIZE blocks and fed to
-    the same Segmenter the mic path uses, so pause-based segmentation is identical.
+    resampled to 16 kHz.
+  * In "off" and "fast" modes the two sources are summed sample-for-sample (rough
+    wall-clock alignment by sample count, with a 1 s de-drift guard). In "smart"
+    mode no mixing happens — system and mic are kept entirely separate, each
+    feeding its own Segmenter.
+  * The 16 kHz stream(s) are re-blocked into fixed CHUNK_SIZE blocks and fed to
+    the Segmenter(s) so pause-based segmentation is identical.
 
 Requires Screen Recording permission (granted to the Pysar app). The full clip is
 *not* retained in memory — a meeting can run for hours on 8 GB, and the text is
@@ -144,17 +147,31 @@ class SystemAudioRecorder:
     # laggard to resync — guards against drift or a momentarily starved source.
     _MAX_DRIFT = SAMPLE_RATE  # 1 second
 
-    def __init__(self, capture_mic: bool = True):
+    def __init__(self, capture_mic: bool = True, source_mode: str = "off"):
         self._capture_mic = capture_mic
-        self._on_segment: Callable[[bytes], None] | None = None
+        self._source_mode = source_mode if source_mode in ("off", "fast", "smart") else "off"
+        self._on_segment: Callable[[bytes, str | None], None] | None = None
         self._on_error: Callable[[str], None] | None = None
-        self._segmenter: Segmenter | None = None
 
+        # Segmenters
+        self._segmenter: Segmenter | None = None
+        self._seg_sys: Segmenter | None = None
+        self._seg_mic: Segmenter | None = None
+
+        # Mixed‑path buffers
         self._sys = np.zeros(0, np.float32)
         self._mic = np.zeros(0, np.float32)
         self._block_acc = np.zeros(0, np.float32)
-        self._lock = threading.Lock()
 
+        # Smart‑path accumulators
+        self._acc_sys = np.zeros(0, np.float32)
+        self._acc_mic = np.zeros(0, np.float32)
+
+        # Fast‑mode energy accumulators
+        self._e_sys = 0.0
+        self._e_mic = 0.0
+
+        self._lock = threading.Lock()
         self._stream = None
         self._output = None
         self._queue = None
@@ -165,10 +182,15 @@ class SystemAudioRecorder:
         """Takes effect on the next start()."""
         self._capture_mic = on
 
+    def set_source_mode(self, mode: str) -> None:
+        """Source separation mode — takes effect on the next start()."""
+        if mode in ("off", "fast", "smart"):
+            self._source_mode = mode
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(
         self,
-        on_segment: Callable[[bytes], None] | None = None,
+        on_segment: Callable[[bytes, str | None], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
         self._on_segment = on_segment
@@ -177,33 +199,50 @@ class SystemAudioRecorder:
             self._fail("ScreenCaptureKit is unavailable on this system")
             return
 
+        # Reset all buffers
         self._sys = np.zeros(0, np.float32)
         self._mic = np.zeros(0, np.float32)
         self._block_acc = np.zeros(0, np.float32)
+        self._acc_sys = np.zeros(0, np.float32)
+        self._acc_mic = np.zeros(0, np.float32)
+        self._e_sys = 0.0
+        self._e_mic = 0.0
         self._started_at = time.time()
         self._stopped.clear()
-        self._segmenter = (
-            Segmenter(
-                sample_rate=SAMPLE_RATE,
-                block_size=CHUNK_SIZE,
-                pause_sec=PAUSE_SEC,
-                min_seg_sec=MIN_SEG_SEC,
-                max_seg_sec=MAX_SEG_SEC,
-                silence_margin=SILENCE_MARGIN,
-                soft_seg_sec=SOFT_SEG_SEC,
-                micro_pause_sec=MICRO_PAUSE_SEC,
-            )
-            if on_segment is not None
-            else None
+
+        segmenter_kw = dict(
+            sample_rate=SAMPLE_RATE,
+            block_size=CHUNK_SIZE,
+            pause_sec=PAUSE_SEC,
+            min_seg_sec=MIN_SEG_SEC,
+            max_seg_sec=MAX_SEG_SEC,
+            silence_margin=SILENCE_MARGIN,
+            soft_seg_sec=SOFT_SEG_SEC,
+            micro_pause_sec=MICRO_PAUSE_SEC,
         )
+
+        if on_segment is not None:
+            if self._source_mode == "smart":
+                self._seg_sys = Segmenter(**segmenter_kw)
+                self._seg_mic = Segmenter(**segmenter_kw)
+                self._segmenter = None
+            else:
+                self._segmenter = Segmenter(**segmenter_kw)
+                self._seg_sys = None
+                self._seg_mic = None
+        else:
+            self._segmenter = None
+            self._seg_sys = None
+            self._seg_mic = None
+
         # SCShareableContent.getShareable…Handler runs its completion on the main
         # queue; the app's run loop (rumps) drives it, so just kick it off here.
         with contextlib.suppress(Exception):
             SC.SCShareableContent.getShareableContentWithCompletionHandler_(self._on_content)
 
     def stop(self) -> None:
-        """Stop capture and flush the trailing segment. Returns nothing — the full
-        clip is intentionally not retained (long meetings, 8 GB).
+        """Stop capture and flush the trailing segment(s). Returns nothing — the
+        full clip is intentionally not retained (long meetings, 8 GB).
 
         Safe to call before the async setup finished: the stop flag is set FIRST so
         a still-pending `_on_content` bails out instead of starting a stream nobody
@@ -218,14 +257,33 @@ class SystemAudioRecorder:
             done.wait(timeout=3)
         self._output = None
         self._queue = None
-        # Flush the last partial segment so the meeting's final sentence isn't lost.
-        if self._segmenter is not None and self._on_segment is not None:
-            with contextlib.suppress(Exception):
-                tail = self._segmenter.flush()
-                if tail:
-                    wav = pcm_to_wav(tail)
-                    if wav:
-                        self._on_segment(wav)
+
+        # Flush the trailing segment(s) so the meeting's final sentence isn't lost.
+        if self._on_segment is not None:
+            if self._source_mode == "smart":
+                for seg, src in ((self._seg_sys, "sys"), (self._seg_mic, "mic")):
+                    if seg is None:
+                        continue
+                    with contextlib.suppress(Exception):
+                        tail = seg.flush()
+                        if tail:
+                            wav = pcm_to_wav(tail)
+                            if wav:
+                                self._on_segment(wav, src)
+            else:
+                if self._segmenter is not None:
+                    with contextlib.suppress(Exception):
+                        tail = self._segmenter.flush()
+                        if tail:
+                            wav = pcm_to_wav(tail)
+                            if wav:
+                                if self._source_mode == "fast":
+                                    src = "sys" if self._e_sys >= self._e_mic else "mic"
+                                    self._e_sys = 0.0
+                                    self._e_mic = 0.0
+                                else:
+                                    src = None
+                                self._on_segment(wav, src)
         self._stopped.set()
 
     # ── internals ─────────────────────────────────────────────────────────────
@@ -298,12 +356,20 @@ class SystemAudioRecorder:
 
     def _ingest(self, source: int, sbuf) -> None:
         """Decode one buffer (source 0 = system, 1 = mic), resample to 16 kHz and
-        push into the mixer. Runs on the SCK serial queue."""
+        push into the mixer or the appropriate smart-path accumulator. Runs on the
+        SCK serial queue."""
         mono, sr = _pcm_mono(sbuf)
         if mono.size == 0:
             return
         x = _to_16k(mono, int(sr))
         with self._lock:
+            if self._source_mode == "smart":
+                if source == 0:
+                    self._feed_source_locked(self._seg_sys, "_acc_sys", "sys", x)
+                else:
+                    self._feed_source_locked(self._seg_mic, "_acc_mic", "mic", x)
+                return
+            # off / fast mixed path
             if source == 0:
                 self._sys = np.concatenate((self._sys, x))
             else:
@@ -312,11 +378,33 @@ class SystemAudioRecorder:
             if mixed.size:
                 self._feed_blocks_locked(mixed)
 
+    def _feed_source_locked(self, seg, acc_attr: str, source: str, x: np.ndarray) -> None:
+        """Append *x* to the accumulator named *acc_attr*, re-block into
+        CHUNK_SIZE blocks, feed *seg*, and emit each complete segment with the
+        given *source* tag."""
+        arr = getattr(self, acc_attr)
+        arr = np.concatenate((arr, x))
+        # Process complete blocks
+        while arr.size >= CHUNK_SIZE:
+            block = arr[:CHUNK_SIZE]
+            arr = arr[CHUNK_SIZE:]
+            if seg is not None and self._on_segment is not None:
+                seg_res = seg.feed(block)
+                if seg_res is not None:
+                    with contextlib.suppress(Exception):
+                        wav = pcm_to_wav(seg_res)
+                        if wav:
+                            self._on_segment(wav, source)
+        setattr(self, acc_attr, arr)
+
     def _mix_locked(self) -> np.ndarray:
         """Return the next run of mixed samples that both sources have covered,
-        consuming them from the per-source buffers."""
+        consuming them from the per-source buffers. In "fast" mode also
+        accumulates per-source energy."""
         if not self._capture_mic:
             out, self._sys = self._sys, np.zeros(0, np.float32)
+            if self._source_mode == "fast":
+                self._e_sys += float(np.dot(out, out))
             return out
 
         # Resync if one source drifted far ahead (or the other stalled): pad the
@@ -331,6 +419,9 @@ class SystemAudioRecorder:
         n = min(self._sys.size, self._mic.size)
         if n == 0:
             return np.zeros(0, np.float32)
+        if self._source_mode == "fast":
+            self._e_sys += float(np.dot(self._sys[:n], self._sys[:n]))
+            self._e_mic += float(np.dot(self._mic[:n], self._mic[:n]))
         out = self._sys[:n] + self._mic[:n]
         self._sys = self._sys[n:]
         self._mic = self._mic[n:]
@@ -338,7 +429,8 @@ class SystemAudioRecorder:
 
     def _feed_blocks_locked(self, mixed: np.ndarray) -> None:
         """Re-block the mixed stream into fixed CHUNK_SIZE blocks (the Segmenter
-        times segments by block count) and feed it."""
+        times segments by block count) and feed it. In "fast" mode tags each
+        emitted segment with the louder source."""
         self._block_acc = np.concatenate((self._block_acc, mixed))
         while self._block_acc.size >= CHUNK_SIZE:
             block = self._block_acc[:CHUNK_SIZE]
@@ -350,4 +442,11 @@ class SystemAudioRecorder:
                 with contextlib.suppress(Exception):
                     wav = pcm_to_wav(seg)
                     if wav:
-                        self._on_segment(wav)
+                        if self._source_mode == "fast":
+                            src = "sys" if self._e_sys >= self._e_mic else "mic"
+                        else:
+                            src = None
+                        self._on_segment(wav, src)
+                        if self._source_mode == "fast":
+                            self._e_sys = 0.0
+                            self._e_mic = 0.0

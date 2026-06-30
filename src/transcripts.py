@@ -29,6 +29,15 @@ class TranscriptFile:
         self._started = started or datetime.now()
         self._fh = None
         self.path: Path | None = None
+        # Speaker-source labels (source-separation modes). Keyed "sys"/"mic"; a
+        # heading is written only when the source changes, so consecutive segments
+        # from one speaker group under one label.
+        self._labels: dict[str, str] = {"sys": "System", "mic": "You"}
+        self._last_source: str | None = None
+
+    def set_source_labels(self, labels: dict[str, str]) -> None:
+        if labels:
+            self._labels.update(labels)
 
     def open(self) -> Path:
         stamp = self._started.strftime("%Y-%m-%d_%H-%M-%S")
@@ -37,12 +46,17 @@ class TranscriptFile:
         human = self._started.strftime("%Y-%m-%d %H:%M")
         self._fh.write(f"# Pysar transcript — {human}\n\n")
         self._fh.flush()
+        self._last_source = None
         return self.path
 
-    def append(self, text: str) -> None:
+    def append(self, text: str, source: str | None = None) -> None:
         text = (text or "").strip()
         if not text or self._fh is None:
             return
+        if source is not None and source != self._last_source:
+            label = self._labels.get(source, source)
+            self._fh.write(f"**{label}**\n\n")
+            self._last_source = source
         self._fh.write(text + "\n\n")
         self._fh.flush()
 

@@ -430,6 +430,11 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" data-i18n="meeting.lang.help">Defaults to the dictation language</div></div>
         <select id="mt-lang"></select>
       </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.source.label">Speaker separation</div>
+          <div class="help" style="white-space:normal" data-i18n="meeting.source.help">Who is speaking</div></div>
+        <select id="mt-source"></select>
+      </div>
     </section>
     <section>
       <div class="row">
@@ -617,6 +622,17 @@ $("back-mt").addEventListener("click", () => show("main"));
     mtLang.appendChild(o);
   });
   mtLang.addEventListener("change", () => send("set_meeting_lang", mtLang.value || null));
+
+  const mtSource = $("mt-source");
+  [["off", T("meeting.source.off", "Off")],
+   ["fast", T("meeting.source.fast", "Fast")],
+   ["smart", T("meeting.source.smart", "Smart")]].forEach(([val, label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.meeting_source_mode || "off")) o.selected = true;
+    mtSource.appendChild(o);
+  });
+  mtSource.addEventListener("change", () => send("set_meeting_source_mode", mtSource.value));
 
   const mtPrompt = $("mt-prompt");
   mtPrompt.placeholder = T("meeting.prompt.ph", "");

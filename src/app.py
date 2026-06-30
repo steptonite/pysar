@@ -81,7 +81,7 @@ class VoiceTyper:
         self._transcript_file: TranscriptFile | None = None
         self._meeting_queue: queue.Queue | None = None
         self._meeting_worker: threading.Thread | None = None
-        self._meeting_tail = ""  # rolling context fed back to whisper
+        self._meeting_tails: dict[str | None, str] = {}  # per-source rolling context
         self._meeting_server_down = False
 
         self._tray = Tray(
@@ -126,12 +126,14 @@ class VoiceTyper:
             meeting_mode=self._settings.get("meeting_mode"),
             meeting_prompt=self._settings.get("meeting_prompt", ""),
             meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
+            meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
             on_set_meeting_mic=self._on_set_meeting_mic,
             on_set_meeting_save=self._on_set_meeting_save,
             on_set_meeting_on_top=self._on_set_meeting_on_top,
             on_set_meeting_lang=self._on_set_meeting_lang,
             on_set_meeting_prompt=self._on_set_meeting_prompt,
             on_set_meeting_prompt_source=self._on_set_meeting_prompt_source,
+            on_set_meeting_source_mode=self._on_set_meeting_source_mode,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -450,17 +452,20 @@ class VoiceTyper:
             self._tray.set_status(self._t("st.transcribing"))
             return
         self._meeting = True
-        self._meeting_tail = ""
+        self._meeting_tails = {}
         self._meeting_server_down = False
         self._warm_whisper()
 
+        spk_labels = {"sys": self._t("transcript.spk.sys"), "mic": self._t("transcript.spk.mic")}
         if self._transcript_window is None:
             self._transcript_window = TranscriptWindow(self._t("transcript.title"))
+        self._transcript_window.set_source_labels(spk_labels)
         self._transcript_window.clear()
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
         self._transcript_window.show(self._t("transcript.title"))
         if self._settings.get("meeting_save_file", True):
             self._transcript_file = TranscriptFile()
+            self._transcript_file.set_source_labels(spk_labels)
             try:
                 self._transcript_file.open()
             except Exception as e:
@@ -476,19 +481,21 @@ class VoiceTyper:
         self._meeting_worker.start()
 
         capture_mic = self._settings.get("meeting_capture_mic", True)
+        source_mode = self._settings.get("meeting_source_mode", "off")
         if self._sysrec is None:
-            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic)
+            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
         else:
             self._sysrec.set_capture_mic(capture_mic)
+            self._sysrec.set_source_mode(source_mode)
         self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
 
         self._tray.set_meeting_active(True)
         self._tray.set_title("🎧")
         self._tray.set_status(self._t("st.meetingOn"))
 
-    def _enqueue_meeting(self, seg_wav: bytes) -> None:
+    def _enqueue_meeting(self, seg_wav: bytes, source: str | None = None) -> None:
         if self._meeting_queue is not None:
-            self._meeting_queue.put(seg_wav)
+            self._meeting_queue.put((seg_wav, source))
 
     def _on_meeting_error(self, msg: str) -> None:
         print(f"⚠️ system capture: {msg}")
@@ -520,15 +527,19 @@ class VoiceTyper:
             item = self._meeting_queue.get()
             if item is None:  # sentinel queued by _stop_meeting
                 break
-            self._process_meeting_segment(item, base, mode)
+            seg_wav, source = item
+            self._process_meeting_segment(seg_wav, source, base, mode)
 
-    def _process_meeting_segment(self, seg_wav: bytes, base: str, mode: str) -> None:
+    def _process_meeting_segment(
+        self, seg_wav: bytes, source: str | None, base: str, mode: str
+    ) -> None:
         # In auto mode, rolling tail primes decoder and causes cross-language
-        # bleed; use only base to keep language detection fresh.
+        # bleed; use only base to keep language detection fresh. Otherwise feed
+        # this source's own rolling tail (keeping each speaker's context separate).
         if MODES.get(mode, {}).get("language") == "auto":
             prompt = base.strip()
         else:
-            tail = self._meeting_tail[-self._CTX_TAIL_CHARS :]
+            tail = self._meeting_tails.get(source, "")[-self._CTX_TAIL_CHARS :]
             prompt = f"{base} {tail}".strip() if (base or tail) else ""
         text, err = transcribe(seg_wav, mode=mode, prompt=prompt)
         if err:
@@ -542,12 +553,13 @@ class VoiceTyper:
         if not text:
             return
         self._meeting_server_down = False
-        self._meeting_tail = f"{self._meeting_tail} {text}".strip()[-self._CTX_TAIL_CHARS :]
+        prev = self._meeting_tails.get(source, "")
+        self._meeting_tails[source] = f"{prev} {text}".strip()[-self._CTX_TAIL_CHARS :]
         if self._transcript_window is not None:
-            self._transcript_window.append(text)
+            self._transcript_window.append(text, source)
         if self._transcript_file is not None:
             with contextlib.suppress(Exception):
-                self._transcript_file.append(text)
+                self._transcript_file.append(text, source)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 
@@ -719,6 +731,12 @@ class VoiceTyper:
 
     def _on_set_meeting_prompt(self, text: str) -> None:
         self._settings["meeting_prompt"] = (text or "").strip()
+        save_settings(self._settings)
+
+    def _on_set_meeting_source_mode(self, mode: str) -> None:
+        self._settings["meeting_source_mode"] = (
+            mode if mode in ("off", "fast", "smart") else "off"
+        )
         save_settings(self._settings)
 
     def _on_set_meeting_prompt_source(self, source: str) -> None:

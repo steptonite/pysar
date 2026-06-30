@@ -76,6 +76,12 @@ DEFAULTS = {
     #   meeting_prompt_source — "custom" = use the field above; "profiles" = use
     #                           the active dictation profiles of the meeting language
     "meeting_prompt_source": "custom",
+    #   meeting_source_mode — speaker separation in the transcript:
+    #     "off"   = mixed stream, no source labels (as before)
+    #     "fast"  = one mixed pass; label each segment by the louder source (RMS)
+    #     "smart" = two separate whisper passes (system / mic) → reliable labels,
+    #               ~2× slower when both speak (one shared model, RAM unchanged)
+    "meeting_source_mode": "off",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
