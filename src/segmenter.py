@@ -38,12 +38,16 @@ class Segmenter:
         min_seg_sec: float,
         max_seg_sec: float,
         silence_margin: float,
+        soft_seg_sec: float | None = None,
+        micro_pause_sec: float = 0.3,
     ):
         self._block_dur = block_size / sample_rate
         self._pause_sec = pause_sec
         self._min_seg_sec = min_seg_sec
         self._max_seg_sec = max_seg_sec
         self._margin = silence_margin
+        self._soft_seg_sec = soft_seg_sec
+        self._micro_pause_sec = micro_pause_sec
 
         self._buf: list[np.ndarray] = []  # blocks of the segment being built
         self._voiced_sec = 0.0  # voiced audio accumulated in _buf
@@ -89,7 +93,16 @@ class Segmenter:
         ended_on_pause = (
             self._silence_sec >= self._pause_sec and self._voiced_sec >= self._min_seg_sec
         )
-        if ended_on_pause or buffered_sec >= self._max_seg_sec:
+        # Past the soft cap, a much shorter micro-pause is enough to cut, so a long
+        # run-on lands the boundary in a between-word gap instead of being force-cut
+        # mid-word when it finally hits the hard MAX_SEG_SEC cap.
+        ended_on_soft = (
+            self._soft_seg_sec is not None
+            and buffered_sec >= self._soft_seg_sec
+            and self._silence_sec >= self._micro_pause_sec
+            and self._voiced_sec >= self._min_seg_sec
+        )
+        if ended_on_pause or ended_on_soft or buffered_sec >= self._max_seg_sec:
             return self._emit()
         return None
 

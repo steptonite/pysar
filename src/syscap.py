@@ -32,10 +32,12 @@ import numpy as np
 from .config import (
     CHUNK_SIZE,
     MAX_SEG_SEC,
+    MICRO_PAUSE_SEC,
     MIN_SEG_SEC,
     PAUSE_SEC,
     SAMPLE_RATE,
     SILENCE_MARGIN,
+    SOFT_SEG_SEC,
 )
 from .recorder import pcm_to_wav
 from .segmenter import Segmenter
@@ -188,6 +190,8 @@ class SystemAudioRecorder:
                 min_seg_sec=MIN_SEG_SEC,
                 max_seg_sec=MAX_SEG_SEC,
                 silence_margin=SILENCE_MARGIN,
+                soft_seg_sec=SOFT_SEG_SEC,
+                micro_pause_sec=MICRO_PAUSE_SEC,
             )
             if on_segment is not None
             else None
