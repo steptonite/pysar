@@ -523,13 +523,12 @@ class VoiceTyper:
             self._process_meeting_segment(item, base, mode)
 
     def _process_meeting_segment(self, seg_wav: bytes, base: str, mode: str) -> None:
-        # In auto mode, rolling tail primes decoder and causes cross-language
-        # bleed; use only base to keep language detection fresh.
-        if MODES.get(mode, {}).get("language") == "auto":
-            prompt = base.strip()
-        else:
-            tail = self._meeting_tail[-self._CTX_TAIL_CHARS :]
-            prompt = f"{base} {tail}".strip() if (base or tail) else ""
+        # No rolling tail in the transcriber: conditioning whisper on the
+        # previously recognized text makes it echo/repeat and scramble word order
+        # when a segment is cut mid-phrase (and, in auto, translate across
+        # languages). Segments are silence-delimited, so the static base
+        # (profiles / custom hint) is enough context.
+        prompt = base.strip()
         text, err = transcribe(seg_wav, mode=mode, prompt=prompt)
         if err:
             if not self._meeting_server_down:
@@ -542,7 +541,6 @@ class VoiceTyper:
         if not text:
             return
         self._meeting_server_down = False
-        self._meeting_tail = f"{self._meeting_tail} {text}".strip()[-self._CTX_TAIL_CHARS :]
         if self._transcript_window is not None:
             self._transcript_window.append(text)
         if self._transcript_file is not None:
