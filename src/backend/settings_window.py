@@ -184,6 +184,10 @@ _TEMPLATE = r"""<!doctype html>
   .plang .meter i{display:block; height:100%; background:var(--accent); width:0;
     transition:width .2s ease}
   .plang .meter.over i{background:var(--danger)}
+  .rrow{display:flex; align-items:center; gap:12px}
+  .rrow input[type=range]{flex:1; accent-color:var(--accent); height:4px; cursor:pointer}
+  .rrow .rval{flex:0 0 auto; font-size:12px; color:var(--muted);
+    font-variant-numeric:tabular-nums; min-width:38px; text-align:right}
   .plang .count{font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums}
   .prow{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line)}
   .prow:first-child{border-top:0}
@@ -449,6 +453,14 @@ _TEMPLATE = r"""<!doctype html>
         <label class="toggle"><input type="checkbox" id="mt-hidden">
           <span class="track"></span><span class="knob"></span></label>
       </div>
+      <div class="row" style="display:block">
+        <div class="label" data-i18n="meeting.opacity.label">Island transparency</div>
+        <div class="help" data-i18n="meeting.opacity.help">Glassiness of the floating transcript island</div>
+        <div class="rrow" style="margin-top:8px">
+          <input type="range" id="mt-opacity" min="40" max="100" step="5">
+          <span class="rval" id="mt-opacity-val"></span>
+        </div>
+      </div>
       <div class="row">
         <div class="body"><div class="label" data-i18n="folder.label">Storage folder</div>
           <div class="help" id="mt-path"></div></div>
@@ -616,6 +628,16 @@ $("back-mt").addEventListener("click", () => show("main"));
   const mtHidden = $("mt-hidden");
   mtHidden.checked = STATE.meeting_hidden === true;
   mtHidden.addEventListener("change", () => send("set_meeting_hidden", mtHidden.checked));
+
+  const mtOpacity = $("mt-opacity");
+  const mtOpacityVal = $("mt-opacity-val");
+  const _opPct = Math.round((STATE.meeting_island_opacity != null ? STATE.meeting_island_opacity : 0.92) * 100);
+  mtOpacity.value = String(_opPct);
+  mtOpacityVal.textContent = _opPct + "%";
+  mtOpacity.addEventListener("input", () => {
+    mtOpacityVal.textContent = mtOpacity.value + "%";
+    send("set_meeting_opacity", Number(mtOpacity.value) / 100);
+  });
 
   $("mt-path").textContent = STATE.transcripts_dir || "";
   $("mt-open").addEventListener("click", () => send("open_transcripts_folder"));

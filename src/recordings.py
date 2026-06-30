@@ -87,6 +87,8 @@ DEFAULTS = {
     "meeting_island_frame": None,
     #   meeting_hidden — record to file only, never show the floating island
     "meeting_hidden": False,
+    #   meeting_island_opacity — floating island translucency (liquid-glass), 0.4–1.0
+    "meeting_island_opacity": 0.92,
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
