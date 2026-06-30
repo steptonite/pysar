@@ -45,7 +45,9 @@ class TranscriptWindow:
         self._last_source: str | None = None
         self._saved_frame: dict | None = None
         self._on_frame_change = on_frame_change  # callable(dict) or None
-        self._opacity = 1.0  # whole-panel translucency (liquid-glass slider, 0.4–1.0)
+        self._opacity = 1.0  # backing solidity (liquid-glass slider, 0.4–1.0)
+        self._glass = None  # NSGlassEffectView (macOS 26) or NSVisualEffectView fallback
+        self._fill = None  # tint underlay below the text; its alpha = the slider value
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -121,23 +123,56 @@ class TranscriptWindow:
             self._window.setLevel_(level)
 
     def set_opacity(self, value) -> None:
-        """Set the island's overall translucency (liquid-glass control).
+        """Liquid-glass control: how *solid* the island's backing is.
 
-        *value* is clamped to [0.4, 1.0] so the panel can get glassier without ever
-        vanishing. Applies live if the panel already exists."""
+        Unlike a window-wide ``alphaValue`` (which would also fade the text), this
+        drives only a tint underlay that sits *below* the text. At 1.0 the backing is
+        a solid themed panel; toward 0.4 it thins out so the real glass (and the
+        desktop refracting through it) shows — while the text stays fully crisp.
+        Clamped to [0.4, 1.0] so it can never vanish. Applies live."""
         try:
             v = float(value)
         except (TypeError, ValueError):
             return
         v = max(0.4, min(1.0, v))
         self._opacity = v
+        _main_async(self._apply_transp)
 
-        def _go():
-            if self._window is not None:
+    def _apply_transp(self) -> None:
+        """Paint the tint underlay at ``self._opacity`` and, on real glass, add a
+        faint milk tint so the body stays legible at high transparency. The window
+        background colour is resolved under the panel's *current* appearance so a
+        light/dark switch repaints with the right colour (CALayer freezes it
+        otherwise)."""
+        if self._fill is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSColor, NSColorSpace
+
+            v = self._opacity
+
+            def paint():
                 with contextlib.suppress(Exception):
-                    self._window.setAlphaValue_(v)
+                    c = NSColor.windowBackgroundColor().colorUsingColorSpace_(
+                        NSColorSpace.sRGBColorSpace()
+                    )
+                    self._fill.layer().setBackgroundColor_(
+                        NSColor.colorWithRed_green_blue_alpha_(
+                            c.redComponent(), c.greenComponent(), c.blueComponent(), v
+                        ).CGColor()
+                    )
+                    glass = self._glass
+                    if glass is not None and hasattr(glass, "setTintColor_"):
+                        is_dark = "Dark" in str(glass.effectiveAppearance().name())
+                        base = 0.0 if is_dark else 1.0
+                        a = 0.05 + 0.06 * (1.0 - v)  # glassier → a touch more milk
+                        glass.setTintColor_(NSColor.colorWithWhite_alpha_(base, a))
 
-        _main_async(_go)
+            ap = self._glass.effectiveAppearance() if self._glass is not None else None
+            if ap is not None and hasattr(ap, "performAsCurrentDrawingAppearance_"):
+                ap.performAsCurrentDrawingAppearance_(paint)
+            else:
+                paint()
 
     def set_frame(self, frame: dict | None) -> None:
         """Store a frame; apply immediately if the panel already exists."""
@@ -394,51 +429,98 @@ class TranscriptWindow:
         win.setReleasedWhenClosed_(False)  # reused across opens
         win.setMinSize_(NSMakeSize(_MIN_W, _MIN_H))
         with contextlib.suppress(Exception):
-            win.setAlphaValue_(self._opacity)  # liquid-glass translucency
-        with contextlib.suppress(Exception):
             win.setBecomesKeyOnlyIfNeeded_(True)
             win.setFloatingPanel_(True)
             win.setHidesOnDeactivate_(False)
 
-        # ── vibrancy island (content view) ──
-        fx = NSVisualEffectView.alloc().initWithFrame_(frame)
-        fx.setMaterial_(NSVisualEffectMaterialHUDWindow)
-        fx.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-        fx.setState_(NSVisualEffectStateActive)
-        fx.setWantsLayer_(True)
+        from AppKit import NSView
+
+        # ── island backing: REAL Liquid Glass (NSGlassEffectView, macOS 26 Tahoe) ──
+        # The desktop refracts through it like a lens and the text laid on top stays
+        # perfectly crisp — the transparency slider thins a separate tint underlay
+        # (self._fill) rather than the whole window, so lowering it no longer fades
+        # the text. Pre-Tahoe falls back to the masked NSVisualEffectView blur.
+        glass_cls = None
         with contextlib.suppress(Exception):
-            fx.layer().setCornerRadius_(_RADIUS)
-            fx.layer().setMasksToBounds_(True)
-            fx.layer().setBorderWidth_(1.0)
-            fx.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
-        fx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            import objc
 
-        # ── rounded mask image so the vibrancy AND the window shadow follow the
-        # rounded shape (fixes the square white corner artifact). Cap insets keep
-        # the corners crisp while the centre stretches on resize. ──
-        with contextlib.suppress(Exception):
-            size = NSMakeSize(_WIDTH, _HEIGHT)
+            glass_cls = objc.lookUpClass("NSGlassEffectView")
 
-            def _draw_mask(dst_rect):
-                NSColor.blackColor().set()
-                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    NSMakeRect(0, 0, _WIDTH, _HEIGHT), _RADIUS, _RADIUS
-                ).fill()
-                return True
-
-            mask = NSImage.imageWithSize_flipped_drawingHandler_(size, False, _draw_mask)
+        if glass_cls is not None:
+            glass = glass_cls.alloc().initWithFrame_(frame)
             with contextlib.suppress(Exception):
-                from AppKit import NSImageResizingModeStretch
-                from Foundation import NSEdgeInsetsMake
+                glass.setStyle_(0)  # Regular: frosted glass with a gentle blur
+            with contextlib.suppress(Exception):
+                # contentLensing OFF: continuous refraction of the moving desktop is
+                # the big GPU cost (WindowServer balloons on 8 GB); blur+translucency
+                # stay, only the edge shimmer goes.
+                glass.set_contentLensing_(False)
+            with contextlib.suppress(Exception):
+                glass.setCornerRadius_(_RADIUS)
+            glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            content = NSView.alloc().initWithFrame_(frame)
+            content.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            content.setWantsLayer_(True)
+            with contextlib.suppress(Exception):
+                content.layer().setCornerRadius_(_RADIUS)
+                content.layer().setMasksToBounds_(True)
+            glass.setContentView_(content)
+            win.setContentView_(glass)
+            self._glass = glass
+        else:
+            fx = NSVisualEffectView.alloc().initWithFrame_(frame)
+            fx.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            fx.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            fx.setState_(NSVisualEffectStateActive)
+            fx.setWantsLayer_(True)
+            with contextlib.suppress(Exception):
+                fx.layer().setCornerRadius_(_RADIUS)
+                fx.layer().setMasksToBounds_(True)
+                fx.layer().setBorderWidth_(1.0)
+                fx.layer().setBorderColor_(
+                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor()
+                )
+            fx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
 
-                mask.setCapInsets_(NSEdgeInsetsMake(_RADIUS, _RADIUS, _RADIUS, _RADIUS))
-                mask.setResizingMode_(NSImageResizingModeStretch)
-            fx.setMaskImage_(mask)
+            # ── rounded mask image so the vibrancy AND the window shadow follow the
+            # rounded shape (fixes the square white corner artifact). Cap insets keep
+            # the corners crisp while the centre stretches on resize. ──
+            with contextlib.suppress(Exception):
+                size = NSMakeSize(_WIDTH, _HEIGHT)
 
-        win.setContentView_(fx)
+                def _draw_mask(dst_rect):
+                    NSColor.blackColor().set()
+                    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                        NSMakeRect(0, 0, _WIDTH, _HEIGHT), _RADIUS, _RADIUS
+                    ).fill()
+                    return True
+
+                mask = NSImage.imageWithSize_flipped_drawingHandler_(size, False, _draw_mask)
+                with contextlib.suppress(Exception):
+                    from AppKit import NSImageResizingModeStretch
+                    from Foundation import NSEdgeInsetsMake
+
+                    mask.setCapInsets_(NSEdgeInsetsMake(_RADIUS, _RADIUS, _RADIUS, _RADIUS))
+                    mask.setResizingMode_(NSImageResizingModeStretch)
+                fx.setMaskImage_(mask)
+
+            win.setContentView_(fx)
+            content = fx
+            self._glass = fx
+
+        # ── tint underlay (the slider thins THIS, never the text) ──
+        with contextlib.suppress(Exception):
+            fill = NSView.alloc().initWithFrame_(content.bounds())
+            fill.setWantsLayer_(True)
+            fill.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            with contextlib.suppress(Exception):
+                fill.layer().setCornerRadius_(_RADIUS)
+                fill.layer().setMasksToBounds_(True)
+            content.addSubview_positioned_relativeTo_(fill, -1, None)  # below all content
+            self._fill = fill
 
         # ── scroll view + text view (transparent so the blur shows through) ──
-        scroll = NSScrollView.alloc().initWithFrame_(fx.bounds())
+        scroll = NSScrollView.alloc().initWithFrame_(content.bounds())
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
         scroll.setBorderType_(0)  # NSNoBorder
@@ -469,24 +551,25 @@ class TranscriptWindow:
             # top inset clears the drag strip so the first line isn't hidden under it
             tv.setTextContainerInset_(NSMakeSize(20.0, float(_STRIP_H)))
         scroll.setDocumentView_(tv)
-        fx.addSubview_(scroll)
+        content.addSubview_(scroll)
         self._textview = tv
 
         # ── top drag strip (drag-anywhere handle; the text view eats mouseDown over
         # its own area, so this transparent strip guarantees a reliable grab zone) ──
         with contextlib.suppress(Exception):
             ds = _DragStrip.alloc().initWithFrame_(
-                NSMakeRect(0, fx.bounds().size.height - _STRIP_H, fx.bounds().size.width, _STRIP_H)
+                NSMakeRect(
+                    0, content.bounds().size.height - _STRIP_H, content.bounds().size.width, _STRIP_H
+                )
             )
             ds.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)  # pinned to top
-            fx.addSubview_(ds)
+            content.addSubview_(ds)
 
         # ── corner resize affordance (subtle native grow-box hint) ──
         # Inset well inside the 16px corner radius so masksToBounds doesn't clip the
         # lines along the curve (the previous grip sat ON the arc → looked broken).
         # Three thin, low-opacity diagonal lines decreasing toward the corner.
         with contextlib.suppress(Exception):
-            from AppKit import NSView
             from Quartz import (
                 CAShapeLayer,
                 CGPathAddLineToPoint,
@@ -495,7 +578,7 @@ class TranscriptWindow:
             )
 
             grip = NSView.alloc().initWithFrame_(
-                NSMakeRect(fx.bounds().size.width - 22, 7, 14, 14)
+                NSMakeRect(content.bounds().size.width - 22, 7, 14, 14)
             )
             grip.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
             grip.setWantsLayer_(True)
@@ -510,7 +593,10 @@ class TranscriptWindow:
                 line.setLineCap_("round")
                 line.setPath_(path)
                 grip.layer().addSublayer_(line)
-            fx.addSubview_(grip)
+            content.addSubview_(grip)
+
+        # paint the tint underlay at the current slider value
+        self._apply_transp()
 
         # ── delegate (move + resize → frame persistence) ──
         self._delegate = _Delegate.alloc().init()

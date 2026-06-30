@@ -66,6 +66,14 @@ def _dot_color(state: str):
     }.get(state, NSColor.systemGrayColor)()
 
 
+def _reduce_motion() -> bool:
+    with contextlib.suppress(Exception):
+        from AppKit import NSWorkspace
+
+        return bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
+    return False
+
+
 class StatusHUD:
     def __init__(self):
         self._panel = None
@@ -73,6 +81,7 @@ class StatusHUD:
         self._dot = None
         self._effect = None
         self._visible = False
+        self._state = None  # last shown state, for animated dot/colour transitions
 
     def _build(self) -> None:
         from AppKit import NSColor, NSFont, NSPanel, NSTextField, NSView, NSVisualEffectView
@@ -142,7 +151,7 @@ class StatusHUD:
         self._label.setFrame_(((_PAD_L + _DOT + _GAP, (_H - 18.0) / 2.0), (avail, 18.0)))
         return width
 
-    def _reposition(self, width: float, anchor) -> None:
+    def _reposition(self, width: float, anchor, animate: bool = False) -> None:
         from AppKit import NSScreen
 
         screen = NSScreen.mainScreen()
@@ -158,7 +167,65 @@ class StatusHUD:
             y = sf.origin.y + sf.size.height - _H - 28.0
         # Keep it fully on screen.
         x = max(sf.origin.x + 6.0, min(x, sf.origin.x + sf.size.width - width - 6.0))
-        self._panel.setFrame_display_(((x, y), (width, _H)), True)
+        target = ((x, y), (width, _H))
+        # While a take is live, the capsule morphs to its new width (recognizing →
+        # buffering(n) etc.) instead of snapping — it grows from its centre under the
+        # icon, reading like a single breathing object rather than a flickering bar.
+        if animate and not _reduce_motion():
+            with contextlib.suppress(Exception):
+                from AppKit import NSAnimationContext
+
+                NSAnimationContext.beginGrouping()
+                NSAnimationContext.currentContext().setDuration_(0.16)
+                self._panel.animator().setFrame_display_(target, True)
+                NSAnimationContext.endGrouping()
+                return
+        self._panel.setFrame_display_(target, True)
+
+    def _set_dot(self, state: str, animate: bool) -> None:
+        """Set the dot colour, crossfading from the previous colour on a live update."""
+        layer = self._dot.layer() if self._dot is not None else None
+        if layer is None:
+            return
+        new = _dot_color(state).CGColor()
+        if animate and not _reduce_motion():
+            with contextlib.suppress(Exception):
+                from Quartz import CABasicAnimation
+
+                fade = CABasicAnimation.animationWithKeyPath_("backgroundColor")
+                fade.setFromValue_(layer.backgroundColor())
+                fade.setToValue_(new)
+                fade.setDuration_(0.22)
+                layer.addAnimation_forKey_(fade, "tint")
+        layer.setBackgroundColor_(new)
+
+    def _pulse_dot(self, on: bool) -> None:
+        """Breathe the dot while listening — the live "mic is open" signal (à la Wispr
+        Flow / Granola). A perpetual opacity pulse; removed for any other state and
+        skipped under Reduce Motion."""
+        layer = self._dot.layer() if self._dot is not None else None
+        if layer is None:
+            return
+        if not on or _reduce_motion():
+            with contextlib.suppress(Exception):
+                layer.removeAnimationForKey_("pulse")
+            return
+        with contextlib.suppress(Exception):
+            if layer.animationForKey_("pulse") is not None:
+                return  # already breathing — don't restack
+        with contextlib.suppress(Exception):
+            from Quartz import CABasicAnimation, CAMediaTimingFunction
+
+            pulse = CABasicAnimation.animationWithKeyPath_("opacity")
+            pulse.setFromValue_(1.0)
+            pulse.setToValue_(0.35)
+            pulse.setDuration_(0.85)
+            pulse.setAutoreverses_(True)
+            pulse.setRepeatCount_(1.0e9)
+            pulse.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+            )
+            layer.addAnimation_forKey_(pulse, "pulse")
 
     def _spring_in(self) -> None:
         """Pop the pill out: a quick scale-up spring plus a fade."""
@@ -186,21 +253,28 @@ class StatusHUD:
 
     def show(self, text: str, theme: str = "auto", state: str = "listening", anchor=None) -> None:
         with contextlib.suppress(Exception):
-            if self._panel is None:
+            first = self._panel is None
+            if first:
                 self._build()
             self._apply_theme(theme)
-            with contextlib.suppress(Exception):
-                self._dot.layer().setBackgroundColor_(_dot_color(state).CGColor())
+            # Animate dot/width transitions only on a live update within a take, not on
+            # the first pop-out (the spring-in carries that one).
+            animate = self._visible and not first
+            self._set_dot(state, animate=animate)
+            self._pulse_dot(state == "listening")
             width = self._layout(text)
-            self._reposition(width, anchor)
+            self._reposition(width, anchor, animate=animate)
             if not self._visible:
                 self._spring_in()
                 self._visible = True
             else:
                 self._panel.orderFrontRegardless()
+            self._state = state
 
     def hide(self) -> None:
         with contextlib.suppress(Exception):
+            self._pulse_dot(False)  # stop breathing
             if self._panel is not None:
                 self._panel.orderOut_(None)
             self._visible = False
+            self._state = None
