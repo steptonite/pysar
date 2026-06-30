@@ -444,6 +444,12 @@ _TEMPLATE = r"""<!doctype html>
           <span class="track"></span><span class="knob"></span></label>
       </div>
       <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.hidden.label">Record without the window</div>
+          <div class="help" data-i18n="meeting.hidden.help">Transcript is written to the file; the island stays hidden</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-hidden">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row">
         <div class="body"><div class="label" data-i18n="folder.label">Storage folder</div>
           <div class="help" id="mt-path"></div></div>
         <button id="mt-open" data-i18n="meeting.openFolder">Open folder</button>
@@ -606,6 +612,10 @@ $("back-mt").addEventListener("click", () => show("main"));
   const mtSave = $("mt-save");
   mtSave.checked = STATE.meeting_save_file !== false;
   mtSave.addEventListener("change", () => send("set_meeting_save", mtSave.checked));
+
+  const mtHidden = $("mt-hidden");
+  mtHidden.checked = STATE.meeting_hidden === true;
+  mtHidden.addEventListener("change", () => send("set_meeting_hidden", mtHidden.checked));
 
   $("mt-path").textContent = STATE.transcripts_dir || "";
   $("mt-open").addEventListener("click", () => send("open_transcripts_folder"));

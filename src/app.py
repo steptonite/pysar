@@ -128,6 +128,7 @@ class VoiceTyper:
             meeting_prompt=self._settings.get("meeting_prompt", ""),
             meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
             meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
+            meeting_hidden=self._settings.get("meeting_hidden", False),
             on_set_meeting_mic=self._on_set_meeting_mic,
             on_set_meeting_save=self._on_set_meeting_save,
             on_set_meeting_on_top=self._on_set_meeting_on_top,
@@ -135,6 +136,7 @@ class VoiceTyper:
             on_set_meeting_prompt=self._on_set_meeting_prompt,
             on_set_meeting_prompt_source=self._on_set_meeting_prompt_source,
             on_set_meeting_source_mode=self._on_set_meeting_source_mode,
+            on_set_meeting_hidden=self._on_set_meeting_hidden,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -467,8 +469,14 @@ class VoiceTyper:
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
         self._transcript_window.set_frame(self._settings.get("meeting_island_frame"))
         # "Record without the window" — keep the .md autosave, skip the island.
-        if not self._settings.get("meeting_hidden", False):
+        hidden = self._settings.get("meeting_hidden", False)
+        if not hidden:
             self._transcript_window.show(self._t("transcript.title"))
+        elif not self._settings.get("meeting_save_file", True):
+            # Hidden AND not saving → nothing would be captured anywhere; warn.
+            self._tray.notify(
+                "Pysar", self._t("notif.hiddenNoSaveTitle"), self._t("notif.hiddenNoSaveMsg")
+            )
         if self._settings.get("meeting_save_file", True):
             self._transcript_file = TranscriptFile()
             self._transcript_file.set_source_labels(spk_labels)
@@ -756,6 +764,10 @@ class VoiceTyper:
         self._settings["meeting_prompt_source"] = (
             source if source in ("custom", "profiles") else "custom"
         )
+        save_settings(self._settings)
+
+    def _on_set_meeting_hidden(self, on: bool) -> None:
+        self._settings["meeting_hidden"] = bool(on)
         save_settings(self._settings)
 
     def _on_island_frame_change(self, frame: dict) -> None:
