@@ -82,6 +82,11 @@ DEFAULTS = {
     #     "smart" = two separate whisper passes (system / mic) → reliable labels,
     #               ~2× slower when both speak (one shared model, RAM unchanged)
     "meeting_source_mode": "off",
+    #   meeting_island_frame — last position/size of the floating transcript island
+    #                          ({x,y,w,h}); None = default (top-right of the screen)
+    "meeting_island_frame": None,
+    #   meeting_hidden — record to file only, never show the floating island
+    "meeting_hidden": False,
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)

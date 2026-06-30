@@ -1,12 +1,11 @@
-"""Live transcript window for the "transcribe everything" mode.
+"""Live transcript window — floating borderless "island" panel.
 
-A lightweight native NSWindow hosting a read-only NSTextView — meeting/call text
-is appended sentence-by-sentence as it streams. Deliberately *not* the WebKit
-settings panel: a scrolling read-only log needs no bridge, just an append that
-hops to the main thread (segments arrive on a worker thread).
-
-Built lazily and reused across opens, mirroring SettingsWindow's lifecycle so the
-app drops back to a menu-bar-only accessory when the window closes.
+A lightweight NSPanel hosting a read-only NSTextView over a blur-vibrancy
+background with a subtle border and a corner grip. Meeting/call text is appended
+sentence-by-sentence; all UI work is marshalled to the main thread (segments
+arrive on a worker thread). The panel floats above everything (including
+full-screen video), never activates the app or shows a Dock tile, and remembers
+its frame across sessions via the *on_frame_change* callback.
 """
 
 import contextlib
@@ -30,17 +29,19 @@ def _main_async(fn) -> None:
 
 
 class TranscriptWindow:
-    """NSWindow + NSTextView. ``show()`` / ``append()`` / ``clear()`` — all of which
-    are safe to call from any thread (UI work is marshalled to the main queue)."""
+    """NSPanel + NSTextView. ``show()`` / ``hide()`` / ``append()`` / ``clear()`` —
+    all are safe to call from any thread (UI work is marshalled to the main queue)."""
 
-    def __init__(self, title: str = "Pysar — Transcript"):
+    def __init__(self, title: str = "Pysar — Transcript", on_frame_change=None):
         self._title = title
         self._window = None
         self._textview = None
         self._delegate = None
-        self._on_top = False  # float above other windows (meeting_on_top setting)
+        self._on_top = False  # kept for API compat (island always floats high)
         self._labels: dict[str, str] = {"sys": "System", "mic": "You"}
         self._last_source: str | None = None
+        self._saved_frame: dict | None = None
+        self._on_frame_change = on_frame_change  # callable(dict) or None
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -50,23 +51,48 @@ class TranscriptWindow:
         def _go():
             if self._window is None:
                 self._build()
-            from AppKit import NSApp
+            # Position: saved frame if we have one, else the default top-right.
+            frame = None
+            if self._saved_frame:
+                from AppKit import NSMakeRect
 
-            NSApp().setActivationPolicy_(0)  # Regular while visible (Dock + Cmd-Tab)
+                f = self._saved_frame
+                frame = NSMakeRect(
+                    f.get("x", 0), f.get("y", 0), f.get("w", _WIDTH), f.get("h", _HEIGHT)
+                )
+            if frame is None:
+                frame = self._default_frame()
             with contextlib.suppress(Exception):
-                from .settings_window import _apply_dock_icon, _install_main_menu
-
-                _install_main_menu()
-                _apply_dock_icon()
-            self._window.setTitle_(self._title)
-            NSApp().activateIgnoringOtherApps_(True)
-            self._window.makeKeyAndOrderFront_(None)
+                self._window.setFrame_display_(frame, True)
             self._apply_level()
+            with contextlib.suppress(Exception):
+                from AppKit import (
+                    NSWindowCollectionBehaviorCanJoinAllSpaces,
+                    NSWindowCollectionBehaviorFullScreenAuxiliary,
+                    NSWindowCollectionBehaviorStationary,
+                )
+
+                self._window.setCollectionBehavior_(
+                    NSWindowCollectionBehaviorCanJoinAllSpaces
+                    | NSWindowCollectionBehaviorFullScreenAuxiliary
+                    | NSWindowCollectionBehaviorStationary
+                )
+            # Bring the panel to front WITHOUT activating the app or stealing focus.
+            with contextlib.suppress(Exception):
+                self._window.orderFrontRegardless()
+
+        _main_async(_go)
+
+    def hide(self) -> None:
+        def _go():
+            if self._window:
+                with contextlib.suppress(Exception):
+                    self._window.orderOut_(None)
 
         _main_async(_go)
 
     def set_on_top(self, on: bool) -> None:
-        """Float the transcript above other windows (or drop back to normal)."""
+        """Kept for caller compatibility; the island always floats above everything."""
         self._on_top = bool(on)
         _main_async(self._apply_level)
 
@@ -74,9 +100,38 @@ class TranscriptWindow:
         if self._window is None:
             return
         with contextlib.suppress(Exception):
-            from AppKit import NSFloatingWindowLevel, NSNormalWindowLevel
+            # The island always floats above everything, including full-screen
+            # video — that's the whole point. Screen-saver level (very high);
+            # fall back to the status level if the symbol is unavailable.
+            try:
+                from AppKit import NSScreenSaverWindowLevel
 
-            self._window.setLevel_(NSFloatingWindowLevel if self._on_top else NSNormalWindowLevel)
+                level = NSScreenSaverWindowLevel
+            except ImportError:
+                from AppKit import NSStatusWindowLevel
+
+                level = NSStatusWindowLevel
+            self._window.setLevel_(level)
+
+    def set_frame(self, frame: dict | None) -> None:
+        """Store a frame; apply immediately if the panel already exists."""
+        self._saved_frame = frame
+        if self._window is None or not frame:
+            return
+
+        def _go():
+            with contextlib.suppress(Exception):
+                from AppKit import NSMakeRect
+
+                rect = NSMakeRect(
+                    frame.get("x", 0),
+                    frame.get("y", 0),
+                    frame.get("w", _WIDTH),
+                    frame.get("h", _HEIGHT),
+                )
+                self._window.setFrame_display_(rect, True)
+
+        _main_async(_go)
 
     def append(self, text: str, source: str | None = None, ts=None) -> None:
         text = (text or "").strip()
@@ -94,6 +149,28 @@ class TranscriptWindow:
         """Update the display labels for each source (e.g. ``{"sys": "System", "mic": "You"}``)."""
         if labels:
             self._labels.update({k: v for k, v in labels.items() if v})
+
+    # ── frame persistence helpers ─────────────────────────────────────────────
+    def _emit_frame(self, frame_dict: dict) -> None:
+        if self._on_frame_change is not None:
+            with contextlib.suppress(Exception):
+                self._on_frame_change(frame_dict)
+
+    def _default_frame(self):
+        """Top-right of the main screen with a 24 px inset, clamped to the visible area."""
+        from AppKit import NSMakeRect, NSScreen
+
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return NSMakeRect(120, 120, _WIDTH, _HEIGHT)
+        visible = screen.visibleFrame()
+        x = visible.origin.x + visible.size.width - _WIDTH - 24
+        y = visible.origin.y + visible.size.height - _HEIGHT - 24
+        if x < visible.origin.x:
+            x = visible.origin.x
+        if y < visible.origin.y:
+            y = visible.origin.y
+        return NSMakeRect(x, y, _WIDTH, _HEIGHT)
 
     # ── main-thread bodies ──────────────────────────────────────────────────────
     def _append_main(self, text: str, source: str | None, clock: str = "") -> None:
@@ -113,35 +190,94 @@ class TranscriptWindow:
 
             storage = self._textview.textStorage()
 
-            # A small header before every block: "● Source · HH:MM" (or just the
-            # time when the source is unknown). Each block is stamped — consecutive
-            # lines are no longer grouped silently under one label.
-            label_attrs = {}
-            label_attrs[NSFontAttributeName] = NSFont.boldSystemFontOfSize_(12.5)
-            color_map = {"sys": NSColor.systemBlueColor(), "mic": NSColor.systemOrangeColor()}
-            label_attrs[NSForegroundColorAttributeName] = (
-                color_map.get(source, NSColor.systemGrayColor())
-                if source is not None
-                else NSColor.systemGrayColor()
-            )
+            # Header before every block. ONE accent: the coloured dot carries the
+            # speaker identity; the "name · time" text stays a quiet secondary grey
+            # so the transcript body reads first. Generous space before each block
+            # separates speakers; the header sits tight against its own body.
             para = NSMutableParagraphStyle.alloc().init()
-            para.setParagraphSpacingBefore_(8.0)
-            label_attrs[NSParagraphStyleAttributeName] = para
+            para.setParagraphSpacingBefore_(16.0)
+            color_map = {"sys": NSColor.systemBlueColor(), "mic": NSColor.systemOrangeColor()}
+            dot_color = color_map.get(source, NSColor.systemGrayColor())
+            dot_attrs = {
+                NSFontAttributeName: NSFont.boldSystemFontOfSize_(12.5),
+                NSForegroundColorAttributeName: dot_color,
+                NSParagraphStyleAttributeName: para,
+            }
+            meta_attrs = {
+                NSFontAttributeName: NSFont.systemFontOfSize_(12.0),
+                NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                NSParagraphStyleAttributeName: para,
+            }
             if source is not None:
-                head = "● " + self._labels.get(source, source) + " · " + clock + "\n"
+                meta_text = " " + self._labels.get(source, source) + " · " + clock + "\n"
             else:
-                head = "● " + clock + "\n"
-            label_str = NSAttributedString.alloc().initWithString_attributes_(head, label_attrs)
-            storage.appendAttributedString_(label_str)
+                meta_text = " " + clock + "\n"
+            storage.appendAttributedString_(
+                NSAttributedString.alloc().initWithString_attributes_("●", dot_attrs)
+            )
+            storage.appendAttributedString_(
+                NSAttributedString.alloc().initWithString_attributes_(meta_text, meta_attrs)
+            )
             self._last_source = source
 
-            # Append the body text using the established typing attributes
-            body_attrs = self._textview.typingAttributes()
+            # Append the body with explicit neutral attributes — only the dot is
+            # coloured; the spoken text stays in the primary label colour. A single
+            # trailing newline keeps the header close to its body.
+            body_attrs = {
+                NSFontAttributeName: NSFont.systemFontOfSize_(14.0),
+                NSForegroundColorAttributeName: NSColor.labelColor(),
+            }
+            body_start = storage.length()
             body_str = NSAttributedString.alloc().initWithString_attributes_(
-                text + "\n\n", body_attrs
+                text + "\n", body_attrs
             )
             storage.appendAttributedString_(body_str)
+            body_len = storage.length() - body_start
             self._textview.scrollRangeToVisible_(NSMakeRange(storage.length(), 0))
+
+            # Fade-in the body of the new block (the header stays instant).
+            self._fade_range(body_start, body_len, body_attrs.get(NSForegroundColorAttributeName))
+
+    def _fade_range(self, start: int, length: int, base_color=None) -> None:
+        """Ramp the appended body from near-transparent to full opacity over ~150 ms.
+
+        Honours the system "Reduce Motion" setting (text appears instantly then).
+        Animates a single colour over one fixed range — no storage scanning, so it
+        can never stall the main thread."""
+        if length <= 0 or self._textview is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSColor, NSForegroundColorAttributeName, NSWorkspace
+            from Foundation import NSMakeRange
+
+            if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion():
+                return  # honour reduced motion — no fade
+
+            if base_color is None:
+                base_color = self._textview.textColor() or NSColor.labelColor()
+            storage = self._textview.textStorage()
+            rng = NSMakeRange(start, length)
+            steps = 6
+            step_delay = 0.025  # ~25 ms × 6 ≈ 150 ms
+
+            def apply_step(step):
+                with contextlib.suppress(Exception):
+                    alpha = min(1.0, 0.15 + 0.85 * step / (steps - 1))
+                    color = base_color.colorWithAlphaComponent_(alpha)
+                    storage.addAttribute_value_range_(NSForegroundColorAttributeName, color, rng)
+
+            for step in range(steps):
+                try:
+                    import libdispatch
+
+                    when = libdispatch.dispatch_time(
+                        libdispatch.DISPATCH_TIME_NOW, int(step * step_delay * 1e9)
+                    )
+                    libdispatch.dispatch_after(
+                        when, libdispatch.dispatch_get_main_queue(), lambda s=step: apply_step(s)
+                    )
+                except Exception:
+                    apply_step(step)
 
     def _clear_main(self) -> None:
         if self._textview is None:
@@ -150,7 +286,7 @@ class TranscriptWindow:
             self._textview.setString_("")
             self._last_source = None
 
-    # ── build ──────────────────────────────────────────────────────────────────
+    # ── build the floating-island panel ─────────────────────────────────────────
     def _build(self) -> None:
         from AppKit import (
             NSBackingStoreBuffered,
@@ -158,67 +294,137 @@ class TranscriptWindow:
             NSFont,
             NSMakeRect,
             NSMakeSize,
+            NSPanel,
             NSScrollView,
             NSTextView,
             NSViewHeightSizable,
+            NSViewMaxYMargin,
+            NSViewMinXMargin,
             NSViewWidthSizable,
-            NSWindow,
-            NSWindowStyleMaskClosable,
-            NSWindowStyleMaskMiniaturizable,
+            NSVisualEffectBlendingModeBehindWindow,
+            NSVisualEffectMaterialHUDWindow,
+            NSVisualEffectStateActive,
+            NSVisualEffectView,
+            NSWindowStyleMaskBorderless,
+            NSWindowStyleMaskNonactivatingPanel,
             NSWindowStyleMaskResizable,
-            NSWindowStyleMaskTitled,
         )
 
         frame = NSMakeRect(0, 0, _WIDTH, _HEIGHT)
-        scroll = NSScrollView.alloc().initWithFrame_(frame)
+
+        # ── panel (borderless, non-activating, resizable) ──
+        style = (
+            NSWindowStyleMaskBorderless
+            | NSWindowStyleMaskResizable
+            | NSWindowStyleMaskNonactivatingPanel
+        )
+        win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame, style, NSBackingStoreBuffered, False
+        )
+        win.setTitle_(self._title)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(True)
+        win.setMovableByWindowBackground_(True)  # drag from anywhere
+        win.setReleasedWhenClosed_(False)  # reused across opens
+        win.setMinSize_(NSMakeSize(_MIN_W, _MIN_H))
+        with contextlib.suppress(Exception):
+            win.setBecomesKeyOnlyIfNeeded_(True)
+            win.setFloatingPanel_(True)
+            win.setHidesOnDeactivate_(False)
+
+        # ── vibrancy island (content view) ──
+        fx = NSVisualEffectView.alloc().initWithFrame_(frame)
+        fx.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        fx.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        fx.setState_(NSVisualEffectStateActive)
+        fx.setWantsLayer_(True)
+        with contextlib.suppress(Exception):
+            fx.layer().setCornerRadius_(16.0)
+            fx.layer().setMasksToBounds_(True)
+            fx.layer().setBorderWidth_(1.0)
+            fx.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
+        fx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        win.setContentView_(fx)
+
+        # ── scroll view + text view (transparent so the blur shows through) ──
+        scroll = NSScrollView.alloc().initWithFrame_(fx.bounds())
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
         scroll.setBorderType_(0)  # NSNoBorder
+        scroll.setDrawsBackground_(False)
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
 
-        tv = NSTextView.alloc().initWithFrame_(frame)
+        tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, _WIDTH, _HEIGHT))
         tv.setEditable_(False)
         tv.setSelectable_(True)  # let the user copy from the transcript
-        tv.setRichText_(True)   # support attributed speaker labels
+        tv.setRichText_(True)  # support attributed speaker labels
+        tv.setDrawsBackground_(False)
+        tv.setBackgroundColor_(NSColor.clearColor())
         tv.setAutoresizingMask_(NSViewWidthSizable)
         with contextlib.suppress(Exception):
             tv.setFont_(NSFont.systemFontOfSize_(14.0))
             tv.setTextColor_(NSColor.labelColor())
-            pad = NSMakeSize(16.0, 14.0)
-            tv.setTextContainerInset_(pad)
+            tv.setTextContainerInset_(NSMakeSize(20.0, 16.0))
         scroll.setDocumentView_(tv)
+        fx.addSubview_(scroll)
         self._textview = tv
 
-        style = (
-            NSWindowStyleMaskTitled
-            | NSWindowStyleMaskClosable
-            | NSWindowStyleMaskMiniaturizable
-            | NSWindowStyleMaskResizable
-        )
-        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame, style, NSBackingStoreBuffered, False
-        )
-        win.setTitle_(self._title)
-        win.setContentView_(scroll)
-        win.setReleasedWhenClosed_(False)  # reused across opens
+        # ── corner grip (visual affordance only; the panel resizes from edges) ──
         with contextlib.suppress(Exception):
-            win.setMinSize_(NSMakeSize(_MIN_W, _MIN_H))
+            from AppKit import NSView
+            from Quartz import (
+                CAShapeLayer,
+                CGPathAddLineToPoint,
+                CGPathCreateMutable,
+                CGPathMoveToPoint,
+            )
+
+            grip = NSView.alloc().initWithFrame_(
+                NSMakeRect(fx.bounds().size.width - 16, 2, 14, 14)
+            )
+            grip.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
+            grip.setWantsLayer_(True)
+            for sx, sy, ex, ey in ((3, 11, 11, 3), (6, 11, 11, 6)):
+                path = CGPathCreateMutable()
+                CGPathMoveToPoint(path, None, sx, sy)
+                CGPathAddLineToPoint(path, None, ex, ey)
+                line = CAShapeLayer.alloc().init()
+                line.setStrokeColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.25).CGColor())
+                line.setFillColor_(NSColor.clearColor().CGColor())
+                line.setLineWidth_(1.5)
+                line.setPath_(path)
+                grip.layer().addSublayer_(line)
+            fx.addSubview_(grip)
+
+        # ── delegate (move + resize → frame persistence) ──
         self._delegate = _Delegate.alloc().init()
+        self._delegate._owner = self
         win.setDelegate_(self._delegate)
-        win.center()
         self._window = win
 
 
+# ── NSWindowDelegate (frame-persistence only) ──────────────────────────────────
 def _make_delegate_class():
-    """NSWindowDelegate that restores the menu-bar-only footprint on close."""
     from AppKit import NSObject
 
     class _DelegateImpl(NSObject):
-        def windowWillClose_(self, notification):
+        def windowDidMove_(self, notification):
             with contextlib.suppress(Exception):
-                from AppKit import NSApp
+                rect = notification.object().frame()
+                owner = getattr(self, "_owner", None)
+                if owner is not None:
+                    owner._emit_frame(
+                        {
+                            "x": rect.origin.x,
+                            "y": rect.origin.y,
+                            "w": rect.size.width,
+                            "h": rect.size.height,
+                        }
+                    )
 
-                NSApp().setActivationPolicy_(1)  # Accessory (no Dock tile)
+        def windowDidResize_(self, notification):
+            self.windowDidMove_(notification)  # same payload: report the new frame
 
     return _DelegateImpl
 
@@ -233,4 +439,3 @@ class _DelegateMeta:
 
 
 _Delegate = _DelegateMeta()
-

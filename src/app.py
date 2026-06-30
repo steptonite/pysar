@@ -459,11 +459,16 @@ class VoiceTyper:
 
         spk_labels = {"sys": self._t("transcript.spk.sys"), "mic": self._t("transcript.spk.mic")}
         if self._transcript_window is None:
-            self._transcript_window = TranscriptWindow(self._t("transcript.title"))
+            self._transcript_window = TranscriptWindow(
+                self._t("transcript.title"), on_frame_change=self._on_island_frame_change
+            )
         self._transcript_window.set_source_labels(spk_labels)
         self._transcript_window.clear()
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
-        self._transcript_window.show(self._t("transcript.title"))
+        self._transcript_window.set_frame(self._settings.get("meeting_island_frame"))
+        # "Record without the window" — keep the .md autosave, skip the island.
+        if not self._settings.get("meeting_hidden", False):
+            self._transcript_window.show(self._t("transcript.title"))
         if self._settings.get("meeting_save_file", True):
             self._transcript_file = TranscriptFile()
             self._transcript_file.set_source_labels(spk_labels)
@@ -589,6 +594,8 @@ class VoiceTyper:
             self._transcript_file.close()
             self._transcript_file = None
 
+        if self._transcript_window is not None:
+            self._transcript_window.hide()  # island shows only while transcribing
         self._tray.set_meeting_active(False)
         self._tray.set_status(self._t("st.meetingOff"))
         self._tray.set_title(self._idle_title())
@@ -750,6 +757,18 @@ class VoiceTyper:
             source if source in ("custom", "profiles") else "custom"
         )
         save_settings(self._settings)
+
+    def _on_island_frame_change(self, frame: dict) -> None:
+        # Persist the floating island's position/size so it reopens where the
+        # user left it. Called on every move/resize from the window delegate.
+        with contextlib.suppress(Exception):
+            self._settings["meeting_island_frame"] = {
+                "x": float(frame["x"]),
+                "y": float(frame["y"]),
+                "w": float(frame["w"]),
+                "h": float(frame["h"]),
+            }
+            save_settings(self._settings)
 
     def _on_capture_hotkey(self, slot: str) -> None:
         """Capture the next keypress and rebind `slot` to it, live (no relaunch).
