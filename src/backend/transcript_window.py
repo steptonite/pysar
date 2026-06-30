@@ -273,52 +273,73 @@ class TranscriptWindow:
                 text + "\n", body_attrs
             )
             storage.appendAttributedString_(body_str)
-            body_len = storage.length() - body_start
             self._textview.scrollRangeToVisible_(NSMakeRange(storage.length(), 0))
 
-            # Fade-in the body of the new block (the header stays instant).
-            self._fade_range(body_start, body_len, body_attrs.get(NSForegroundColorAttributeName))
+            # Reveal the body word-by-word (live-transcription feel); header instant.
+            self._reveal_words(body_start, text, body_attrs.get(NSForegroundColorAttributeName))
 
-    def _fade_range(self, start: int, length: int, base_color=None) -> None:
-        """Ramp the appended body from near-transparent to full opacity over ~150 ms.
-
-        Honours the system "Reduce Motion" setting (text appears instantly then).
-        Animates a single colour over one fixed range — no storage scanning, so it
-        can never stall the main thread."""
-        if length <= 0 or self._textview is None:
+    def _reveal_words(self, base_start: int, text: str, base_color=None) -> None:
+        """Reveal the appended body word-by-word with a short staggered micro-fade,
+        for a live-transcription feel (à la Otter / Granola). The header stays
+        instant. Honours the system "Reduce Motion" setting (text appears at once).
+        Pure dispatch_after scheduling over fixed ranges — it never scans storage or
+        blocks the main thread, and the total reveal is capped (~0.5 s + tail) so a
+        long segment can't crawl."""
+        if self._textview is None or not text:
             return
         with contextlib.suppress(Exception):
+            import re
+
             from AppKit import NSColor, NSForegroundColorAttributeName, NSWorkspace
             from Foundation import NSMakeRange
 
-            if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion():
-                return  # honour reduced motion — no fade
-
+            storage = self._textview.textStorage()
             if base_color is None:
                 base_color = self._textview.textColor() or NSColor.labelColor()
-            storage = self._textview.textStorage()
-            rng = NSMakeRange(start, length)
-            steps = 6
-            step_delay = 0.025  # ~25 ms × 6 ≈ 150 ms
 
-            def apply_step(step):
+            if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion():
+                return  # reduced motion → leave the text at full opacity
+
+            words = [(m.start(), m.end() - m.start()) for m in re.finditer(r"\S+", text)]
+            if not words:
+                return
+
+            # Hide the whole body up-front, then fade each word in on a stagger.
+            full_rng = NSMakeRange(base_start, len(text))
+            storage.addAttribute_value_range_(
+                NSForegroundColorAttributeName, base_color.colorWithAlphaComponent_(0.0), full_rng
+            )
+
+            n = len(words)
+            stagger = min(0.022, 0.5 / n)  # cap total reveal duration
+            micro = (0.40, 0.72, 1.0)  # quick per-word ramp (no hard pop)
+            micro_delay = 0.03
+
+            def ramp(rng, alpha):
                 with contextlib.suppress(Exception):
-                    alpha = min(1.0, 0.15 + 0.85 * step / (steps - 1))
-                    color = base_color.colorWithAlphaComponent_(alpha)
-                    storage.addAttribute_value_range_(NSForegroundColorAttributeName, color, rng)
-
-            for step in range(steps):
-                try:
-                    import libdispatch
-
-                    when = libdispatch.dispatch_time(
-                        libdispatch.DISPATCH_TIME_NOW, int(step * step_delay * 1e9)
+                    storage.addAttribute_value_range_(
+                        NSForegroundColorAttributeName,
+                        base_color.colorWithAlphaComponent_(alpha),
+                        rng,
                     )
-                    libdispatch.dispatch_after(
-                        when, libdispatch.dispatch_get_main_queue(), lambda s=step: apply_step(s)
-                    )
-                except Exception:
-                    apply_step(step)
+
+            try:
+                import libdispatch
+
+                for i, (off, ln) in enumerate(words):
+                    rng = NSMakeRange(base_start + off, ln)
+                    for j, a in enumerate(micro):
+                        delay = i * stagger + j * micro_delay
+                        when = libdispatch.dispatch_time(
+                            libdispatch.DISPATCH_TIME_NOW, int(delay * 1e9)
+                        )
+                        libdispatch.dispatch_after(
+                            when,
+                            libdispatch.dispatch_get_main_queue(),
+                            lambda r=rng, al=a: ramp(r, al),
+                        )
+            except Exception:
+                ramp(full_rng, 1.0)  # no libdispatch → just show it
 
     def _clear_main(self) -> None:
         if self._textview is None:
