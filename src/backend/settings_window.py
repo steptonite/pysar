@@ -449,6 +449,10 @@ _TEMPLATE = r"""<!doctype html>
         <div class="label" data-i18n="meeting.prompt.label">Context hint</div>
         <div class="help" style="white-space:normal" data-i18n="meeting.prompt.help">Names, terms, jargon — biases recognition</div>
         <textarea id="mt-prompt" style="margin-top:8px"></textarea>
+        <div class="plang" style="margin-top:8px">
+          <div class="meter" id="mt-meter"><i></i></div>
+          <span class="count" id="mt-count">0/224</span>
+        </div>
       </div>
     </section>
   </div>
@@ -613,6 +617,19 @@ $("back-mt").addEventListener("click", () => show("main"));
   mtPrompt.placeholder = T("meeting.prompt.ph", "");
   mtPrompt.value = STATE.meeting_prompt || "";
   mtPrompt.addEventListener("change", () => send("set_meeting_prompt", mtPrompt.value));
+  const mtMeterBox = $("mt-meter");
+  const mtBar = mtMeterBox.firstElementChild;
+  const mtCount = $("mt-count");
+  const MT_BUDGET = STATE.token_budget || 224;
+  const estMt = (t) => t ? Math.max(1, Math.round(t.length / 3)) : 0;
+  const refreshMtMeter = () => {
+    const used = estMt(mtPrompt.value || "");
+    mtBar.style.width = Math.min(100, used / MT_BUDGET * 100) + "%";
+    mtMeterBox.classList.toggle("over", used > MT_BUDGET);
+    mtCount.textContent = used + "/" + MT_BUDGET;
+  };
+  mtPrompt.addEventListener("input", refreshMtMeter);
+  refreshMtMeter();
 
   // Capture the dictation toggle: ask Python to record the next keypress. The
   // kbd label and the language rows are refreshed by renderHotkeys() once the
@@ -640,7 +657,7 @@ $("back-mt").addEventListener("click", () => show("main"));
 })();
 
 // ── Profiles (re-rendered on every state push) ─────────────────────────────
-const LANGS = {uk:"Українська", en:"English", ru:"Русский", es:"Español",
+const LANGS = {auto:"🔤 Auto (general)", uk:"Українська", en:"English", ru:"Русский", es:"Español",
   de:"Deutsch", fr:"Français", it:"Italiano", pt:"Português", nl:"Nederlands",
   pl:"Polski", ja:"日本語", zh:"中文", ko:"한국어", tr:"Türkçe", th:"ไทย",
   vi:"Tiếng Việt", ar:"العربية"};
@@ -663,6 +680,7 @@ function renderProfiles(){
 
   const langs = [...new Set(profiles.map(p => p.language || "uk"))];
   const cur = STATE.current_lang;
+  if (!langs.includes("auto")) langs.push("auto");
   langs.sort((a, b) => (a === cur ? -1 : b === cur ? 1 : a.localeCompare(b)));
   if (langs.length === 0) langs.push(cur || "uk");
   const langOptions = ALL_LANGS;  // create a profile in any language → its group appears

@@ -265,3 +265,9 @@ def test_active_set_index_none_when_handedited():
 def test_active_set_index_ignores_empty_groups():
     sets = [{"name": "S1", "members": ["Dev"]}]
     assert active_set_index(sets, _P, {"uk": ["Dev"], "en": []}) == 0
+
+
+def test_compose_prompt_works_for_auto_language():
+    profile = {"name": "Gen", "language": "auto", "prompt": "ComfyUI, Claude, render."}
+    result = compose_prompt([profile], ["Gen"], "auto")
+    assert "ComfyUI" in result
