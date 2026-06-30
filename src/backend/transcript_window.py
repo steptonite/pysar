@@ -4,8 +4,9 @@ A lightweight NSPanel hosting a read-only NSTextView over a blur-vibrancy
 background with a subtle border and a corner grip. Meeting/call text is appended
 sentence-by-sentence; all UI work is marshalled to the main thread (segments
 arrive on a worker thread). The panel floats above everything (including
-full-screen video), never activates the app or shows a Dock tile, and remembers
-its frame across sessions via the *on_frame_change* callback.
+full-screen video) but stays below the menu bar, never activates the app or
+shows a Dock tile, and remembers its frame across sessions via the
+*on_frame_change* callback.
 """
 
 import contextlib
@@ -14,6 +15,8 @@ _WIDTH = 560
 _HEIGHT = 640
 _MIN_W = 360
 _MIN_H = 280
+_RADIUS = 16.0
+_STRIP_H = 30  # draggable top strip height
 
 
 def _main_async(fn) -> None:
@@ -62,6 +65,7 @@ class TranscriptWindow:
                 )
             if frame is None:
                 frame = self._default_frame()
+            frame = self._clamp_to_visible(frame)
             with contextlib.suppress(Exception):
                 self._window.setFrame_display_(frame, True)
             self._apply_level()
@@ -100,9 +104,11 @@ class TranscriptWindow:
         if self._window is None:
             return
         with contextlib.suppress(Exception):
-            # The island always floats above everything, including full-screen
-            # video — that's the whole point. Screen-saver level (very high);
-            # fall back to the status level if the symbol is unavailable.
+            # The island floats above EVERYTHING, including other apps' full-screen
+            # video — that's the whole point, so it needs the very high screen-saver
+            # level. The menu-bar overlap (a separate bug) is solved by clamping the
+            # frame into visibleFrame (see _clamp_to_visible): a high level can't draw
+            # over the menu bar if the window is never positioned in that region.
             try:
                 from AppKit import NSScreenSaverWindowLevel
 
@@ -129,6 +135,7 @@ class TranscriptWindow:
                     frame.get("w", _WIDTH),
                     frame.get("h", _HEIGHT),
                 )
+                rect = self._clamp_to_visible(rect)
                 self._window.setFrame_display_(rect, True)
 
         _main_async(_go)
@@ -171,6 +178,20 @@ class TranscriptWindow:
         if y < visible.origin.y:
             y = visible.origin.y
         return NSMakeRect(x, y, _WIDTH, _HEIGHT)
+
+    def _clamp_to_visible(self, rect):
+        """Keep *rect* inside the main screen's visible area (below menu bar, beside Dock)."""
+        from AppKit import NSMakeRect, NSScreen
+
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return rect
+        vis = screen.visibleFrame()
+        w = min(max(rect.size.width, _MIN_W), vis.size.width)
+        h = min(max(rect.size.height, _MIN_H), vis.size.height)
+        x = max(vis.origin.x, min(rect.origin.x, vis.origin.x + vis.size.width - w))
+        y = max(vis.origin.y, min(rect.origin.y, vis.origin.y + vis.size.height - h))
+        return NSMakeRect(x, y, w, h)
 
     # ── main-thread bodies ──────────────────────────────────────────────────────
     def _append_main(self, text: str, source: str | None, clock: str = "") -> None:
@@ -290,8 +311,10 @@ class TranscriptWindow:
     def _build(self) -> None:
         from AppKit import (
             NSBackingStoreBuffered,
+            NSBezierPath,
             NSColor,
             NSFont,
+            NSImage,
             NSMakeRect,
             NSMakeSize,
             NSPanel,
@@ -300,6 +323,7 @@ class TranscriptWindow:
             NSViewHeightSizable,
             NSViewMaxYMargin,
             NSViewMinXMargin,
+            NSViewMinYMargin,
             NSViewWidthSizable,
             NSVisualEffectBlendingModeBehindWindow,
             NSVisualEffectMaterialHUDWindow,
@@ -325,7 +349,7 @@ class TranscriptWindow:
         win.setOpaque_(False)
         win.setBackgroundColor_(NSColor.clearColor())
         win.setHasShadow_(True)
-        win.setMovableByWindowBackground_(True)  # drag from anywhere
+        win.setMovableByWindowBackground_(True)  # padding/empty areas drag too
         win.setReleasedWhenClosed_(False)  # reused across opens
         win.setMinSize_(NSMakeSize(_MIN_W, _MIN_H))
         with contextlib.suppress(Exception):
@@ -340,11 +364,34 @@ class TranscriptWindow:
         fx.setState_(NSVisualEffectStateActive)
         fx.setWantsLayer_(True)
         with contextlib.suppress(Exception):
-            fx.layer().setCornerRadius_(16.0)
+            fx.layer().setCornerRadius_(_RADIUS)
             fx.layer().setMasksToBounds_(True)
             fx.layer().setBorderWidth_(1.0)
             fx.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
         fx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+
+        # ── rounded mask image so the vibrancy AND the window shadow follow the
+        # rounded shape (fixes the square white corner artifact). Cap insets keep
+        # the corners crisp while the centre stretches on resize. ──
+        with contextlib.suppress(Exception):
+            size = NSMakeSize(_WIDTH, _HEIGHT)
+
+            def _draw_mask(dst_rect):
+                NSColor.blackColor().set()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(0, 0, _WIDTH, _HEIGHT), _RADIUS, _RADIUS
+                ).fill()
+                return True
+
+            mask = NSImage.imageWithSize_flipped_drawingHandler_(size, False, _draw_mask)
+            with contextlib.suppress(Exception):
+                from AppKit import NSImageResizingModeStretch
+                from Foundation import NSEdgeInsetsMake
+
+                mask.setCapInsets_(NSEdgeInsetsMake(_RADIUS, _RADIUS, _RADIUS, _RADIUS))
+                mask.setResizingMode_(NSImageResizingModeStretch)
+            fx.setMaskImage_(mask)
+
         win.setContentView_(fx)
 
         # ── scroll view + text view (transparent so the blur shows through) ──
@@ -353,6 +400,8 @@ class TranscriptWindow:
         scroll.setAutohidesScrollers_(True)
         scroll.setBorderType_(0)  # NSNoBorder
         scroll.setDrawsBackground_(False)
+        with contextlib.suppress(Exception):
+            scroll.contentView().setDrawsBackground_(False)  # clip view must be clear too
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
 
         tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, _WIDTH, _HEIGHT))
@@ -362,13 +411,32 @@ class TranscriptWindow:
         tv.setDrawsBackground_(False)
         tv.setBackgroundColor_(NSColor.clearColor())
         tv.setAutoresizingMask_(NSViewWidthSizable)
+        # ── live text reflow during window resize ──
+        tv.setHorizontallyResizable_(False)
+        tv.setVerticallyResizable_(True)
+        tv.setMinSize_(NSMakeSize(0.0, 0.0))
+        tv.setMaxSize_(NSMakeSize(1.0e7, 1.0e7))
+        with contextlib.suppress(Exception):
+            tc = tv.textContainer()
+            tc.setWidthTracksTextView_(True)
+            tc.setContainerSize_(NSMakeSize(tv.bounds().size.width, 1.0e7))
         with contextlib.suppress(Exception):
             tv.setFont_(NSFont.systemFontOfSize_(14.0))
             tv.setTextColor_(NSColor.labelColor())
-            tv.setTextContainerInset_(NSMakeSize(20.0, 16.0))
+            # top inset clears the drag strip so the first line isn't hidden under it
+            tv.setTextContainerInset_(NSMakeSize(20.0, float(_STRIP_H)))
         scroll.setDocumentView_(tv)
         fx.addSubview_(scroll)
         self._textview = tv
+
+        # ── top drag strip (drag-anywhere handle; the text view eats mouseDown over
+        # its own area, so this transparent strip guarantees a reliable grab zone) ──
+        with contextlib.suppress(Exception):
+            ds = _DragStrip.alloc().initWithFrame_(
+                NSMakeRect(0, fx.bounds().size.height - _STRIP_H, fx.bounds().size.width, _STRIP_H)
+            )
+            ds.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)  # pinned to top
+            fx.addSubview_(ds)
 
         # ── corner grip (visual affordance only; the panel resizes from edges) ──
         with contextlib.suppress(Exception):
@@ -402,6 +470,38 @@ class TranscriptWindow:
         self._delegate._owner = self
         win.setDelegate_(self._delegate)
         self._window = win
+
+
+# ── Drag-strip view class (lazy, same pattern as the delegate) ─────────────────
+def _make_dragstrip_class():
+    from AppKit import NSView
+
+    class _DragStripImpl(NSView):
+        # NOTE: the selector is ``mouseDownCanMoveWindow`` (no trailing underscore —
+        # it's a zero-arg property getter). A trailing underscore would register the
+        # wrong selector ``mouseDownCanMoveWindow:`` that AppKit never calls.
+        def mouseDownCanMoveWindow(self):
+            return True
+
+        def mouseDown_(self, event):
+            with contextlib.suppress(Exception):
+                window = self.window()
+                if window is not None and hasattr(window, "performWindowDragWithEvent_"):
+                    window.performWindowDragWithEvent_(event)
+
+    return _DragStripImpl
+
+
+class _DragStripMeta:
+    _cls = None
+
+    def alloc(self):
+        if _DragStripMeta._cls is None:
+            _DragStripMeta._cls = _make_dragstrip_class()
+        return _DragStripMeta._cls.alloc()
+
+
+_DragStrip = _DragStripMeta()
 
 
 # ── NSWindowDelegate (frame-persistence only) ──────────────────────────────────
