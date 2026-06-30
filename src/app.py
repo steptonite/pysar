@@ -129,6 +129,7 @@ class VoiceTyper:
             meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
             meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
             meeting_hidden=self._settings.get("meeting_hidden", False),
+            meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
             on_set_meeting_mic=self._on_set_meeting_mic,
             on_set_meeting_save=self._on_set_meeting_save,
             on_set_meeting_on_top=self._on_set_meeting_on_top,
@@ -137,6 +138,7 @@ class VoiceTyper:
             on_set_meeting_prompt_source=self._on_set_meeting_prompt_source,
             on_set_meeting_source_mode=self._on_set_meeting_source_mode,
             on_set_meeting_hidden=self._on_set_meeting_hidden,
+            on_set_meeting_opacity=self._on_set_meeting_opacity,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -468,6 +470,7 @@ class VoiceTyper:
         self._transcript_window.clear()
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
         self._transcript_window.set_frame(self._settings.get("meeting_island_frame"))
+        self._transcript_window.set_opacity(self._settings.get("meeting_island_opacity", 0.92))
         # "Record without the window" — keep the .md autosave, skip the island.
         hidden = self._settings.get("meeting_hidden", False)
         if not hidden:
@@ -769,6 +772,14 @@ class VoiceTyper:
     def _on_set_meeting_hidden(self, on: bool) -> None:
         self._settings["meeting_hidden"] = bool(on)
         save_settings(self._settings)
+
+    def _on_set_meeting_opacity(self, value: float) -> None:
+        with contextlib.suppress(Exception):
+            v = max(0.4, min(1.0, float(value)))
+            self._settings["meeting_island_opacity"] = v
+            save_settings(self._settings)
+            if self._transcript_window is not None:
+                self._transcript_window.set_opacity(v)
 
     def _on_island_frame_change(self, frame: dict) -> None:
         # Persist the floating island's position/size so it reopens where the

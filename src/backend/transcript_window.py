@@ -45,6 +45,7 @@ class TranscriptWindow:
         self._last_source: str | None = None
         self._saved_frame: dict | None = None
         self._on_frame_change = on_frame_change  # callable(dict) or None
+        self._opacity = 1.0  # whole-panel translucency (liquid-glass slider, 0.4–1.0)
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -118,6 +119,25 @@ class TranscriptWindow:
 
                 level = NSStatusWindowLevel
             self._window.setLevel_(level)
+
+    def set_opacity(self, value) -> None:
+        """Set the island's overall translucency (liquid-glass control).
+
+        *value* is clamped to [0.4, 1.0] so the panel can get glassier without ever
+        vanishing. Applies live if the panel already exists."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        v = max(0.4, min(1.0, v))
+        self._opacity = v
+
+        def _go():
+            if self._window is not None:
+                with contextlib.suppress(Exception):
+                    self._window.setAlphaValue_(v)
+
+        _main_async(_go)
 
     def set_frame(self, frame: dict | None) -> None:
         """Store a frame; apply immediately if the panel already exists."""
@@ -352,6 +372,8 @@ class TranscriptWindow:
         win.setMovableByWindowBackground_(True)  # padding/empty areas drag too
         win.setReleasedWhenClosed_(False)  # reused across opens
         win.setMinSize_(NSMakeSize(_MIN_W, _MIN_H))
+        with contextlib.suppress(Exception):
+            win.setAlphaValue_(self._opacity)  # liquid-glass translucency
         with contextlib.suppress(Exception):
             win.setBecomesKeyOnlyIfNeeded_(True)
             win.setFloatingPanel_(True)
