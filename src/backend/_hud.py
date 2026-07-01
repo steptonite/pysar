@@ -222,9 +222,7 @@ class StatusHUD:
             pulse.setDuration_(0.85)
             pulse.setAutoreverses_(True)
             pulse.setRepeatCount_(1.0e9)
-            pulse.setTimingFunction_(
-                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
-            )
+            pulse.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
             layer.addAnimation_forKey_(pulse, "pulse")
 
     def _spring_in(self) -> None:

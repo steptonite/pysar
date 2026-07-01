@@ -7,9 +7,7 @@ def test_ensure_running_noop_when_alive(monkeypatch):
     # Server already up → must NOT spawn anything, returns True instantly.
     monkeypatch.setattr(server, "is_alive", lambda: True)
     spawned = []
-    monkeypatch.setattr(
-        server.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object()
-    )
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object())
     assert server.ensure_running() is True
     assert spawned == []
 
@@ -20,9 +18,7 @@ def test_ensure_running_false_when_script_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "is_alive", lambda: False)
     monkeypatch.setattr(server, "_script", lambda: tmp_path / "nope.sh")
     spawned = []
-    monkeypatch.setattr(
-        server.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object()
-    )
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object())
     assert server.ensure_running(timeout=0.1) is False
     assert spawned == []
 

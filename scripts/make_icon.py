@@ -56,8 +56,12 @@ def quad(p0, p1, p2, steps=80):
     for i in range(steps + 1):
         t = i / steps
         u = 1 - t
-        out.append((u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
-                    u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]))
+        out.append(
+            (
+                u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+                u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
+            )
+        )
     return out
 
 
@@ -72,20 +76,18 @@ def nib_outline(cx, nib_top, nib_bot, hw, cap):
         top.append((cx + hw * math.cos(th), cap_cy + cap * math.sin(th)))
     span = nib_bot - cap_cy
     # Right side down to the point, control pulled slightly inward (concave).
-    right = quad((cx + hw, cap_cy), (cx + hw * 0.86, cap_cy + 0.5 * span),
-                 (cx, nib_bot))
+    right = quad((cx + hw, cap_cy), (cx + hw * 0.86, cap_cy + 0.5 * span), (cx, nib_bot))
     # Left side back up to the left shoulder.
-    left = quad((cx, nib_bot), (cx - hw * 0.86, cap_cy + 0.5 * span),
-                (cx - hw, cap_cy))
+    left = quad((cx, nib_bot), (cx - hw * 0.86, cap_cy + 0.5 * span), (cx - hw, cap_cy))
     return top + right[1:] + left[1:]
 
 
 def main(out_path: str) -> None:
-    cx = cy = W // 2
+    cx = W // 2
 
     # ── macOS grid: rounded square on ~80% of the canvas, floating ─────────────
-    a = int(0.402 * W)          # half-size → 804/1024 body
-    cy_body = int(0.484 * W)    # nudged up to leave room for the shadow below
+    a = int(0.402 * W)  # half-size → 804/1024 body
+    cy_body = int(0.484 * W)  # nudged up to leave room for the shadow below
     body_pts = squircle(cx, cy_body, a, n=5.0)
 
     mask = Image.new("L", (W, W), 0)
@@ -137,9 +139,15 @@ def main(out_path: str) -> None:
     hd = ImageDraw.Draw(holes)
     hd.ellipse((cx - bh_r, bh_y - bh_r, cx + bh_r, bh_y + bh_r), fill=255)
     sw = int(0.013 * W)
-    hd.polygon([(cx - sw, bh_y), (cx + sw, bh_y),
-                (cx + sw // 3, nib_bot - int(0.02 * W)),
-                (cx - sw // 3, nib_bot - int(0.02 * W))], fill=255)
+    hd.polygon(
+        [
+            (cx - sw, bh_y),
+            (cx + sw, bh_y),
+            (cx + sw // 3, nib_bot - int(0.02 * W)),
+            (cx - sw // 3, nib_bot - int(0.02 * W)),
+        ],
+        fill=255,
+    )
     nib_mask = ImageChops.subtract(nib_mask, holes)
 
     # Nib drop shadow on the ground (depth).

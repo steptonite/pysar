@@ -49,9 +49,7 @@ class TranscriptFile:
         self._last_source = None
         return self.path
 
-    def append(
-        self, text: str, source: str | None = None, ts: datetime | None = None
-    ) -> None:
+    def append(self, text: str, source: str | None = None, ts: datetime | None = None) -> None:
         text = (text or "").strip()
         if not text or self._fh is None:
             return

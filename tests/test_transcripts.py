@@ -28,11 +28,7 @@ def test_every_block_gets_source_and_time_header():
     tf.append("b", source="sys", ts=_TS)  # same speaker → header still repeats per block
     tf.append("c", source="mic", ts=_TS)
     out = tf._fh.getvalue()
-    assert out == (
-        "**System · 14:32**\n\na\n\n"
-        "**System · 14:32**\n\nb\n\n"
-        "**You · 14:32**\n\nc\n\n"
-    )
+    assert out == ("**System · 14:32**\n\na\n\n**System · 14:32**\n\nb\n\n**You · 14:32**\n\nc\n\n")
 
 
 def test_source_label_resolves_from_map():
