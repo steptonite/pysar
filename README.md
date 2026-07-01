@@ -24,8 +24,9 @@ This fork is packaged to be reproducible — it survives a clean macOS reinstall
 - **Optional recording archive** — off by default (audio stays in memory). Toggle **💾 Save recordings** in the menu bar to keep the last N WAVs on disk (5/10/20, auto-pruned) in `~/Library/Application Support/Pysar/recordings/`, so a failed or aborted dictation can be re-transcribed instead of re-spoken. **📂 Open recordings folder** reveals them in Finder. Settings persist across launches.
 - **Speech profiles** — per-language priming sentences that bias Whisper toward your jargon (tool names, slang, proper nouns) so it stops mangling them. Toggle profiles per language; the composed prompt is capped to a token budget. A built-in **"Copy AI prompt"** hands any chat model a meta-prompt that returns importable profile JSON — pasted back, the import is tolerant of smart quotes and trailing commas. There's a lot here, so it has its own guide: **[docs/speech-profiles.md](docs/speech-profiles.md)**.
 - **Profile sets** — bundle several profiles into a named set and switch the whole set on with one key (`Ctrl+Option+<digit>` by default, reassignable). The Settings list shows which set is **currently active** and clears that mark the moment you hand-edit a toggle. The set editor shows a **per-language token meter** so you can see at a glance when a selection overflows Whisper's prompt budget.
-- **Drill-in Settings window** — a native WebKit panel instead of a tall menu, split into focused screens: a main page (audio, recordings, theme, UI language) with drill-ins for **Speech profiles** (profile editor + sets) and **Hotkeys** (dictation, language and profile-set shortcuts). **Auto / Light / Dark** themes with a live accent.
+- **Drill-in Settings window** — a native WebKit panel instead of a tall menu, split into focused screens: a main page (audio, recordings, theme, UI language) with drill-ins for **Speech profiles** (profile editor + sets), **Hotkeys** (dictation, language and profile-set shortcuts) and **Transcribe everything**. **Auto / Light / Dark** themes with a live accent.
 - **Bilingual UI (🇺🇦/🌐)** — the whole interface — menu bar, status line, notifications, Settings window — switches between Ukrainian and English live, independent of the dictation output language.
+- **Transcribe everything (meeting mode)** — a separate on/off capture, independent of dictation: system audio *and* mic are transcribed live into a floating **liquid-glass island** (real macOS 26 `NSGlassEffectView`, draggable, resizable, adjustable transparency) that stays on top of everything, even fullscreen video. Optionally saved as a timestamped `.md` transcript. See [Transcribe everything](#transcribe-everything).
 
 Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of unified memory.
 
@@ -65,6 +66,7 @@ Then launch **Pysar** from Spotlight. On first run, grant **Input Monitoring** a
 - **Switch language** — `Ctrl+Option+U` (🇺🇦) · `Ctrl+Option+R` (🇷🇺) · `Ctrl+Option+E` (🌐 → English). The menu-bar flag shows the active mode.
 - **Settings** — open from the menu bar; the main page covers audio, recordings, theme and UI language, with drill-ins for **Speech profiles** (editor + sets) and **Hotkeys** (dictation, language and profile-set shortcuts, all reassignable).
 - **Profile sets** — in Speech profiles, group profiles into a set and trigger it anywhere with `Ctrl+Option+<digit>` (the active set is shown live).
+- **Transcribe everything** — `🎧 Transcribe everything` in the menu bar starts/stops a live floating transcript of system audio + mic, independent of dictation. See [Transcribe everything](#transcribe-everything).
 - **Quit** — from the menu-bar icon; it stops the whisper server too.
 
 More languages are available in the **🌍 Languages** submenu (17 languages + the `🌐 → English (from any)` shortcut). To change the set, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and the hotkeys in [src/config.py](src/config.py).
@@ -103,6 +105,39 @@ when you want the cleanest possible transcription of a long, considered take.
 
 ---
 
+## Transcribe everything
+
+A separate, independent capture mode for meetings/calls/streams: start it from
+**🎧 Transcribe everything** in the menu bar (or the hotkey) and both **system
+audio and your mic** are transcribed live, side by side with the person's or
+your own dictation.
+
+- **Floating island.** A borderless, real **Liquid Glass** panel (macOS 26
+  `NSGlassEffectView`, with a `NSVisualEffectView` fallback on older macOS)
+  shows the transcript as it's recognized, each line stamped `Source · HH:MM`.
+  It floats above everything — including other apps' fullscreen video — is
+  freely draggable/resizable (down to a compact strip), and remembers its
+  position and size across launches.
+- **Adjustable glassiness.** **Settings → Transcribe everything → Island
+  transparency** goes from a solid themed panel to near-full glass — the tint
+  underlay is a separate layer *below* the text, so turning up the
+  transparency never fades the text itself.
+- **Speaker separation.** Off (single mixed stream) / Fast (dominant source by
+  loudness) / Smart (system and mic decoded separately through the same
+  whisper.cpp instance, more accurate, a bit slower).
+- **Context hint.** A custom priming sentence for the session (same
+  token-budget meter as Speech profiles), or inherit the active dictation
+  profiles for the transcription language.
+- **Saved to disk (optional).** **Save transcript to file** writes a
+  timestamped Markdown file per session to
+  `~/Library/Application Support/Pysar/transcripts/`, reachable via **Open
+  folder**. **Record without the window** keeps the file but skips showing the
+  island entirely, for a fully out-of-sight capture.
+
+Full design/process log: [docs/meeting-mode-settings.md](docs/meeting-mode-settings.md).
+
+---
+
 ## How it works
 
 ```
@@ -123,6 +158,7 @@ The trick behind "speak any language, get any other": Whisper's encoder produces
 | **Input Monitoring** | Settings → Privacy → Input Monitoring | Caps Lock interception (CGEventTap) |
 | **Microphone** | Settings → Privacy → Microphone | audio capture |
 | **Accessibility** | Settings → Privacy → Accessibility | Cmd+V paste (batch) and synthetic key typing (streaming), both via CGEventPost |
+| **Screen Recording** | Settings → Privacy → Screen Recording | needed by ScreenCaptureKit to capture system audio for **Transcribe everything** — only if you use that feature |
 
 Grant these to **Pysar** (the app), not Python or Terminal. macOS does not prompt for Accessibility automatically — add it manually, then relaunch the app.
 
