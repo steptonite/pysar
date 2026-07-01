@@ -14,7 +14,7 @@ import contextlib
 _WIDTH = 560
 _HEIGHT = 640
 _MIN_W = 360
-_MIN_H = 280
+_MIN_H = 140
 _RADIUS = 16.0
 _STRIP_H = 30  # draggable top strip height
 
@@ -45,7 +45,8 @@ class TranscriptWindow:
         self._last_source: str | None = None
         self._saved_frame: dict | None = None
         self._on_frame_change = on_frame_change  # callable(dict) or None
-        self._opacity = 1.0  # backing solidity (liquid-glass slider, 0.1–1.0)
+        self._opacity = 1.0  # backing solidity (liquid-glass slider, 0.0–1.0; the
+        # Settings UI shows/sends the inverse — "transparency" — see settings_window.py)
         self._glass = None  # NSGlassEffectView (macOS 26) or NSVisualEffectView fallback
         self._fill = None  # tint underlay below the text; its alpha = the slider value
         self._wake_obs = None  # NSWorkspace notification observer token
@@ -166,14 +167,15 @@ class TranscriptWindow:
 
         Unlike a window-wide ``alphaValue`` (which would also fade the text), this
         drives only a tint underlay that sits *below* the text. At 1.0 the backing is
-        a solid themed panel; toward 0.1 it thins out so the real glass (and the
-        desktop refracting through it) shows — while the text stays fully crisp.
-        Clamped to [0.1, 1.0] so it can never vanish. Applies live."""
+        a solid themed panel; toward 0.0 it thins out to full glass (the desktop
+        refracting through it) — while the text stays fully crisp; the native
+        `NSGlassEffectView` itself keeps the island visible even with no tint at all.
+        Clamped to [0.0, 1.0]. Applies live."""
         try:
             v = float(value)
         except (TypeError, ValueError):
             return
-        v = max(0.1, min(1.0, v))
+        v = max(0.0, min(1.0, v))
         self._opacity = v
         _main_async(self._apply_transp)
 

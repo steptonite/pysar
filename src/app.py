@@ -775,7 +775,7 @@ class VoiceTyper:
 
     def _on_set_meeting_opacity(self, value: float) -> None:
         with contextlib.suppress(Exception):
-            v = max(0.4, min(1.0, float(value)))
+            v = max(0.0, min(1.0, float(value)))
             self._settings["meeting_island_opacity"] = v
             save_settings(self._settings)
             if self._transcript_window is not None:

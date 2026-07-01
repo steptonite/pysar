@@ -93,9 +93,10 @@ _TEMPLATE = r"""<!doctype html>
   .screen.on{display:block}
 
   header{
-    display:flex; align-items:center; gap:10px; margin:0 2px 16px; min-height:24px;
+    display:flex; align-items:center; gap:10px; margin:0 2px 20px; min-height:32px;
     position:sticky; top:-18px; z-index:5; background:var(--bg);
-    padding-top:18px; margin-top:-18px;
+    padding-top:22px; padding-bottom:6px; margin-top:-18px;
+    border-bottom:1px solid var(--line-strong);
   }
   header h1{font-size:17px; font-weight:600; letter-spacing:-.02em; margin:0; flex:1}
   header .sub{font-size:12px; color:var(--muted)}
@@ -461,7 +462,7 @@ _TEMPLATE = r"""<!doctype html>
         <div class="label" data-i18n="meeting.opacity.label">Island transparency</div>
         <div class="help" data-i18n="meeting.opacity.help">Glassiness of the floating transcript island</div>
         <div class="rrow" style="margin-top:8px">
-          <input type="range" id="mt-opacity" min="10" max="100" step="5">
+          <input type="range" id="mt-opacity" min="0" max="100" step="5">
           <span class="rval" id="mt-opacity-val"></span>
         </div>
       </div>
@@ -635,12 +636,16 @@ $("back-mt").addEventListener("click", () => show("main"));
 
   const mtOpacity = $("mt-opacity");
   const mtOpacityVal = $("mt-opacity-val");
-  const _opPct = Math.round((STATE.meeting_island_opacity != null ? STATE.meeting_island_opacity : 0.92) * 100);
+  // The slider shows/sends TRANSPARENCY (0% = solid panel, 100% = full glass), which
+  // reads naturally against its label. Storage keeps the inverse — backing
+  // "solidity" — since that's what the AppKit tint layer paints directly.
+  const _solidity = STATE.meeting_island_opacity != null ? STATE.meeting_island_opacity : 0.92;
+  const _opPct = Math.round((1 - _solidity) * 100);
   mtOpacity.value = String(_opPct);
   mtOpacityVal.textContent = _opPct + "%";
   mtOpacity.addEventListener("input", () => {
     mtOpacityVal.textContent = mtOpacity.value + "%";
-    send("set_meeting_opacity", Number(mtOpacity.value) / 100);
+    send("set_meeting_opacity", 1 - Number(mtOpacity.value) / 100);
   });
 
   $("mt-path").textContent = STATE.transcripts_dir || "";
