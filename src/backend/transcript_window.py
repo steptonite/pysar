@@ -654,6 +654,8 @@ class TranscriptWindow:
         win.setDelegate_(self._delegate)
         self._window = win
         self._install_wake_observer()
+        with contextlib.suppress(Exception):
+            win.invalidateShadow()  # match the shadow to the masked rounded shape from the start
 
 
 # ── Drag-strip view class (lazy, same pattern as the delegate) ─────────────────
@@ -709,6 +711,12 @@ def _make_delegate_class():
 
         def windowDidResize_(self, notification):
             self.windowDidMove_(notification)  # same payload: report the new frame
+            with contextlib.suppress(Exception):
+                # A borderless, non-opaque window derives its drop shadow from the
+                # rendered layer shape, but AppKit doesn't always recompute that
+                # automatically mid-drag — without this the shadow can lag behind
+                # into a stale (rectangular-looking) shape while resizing.
+                notification.object().invalidateShadow()
 
     return _DelegateImpl
 

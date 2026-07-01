@@ -534,6 +534,18 @@ function applyI18n(){
   if (mtl) [...mtl.options].forEach(o => {
     if (o.value === "") o.textContent = T("meeting.lang.inherit", "Same as dictation");
   });
+  const mts = $("mt-source"), MTS = {
+    off: T("meeting.source.off", "Off"), fast: T("meeting.source.fast", "Fast"),
+    smart: T("meeting.source.smart", "Smart"),
+  };
+  if (mts) [...mts.options].forEach(o => { o.textContent = MTS[o.value] ?? o.textContent; });
+  const mtSrc = $("mt-prompt-src"), MTSRC = {
+    custom: T("meeting.promptSrc.custom", "Custom hint"),
+    profiles: T("meeting.promptSrc.profiles", "Dictation profiles"),
+  };
+  if (mtSrc) [...mtSrc.options].forEach(o => { o.textContent = MTSRC[o.value] ?? o.textContent; });
+  const mtPrompt = $("mt-prompt");
+  if (mtPrompt) mtPrompt.placeholder = T("meeting.prompt.ph", "");
 }
 
 // ── Screen navigation ──────────────────────────────────────────────────────

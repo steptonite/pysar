@@ -957,14 +957,14 @@ class Tray:
             self._mode_items[code] = item
         self._refresh_checkmarks()
 
-        lang_submenu = rumps.MenuItem(self._t("tray.languages"))
+        self._lang_submenu = rumps.MenuItem(self._t("tray.languages"))
         for code, _ in modes:
-            lang_submenu.add(self._mode_items[code])
+            self._lang_submenu.add(self._mode_items[code])
 
         self._profiles_submenu = rumps.MenuItem(self._t("tray.profiles"))
         self._populate_profiles_menu()
 
-        settings_item = rumps.MenuItem(self._t("tray.settings"), callback=self._open_settings)
+        self._settings_item = rumps.MenuItem(self._t("tray.settings"), callback=self._open_settings)
 
         # "Transcribe everything" — a separate on/off capture of system audio + mic
         # into a live transcript window (meetings, calls), independent of dictation.
@@ -977,10 +977,10 @@ class Tray:
             self._status,
             self._hint,
             None,
-            lang_submenu,
+            self._lang_submenu,
             self._profiles_submenu,
             self._meeting_item,
-            settings_item,
+            self._settings_item,
             None,
         ]
 
@@ -1286,12 +1286,22 @@ class Tray:
         self._ui_lang = lang if lang in ("uk", "en") else "uk"
         if self._on_set_lang:
             self._on_set_lang(self._ui_lang)
-        # Re-localize the live surfaces: the hint line, the open Settings window
-        # (its labels re-render from the new `t` table). The menu titles are built
-        # once and keep the launch language until the next restart.
+        # Re-localize every live surface: the hint line, the static menu titles
+        # (previously frozen at launch language — see history), the meeting
+        # start/stop item (kept in sync with its current on/off state), the
+        # quit button, and the open Settings window.
         self._hint.title = self._t(
             "tray.hotkey", label=binding_label(self._hotkey["keycode"], self._hotkey["mods"])
         )
+        self._lang_submenu.title = self._t("tray.languages")
+        self._profiles_submenu.title = self._t("tray.profiles")
+        self._settings_item.title = self._t("tray.settings")
+        self._meeting_item.title = self._t(
+            "tray.meetingStop" if self._meeting_item.state else "tray.meetingStart"
+        )
+        with contextlib.suppress(Exception):
+            if self._app.quit_button is not None:
+                self._app.quit_button.title = self._t("tray.quit")
         self._refresh_settings_window()
 
     def _capture_hotkey(self, slot: str) -> None:
