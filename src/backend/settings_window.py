@@ -93,19 +93,17 @@ _TEMPLATE = r"""<!doctype html>
   .screen.on{display:block}
 
   header{
-    display:flex; flex-direction:column; align-items:center; gap:6px;
+    display:flex; flex-direction:row; align-items:center; gap:10px;
     margin:0 -2px 18px; position:sticky; top:0; z-index:5; background:var(--bg);
     padding:14px 2px 12px; border-bottom:1px solid var(--line-strong);
   }
-  header .back{align-self:flex-start}
-  header h1{font-size:17px; font-weight:600; letter-spacing:-.02em; margin:0; text-align:center}
+  header h1{font-size:15px; font-weight:600; letter-spacing:-.01em; margin:0; text-align:left}
   header .sub{font-size:12px; color:var(--muted)}
-  header.root{flex-direction:row; padding-top:16px}
-  header.root h1{flex:1; text-align:left}
+  header.root h1{flex:1}
   .back{
     display:inline-flex; align-items:center; gap:3px; cursor:pointer;
-    font-weight:400; color:var(--accent); padding:2px 4px 2px 0; margin-left:-2px;
-    border-radius:6px;
+    font-size:15px; font-weight:400; color:var(--accent); padding:2px 4px 2px 0;
+    margin-left:-2px; border-radius:6px;
   }
   .back:hover{opacity:.7}
   .back svg{width:11px; height:11px}
