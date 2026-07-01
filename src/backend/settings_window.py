@@ -100,6 +100,12 @@ _TEMPLATE = r"""<!doctype html>
   header h1{font-size:15px; font-weight:600; letter-spacing:-.01em; margin:0; text-align:left}
   header .sub{font-size:12px; color:var(--muted)}
   header.root h1{flex:1}
+  /* Drill-in screens: centre the title regardless of the back-label's width,
+     so it lands on the same spot on every screen instead of drifting with
+     "‹ Settings" vs "‹ Back" etc. */
+  header:not(.root){justify-content:center}
+  header:not(.root) .back{position:absolute; left:2px; top:50%; transform:translateY(-50%)}
+  header:not(.root) h1{width:100%; text-align:center}
   .back{
     display:inline-flex; align-items:center; gap:3px; cursor:pointer;
     font-size:15px; font-weight:400; color:var(--accent); padding:2px 4px 2px 0;
@@ -198,7 +204,6 @@ _TEMPLATE = r"""<!doctype html>
   .prow:first-child{border-top:0}
   .prow .pname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .prow .pname.off{color:var(--muted)}
-  .iconbtn{padding:4px 9px; font-size:12px}
   .addbtn{width:100%; font-size:12px; margin-top:4px}
 
   .pform{margin:8px 0 4px; padding:13px; border:1px solid var(--line-strong);
