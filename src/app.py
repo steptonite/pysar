@@ -758,9 +758,7 @@ class VoiceTyper:
         save_settings(self._settings)
 
     def _on_set_meeting_source_mode(self, mode: str) -> None:
-        self._settings["meeting_source_mode"] = (
-            mode if mode in ("off", "fast", "smart") else "off"
-        )
+        self._settings["meeting_source_mode"] = mode if mode in ("off", "fast", "smart") else "off"
         save_settings(self._settings)
 
     def _on_set_meeting_prompt_source(self, source: str) -> None:

@@ -609,7 +609,10 @@ class TranscriptWindow:
         with contextlib.suppress(Exception):
             ds = _DragStrip.alloc().initWithFrame_(
                 NSMakeRect(
-                    0, content.bounds().size.height - _STRIP_H, content.bounds().size.width, _STRIP_H
+                    0,
+                    content.bounds().size.height - _STRIP_H,
+                    content.bounds().size.width,
+                    _STRIP_H,
                 )
             )
             ds.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)  # pinned to top
