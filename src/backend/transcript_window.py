@@ -45,9 +45,10 @@ class TranscriptWindow:
         self._last_source: str | None = None
         self._saved_frame: dict | None = None
         self._on_frame_change = on_frame_change  # callable(dict) or None
-        self._opacity = 1.0  # backing solidity (liquid-glass slider, 0.4–1.0)
+        self._opacity = 1.0  # backing solidity (liquid-glass slider, 0.1–1.0)
         self._glass = None  # NSGlassEffectView (macOS 26) or NSVisualEffectView fallback
         self._fill = None  # tint underlay below the text; its alpha = the slider value
+        self._wake_obs = None  # NSWorkspace notification observer token
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -122,19 +123,57 @@ class TranscriptWindow:
                 level = NSStatusWindowLevel
             self._window.setLevel_(level)
 
+    def _install_wake_observer(self) -> None:
+        """Re-apply the panel's level/collection-behaviour after the Mac wakes.
+
+        The island persists across a whole recording session (unlike the HUD pill,
+        which is rebuilt each take) — WindowServer silently stops honouring a
+        high-level panel's orderFront after sleep/wake, so without this the island
+        shows then immediately vanishes until an app restart. Registers once; the
+        handler only acts if the panel is currently visible."""
+        if self._wake_obs is not None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSWorkspace
+
+            def _on_wake(_note) -> None:
+                def _go() -> None:
+                    with contextlib.suppress(Exception):
+                        if self._window is not None and self._window.isVisible():
+                            self._apply_level()
+                            from AppKit import (
+                                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                                NSWindowCollectionBehaviorFullScreenAuxiliary,
+                                NSWindowCollectionBehaviorStationary,
+                            )
+
+                            self._window.setCollectionBehavior_(
+                                NSWindowCollectionBehaviorCanJoinAllSpaces
+                                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                                | NSWindowCollectionBehaviorStationary
+                            )
+                            self._window.orderFrontRegardless()
+
+                _main_async(_go)
+
+            nc = NSWorkspace.sharedWorkspace().notificationCenter()
+            self._wake_obs = nc.addObserverForName_object_queue_usingBlock_(
+                "NSWorkspaceDidWakeNotification", None, None, _on_wake
+            )
+
     def set_opacity(self, value) -> None:
         """Liquid-glass control: how *solid* the island's backing is.
 
         Unlike a window-wide ``alphaValue`` (which would also fade the text), this
         drives only a tint underlay that sits *below* the text. At 1.0 the backing is
-        a solid themed panel; toward 0.4 it thins out so the real glass (and the
+        a solid themed panel; toward 0.1 it thins out so the real glass (and the
         desktop refracting through it) shows — while the text stays fully crisp.
-        Clamped to [0.4, 1.0] so it can never vanish. Applies live."""
+        Clamped to [0.1, 1.0] so it can never vanish. Applies live."""
         try:
             v = float(value)
         except (TypeError, ValueError):
             return
-        v = max(0.4, min(1.0, v))
+        v = max(0.1, min(1.0, v))
         self._opacity = v
         _main_async(self._apply_transp)
 
@@ -603,6 +642,7 @@ class TranscriptWindow:
         self._delegate._owner = self
         win.setDelegate_(self._delegate)
         self._window = win
+        self._install_wake_observer()
 
 
 # ── Drag-strip view class (lazy, same pattern as the delegate) ─────────────────

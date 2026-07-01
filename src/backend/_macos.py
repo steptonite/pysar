@@ -722,7 +722,7 @@ class Paster:
             up = Quartz.CGEventCreateKeyboardEvent(src, 0, False)
             Quartz.CGEventKeyboardSetUnicodeString(up, units, chunk)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
-            time.sleep(0.002)
+            time.sleep(0.01)
 
     @staticmethod
     def has_editable_focus(target=None) -> bool:
@@ -1211,7 +1211,7 @@ class Tray:
             v = float(value)
         except (TypeError, ValueError):
             return
-        self._meeting_island_opacity = max(0.4, min(1.0, v))
+        self._meeting_island_opacity = max(0.1, min(1.0, v))
         if self._on_set_meeting_opacity:
             self._on_set_meeting_opacity(self._meeting_island_opacity)
 

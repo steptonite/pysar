@@ -238,6 +238,15 @@ class StatusHUD:
 
             layer = self._effect.layer()
             if layer is not None:
+                # Anchor the scale at top-centre (not the CALayer default (0,0), i.e.
+                # bottom-left in AppKit's un-flipped coordinate space) so the pill grows
+                # DOWN from the icon it drops out of, instead of up-and-right from its
+                # bottom-left corner. Re-applying the unchanged frame after moving the
+                # anchor makes CALayer recompute position for us — the on-screen rect
+                # doesn't jump.
+                frame = layer.frame()
+                layer.setAnchorPoint_((0.5, 1.0))
+                layer.setFrame_(frame)
                 spring = CASpringAnimation.animationWithKeyPath_("transform.scale")
                 spring.setFromValue_(0.85)
                 spring.setToValue_(1.0)
@@ -261,7 +270,7 @@ class StatusHUD:
             # the first pop-out (the spring-in carries that one).
             animate = self._visible and not first
             self._set_dot(state, animate=animate)
-            self._pulse_dot(state == "listening")
+            self._pulse_dot(state in ("listening", "recognizing", "buffering"))
             width = self._layout(text)
             self._reposition(width, anchor, animate=animate)
             if not self._visible:
