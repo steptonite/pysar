@@ -89,17 +89,19 @@ _TEMPLATE = r"""<!doctype html>
     -webkit-font-smoothing:antialiased;
     user-select:none; -webkit-user-select:none;
   }
-  .screen{display:none; padding:18px 20px 24px}
+  .screen{display:none; padding:0 20px 24px}
   .screen.on{display:block}
 
   header{
-    display:flex; align-items:center; gap:10px; margin:0 2px 20px; min-height:32px;
-    position:sticky; top:-18px; z-index:5; background:var(--bg);
-    padding-top:22px; padding-bottom:6px; margin-top:-18px;
-    border-bottom:1px solid var(--line-strong);
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+    margin:0 -2px 18px; position:sticky; top:0; z-index:5; background:var(--bg);
+    padding:14px 2px 12px; border-bottom:1px solid var(--line-strong);
   }
-  header h1{font-size:17px; font-weight:600; letter-spacing:-.02em; margin:0; flex:1}
+  header .back{align-self:flex-start}
+  header h1{font-size:17px; font-weight:600; letter-spacing:-.02em; margin:0; text-align:center}
   header .sub{font-size:12px; color:var(--muted)}
+  header.root{flex-direction:row; padding-top:16px}
+  header.root h1{flex:1; text-align:left}
   .back{
     display:inline-flex; align-items:center; gap:3px; cursor:pointer;
     font-weight:400; color:var(--accent); padding:2px 4px 2px 0; margin-left:-2px;
@@ -249,7 +251,7 @@ _TEMPLATE = r"""<!doctype html>
 <body>
   <!-- ── Main screen ──────────────────────────────────────────────────────── -->
   <div id="screen-main" class="screen on">
-    <header><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar</span></header>
+    <header class="root"><h1 data-i18n="settings">Settings</h1><span class="sub">Pysar</span></header>
 
     <div class="sec-title" data-i18n="sec.audio">Audio</div>
     <section>
@@ -336,8 +338,7 @@ _TEMPLATE = r"""<!doctype html>
         <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
           stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
-      <h1 style="flex:0 1 auto" data-i18n="pscreen.title">Speech profiles</h1>
-      <span style="flex:1"></span>
+      <h1 data-i18n="pscreen.title">Speech profiles</h1>
     </header>
     <div class="ai" data-i18n="pscreen.ai">A profile is one natural sentence that primes whisper toward your
       real vocabulary — names, jargon, English terms inside Ukrainian. Toggle the ones
@@ -384,8 +385,7 @@ _TEMPLATE = r"""<!doctype html>
         <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
           stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
-      <h1 style="flex:0 1 auto" data-i18n="hkscreen.title">Hotkeys</h1>
-      <span style="flex:1"></span>
+      <h1 data-i18n="hkscreen.title">Hotkeys</h1>
     </header>
     <section>
       <div class="row">
@@ -415,8 +415,7 @@ _TEMPLATE = r"""<!doctype html>
         <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
           stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
-      <h1 style="flex:0 1 auto" data-i18n="mscreen.title">Transcribe everything</h1>
-      <span style="flex:1"></span>
+      <h1 data-i18n="mscreen.title">Transcribe everything</h1>
     </header>
     <div class="ai" data-i18n="mscreen.intro">System audio (and the mic) are recognized
       locally and stream into the transcript window. Start and stop from the menu-bar

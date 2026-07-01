@@ -498,6 +498,9 @@ class TranscriptWindow:
                 glass.set_contentLensing_(False)
             with contextlib.suppress(Exception):
                 glass.setCornerRadius_(_RADIUS)
+            with contextlib.suppress(Exception):
+                if glass.respondsToSelector_("setCornerCurve:"):
+                    glass.setCornerCurve_("continuous")
             glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
             content = NSView.alloc().initWithFrame_(frame)
             content.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
@@ -505,6 +508,10 @@ class TranscriptWindow:
             with contextlib.suppress(Exception):
                 content.layer().setCornerRadius_(_RADIUS)
                 content.layer().setMasksToBounds_(True)
+                # circular (default) reads sharper/rounder than macOS's own panels,
+                # which all use the "squircle" continuous curve (same as SF Symbols /
+                # app icons) — without this the island looks subtly "off-brand".
+                content.layer().setCornerCurve_("continuous")
             glass.setContentView_(content)
             win.setContentView_(glass)
             self._glass = glass
@@ -517,6 +524,7 @@ class TranscriptWindow:
             with contextlib.suppress(Exception):
                 fx.layer().setCornerRadius_(_RADIUS)
                 fx.layer().setMasksToBounds_(True)
+                fx.layer().setCornerCurve_("continuous")
                 fx.layer().setBorderWidth_(1.0)
                 fx.layer().setBorderColor_(
                     NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor()
@@ -557,6 +565,7 @@ class TranscriptWindow:
             with contextlib.suppress(Exception):
                 fill.layer().setCornerRadius_(_RADIUS)
                 fill.layer().setMasksToBounds_(True)
+                fill.layer().setCornerCurve_("continuous")
             content.addSubview_positioned_relativeTo_(fill, -1, None)  # below all content
             self._fill = fill
 
