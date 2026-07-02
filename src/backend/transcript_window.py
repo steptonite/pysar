@@ -215,6 +215,21 @@ class TranscriptWindow:
             else:
                 paint()
 
+    def apply_theme(self, theme: str) -> None:
+        """Force the island to light/dark, or follow macOS when 'auto' — mirrors
+        SettingsWindow.apply_theme. Without this the panel only ever tracked the
+        real system appearance, ignoring the app's manual theme override, so text
+        and glass tint stayed on the wrong side of a forced dark/light setting."""
+        if self._window is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSAppearance
+
+            name = {"light": "NSAppearanceNameAqua", "dark": "NSAppearanceNameDarkAqua"}.get(theme)
+            self._window.setAppearance_(NSAppearance.appearanceNamed_(name) if name else None)
+        # Re-paint the tint/glass under the new appearance right away.
+        _main_async(self._apply_transp)
+
     def set_frame(self, frame: dict | None) -> None:
         """Store a frame; apply immediately if the panel already exists."""
         self._saved_frame = frame
@@ -430,6 +445,7 @@ class TranscriptWindow:
             NSBackingStoreBuffered,
             NSBezierPath,
             NSColor,
+            NSEdgeInsetsMake,
             NSFont,
             NSImage,
             NSMakeRect,
@@ -578,6 +594,11 @@ class TranscriptWindow:
         with contextlib.suppress(Exception):
             scroll.contentView().setDrawsBackground_(False)  # clip view must be clear too
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        with contextlib.suppress(Exception):
+            # Keep the overlay scroller clear of the corner resize-grip decoration
+            # (bottom-right) — without this the scroller track paints right through it.
+            scroll.setAutomaticallyAdjustsContentInsets_(False)
+            scroll.setContentInsets_(NSEdgeInsetsMake(0.0, 0.0, 20.0, 0.0))
 
         tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, _WIDTH, _HEIGHT))
         tv.setEditable_(False)
