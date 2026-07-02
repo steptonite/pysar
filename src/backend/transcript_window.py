@@ -50,6 +50,7 @@ class TranscriptWindow:
         self._glass = None  # NSGlassEffectView (macOS 26) or NSVisualEffectView fallback
         self._fill = None  # tint underlay below the text; its alpha = the slider value
         self._wake_obs = None  # NSWorkspace notification observer token
+        self._appearance_obs = None  # system dark/light change observer token
         self._theme = "auto"  # "auto" | "light" | "dark" — applied on every (re)build too
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -163,6 +164,29 @@ class TranscriptWindow:
                 "NSWorkspaceDidWakeNotification", None, None, _on_wake
             )
 
+    def _install_appearance_observer(self) -> None:
+        """Re-resolve text/glass colours when the *system* flips light/dark.
+
+        This borderless, non-activating NSPanel doesn't reliably repaint dynamic
+        NSColors (labelColor, windowBackgroundColor) on its own when macOS toggles
+        appearance live — same class of gap as the sleep/wake bug above, just for
+        theme instead of level/collection-behaviour. Without this, text built (or
+        last repainted) under one appearance stays that colour even after the
+        system — and the island's own glass tint — has visibly moved to the other,
+        e.g. dark labelColor text sitting on a now-dark glass background."""
+        if self._appearance_obs is not None:
+            return
+        with contextlib.suppress(Exception):
+            from Foundation import NSDistributedNotificationCenter
+
+            def _on_change(_note) -> None:
+                _main_async(self._apply_theme_now)
+
+            dnc = NSDistributedNotificationCenter.defaultCenter()
+            self._appearance_obs = dnc.addObserverForName_object_queue_usingBlock_(
+                "AppleInterfaceThemeChangedNotification", None, None, _on_change
+            )
+
     def set_opacity(self, value) -> None:
         """Liquid-glass control: how *solid* the island's backing is.
 
@@ -233,12 +257,24 @@ class TranscriptWindow:
         if self._window is None:
             return
         with contextlib.suppress(Exception):
-            from AppKit import NSAppearance
+            from AppKit import NSApp, NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua
 
-            name = {"light": "NSAppearanceNameAqua", "dark": "NSAppearanceNameDarkAqua"}.get(
+            name = {"light": NSAppearanceNameAqua, "dark": NSAppearanceNameDarkAqua}.get(
                 self._theme
             )
-            self._window.setAppearance_(NSAppearance.appearanceNamed_(name) if name else None)
+            if name is None:
+                # "auto" — don't just clear the override and hope AppKit inherits
+                # it live; explicitly mirror the *current* system appearance, since
+                # this panel doesn't reliably re-resolve dynamic colours on its own
+                # (see _install_appearance_observer for the live-toggle half of it).
+                sys_ap = NSApp.effectiveAppearance()
+                name = (
+                    sys_ap.bestMatchFromAppearancesWithNames_(
+                        [NSAppearanceNameAqua, NSAppearanceNameDarkAqua]
+                    )
+                    or NSAppearanceNameAqua
+                )
+            self._window.setAppearance_(NSAppearance.appearanceNamed_(name))
         # Re-paint the tint/glass under the new appearance right away.
         self._apply_transp()
 
@@ -690,6 +726,7 @@ class TranscriptWindow:
         win.setDelegate_(self._delegate)
         self._window = win
         self._install_wake_observer()
+        self._install_appearance_observer()
         with contextlib.suppress(Exception):
             win.invalidateShadow()  # match the shadow to the masked rounded shape from the start
         self._apply_theme_now()  # start on the stored theme, not whatever AppKit inherits by default
