@@ -468,6 +468,7 @@ class VoiceTyper:
             )
         self._transcript_window.set_source_labels(spk_labels)
         self._transcript_window.clear()
+        self._transcript_window.apply_theme(self._settings.get("ui_theme", "auto"))
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
         self._transcript_window.set_frame(self._settings.get("meeting_island_frame"))
         self._transcript_window.set_opacity(self._settings.get("meeting_island_opacity", 0.92))
@@ -722,6 +723,8 @@ class VoiceTyper:
     def _on_set_theme(self, theme: str) -> None:
         self._settings["ui_theme"] = theme
         save_settings(self._settings)
+        if self._transcript_window is not None:
+            self._transcript_window.apply_theme(theme)
 
     def _on_set_lang(self, lang: str) -> None:
         self._settings["ui_lang"] = lang
