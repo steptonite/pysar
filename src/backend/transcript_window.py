@@ -50,6 +50,7 @@ class TranscriptWindow:
         self._glass = None  # NSGlassEffectView (macOS 26) or NSVisualEffectView fallback
         self._fill = None  # tint underlay below the text; its alpha = the slider value
         self._wake_obs = None  # NSWorkspace notification observer token
+        self._theme = "auto"  # "auto" | "light" | "dark" — applied on every (re)build too
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -219,16 +220,27 @@ class TranscriptWindow:
         """Force the island to light/dark, or follow macOS when 'auto' — mirrors
         SettingsWindow.apply_theme. Without this the panel only ever tracked the
         real system appearance, ignoring the app's manual theme override, so text
-        and glass tint stayed on the wrong side of a forced dark/light setting."""
+        and glass tint stayed on the wrong side of a forced dark/light setting.
+        Stores the choice even if the panel isn't built yet, so a later `show()`
+        (which calls `_build()`) starts on the right appearance from frame one —
+        not just "whatever the window happened to inherit that first paint"."""
+        self._theme = theme if theme in ("auto", "light", "dark") else "auto"
+        _main_async(self._apply_theme_now)
+
+    def _apply_theme_now(self) -> None:
+        """Must run on the main thread (via `_main_async` or from `_build`, which
+        is itself always called on the main thread)."""
         if self._window is None:
             return
         with contextlib.suppress(Exception):
             from AppKit import NSAppearance
 
-            name = {"light": "NSAppearanceNameAqua", "dark": "NSAppearanceNameDarkAqua"}.get(theme)
+            name = {"light": "NSAppearanceNameAqua", "dark": "NSAppearanceNameDarkAqua"}.get(
+                self._theme
+            )
             self._window.setAppearance_(NSAppearance.appearanceNamed_(name) if name else None)
         # Re-paint the tint/glass under the new appearance right away.
-        _main_async(self._apply_transp)
+        self._apply_transp()
 
     def set_frame(self, frame: dict | None) -> None:
         """Store a frame; apply immediately if the panel already exists."""
@@ -680,6 +692,7 @@ class TranscriptWindow:
         self._install_wake_observer()
         with contextlib.suppress(Exception):
             win.invalidateShadow()  # match the shadow to the masked rounded shape from the start
+        self._apply_theme_now()  # start on the stored theme, not whatever AppKit inherits by default
 
 
 # ── Drag-strip view class (lazy, same pattern as the delegate) ─────────────────
