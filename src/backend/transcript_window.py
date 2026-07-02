@@ -52,6 +52,7 @@ class TranscriptWindow:
         self._wake_obs = None  # NSWorkspace notification observer token
         self._appearance_obs = None  # system dark/light change observer token
         self._theme = "auto"  # "auto" | "light" | "dark" — applied on every (re)build too
+        self._grip_lines = []  # CAShapeLayers of the corner grip (re-stroked per theme)
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -275,8 +276,33 @@ class TranscriptWindow:
                     or NSAppearanceNameAqua
                 )
             self._window.setAppearance_(NSAppearance.appearanceNamed_(name))
-        # Re-paint the tint/glass under the new appearance right away.
+        # Re-paint the tint/glass and the grip under the new appearance right away.
         self._apply_transp()
+        self._apply_grip_color()
+
+    def _apply_grip_color(self) -> None:
+        """Re-stroke the corner-grip lines under the panel's current appearance.
+
+        CAShapeLayer strokes are static CGColors, so they must be re-resolved on
+        every theme change — labelColor at low alpha reads on both glass sides,
+        where the old frozen white was invisible on the light theme."""
+        if not self._grip_lines or self._window is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSColor
+
+            out = {}
+
+            def make():
+                out["c"] = NSColor.labelColor().colorWithAlphaComponent_(0.28).CGColor()
+
+            ap = self._window.effectiveAppearance()
+            if hasattr(ap, "performAsCurrentDrawingAppearance_"):
+                ap.performAsCurrentDrawingAppearance_(make)
+            else:
+                make()
+            for line in self._grip_lines:
+                line.setStrokeColor_(out["c"])
 
     def set_frame(self, frame: dict | None) -> None:
         """Store a frame; apply immediately if the panel already exists."""
@@ -443,31 +469,51 @@ class TranscriptWindow:
             if not words:
                 return
 
+            # colorWithAlphaComponent_ FREEZES a dynamic colour (labelColor) to
+            # whatever appearance is current at CALL time — verified: the result
+            # resolves identically under light and dark. So the intermediate fade
+            # colours must be resolved under the PANEL's own appearance, and the
+            # final step must restore the ORIGINAL dynamic colour — otherwise every
+            # revealed word keeps that frozen colour forever and ignores any later
+            # theme change (this, not window appearance, was the black-text-on-dark
+            # / white-text-on-light bug: the reveal repainted correct dynamic text
+            # with a frozen snapshot one frame later).
+            ap = self._window.effectiveAppearance() if self._window is not None else None
+
+            def frozen_faded(alpha):
+                out = {}
+
+                def make():
+                    out["c"] = base_color.colorWithAlphaComponent_(alpha)
+
+                if ap is not None and hasattr(ap, "performAsCurrentDrawingAppearance_"):
+                    ap.performAsCurrentDrawingAppearance_(make)
+                else:
+                    make()
+                return out["c"]
+
             # Hide the whole body up-front, then fade each word in on a stagger.
             full_rng = NSMakeRange(base_start, len(text))
             storage.addAttribute_value_range_(
-                NSForegroundColorAttributeName, base_color.colorWithAlphaComponent_(0.0), full_rng
+                NSForegroundColorAttributeName, frozen_faded(0.0), full_rng
             )
 
             n = len(words)
             stagger = min(0.022, 0.5 / n)  # cap total reveal duration
             micro = (0.40, 0.72, 1.0)  # quick per-word ramp (no hard pop)
             micro_delay = 0.03
+            micro_colors = [base_color if a >= 1.0 else frozen_faded(a) for a in micro]
 
-            def ramp(rng, alpha):
+            def ramp(rng, color):
                 with contextlib.suppress(Exception):
-                    storage.addAttribute_value_range_(
-                        NSForegroundColorAttributeName,
-                        base_color.colorWithAlphaComponent_(alpha),
-                        rng,
-                    )
+                    storage.addAttribute_value_range_(NSForegroundColorAttributeName, color, rng)
 
             try:
                 import libdispatch
 
                 for i, (off, ln) in enumerate(words):
                     rng = NSMakeRange(base_start + off, ln)
-                    for j, a in enumerate(micro):
+                    for j, c in enumerate(micro_colors):
                         delay = i * stagger + j * micro_delay
                         when = libdispatch.dispatch_time(
                             libdispatch.DISPATCH_TIME_NOW, int(delay * 1e9)
@@ -475,10 +521,10 @@ class TranscriptWindow:
                         libdispatch.dispatch_after(
                             when,
                             libdispatch.dispatch_get_main_queue(),
-                            lambda r=rng, al=a: ramp(r, al),
+                            lambda r=rng, cc=c: ramp(r, cc),
                         )
             except Exception:
-                ramp(full_rng, 1.0)  # no libdispatch → just show it
+                ramp(full_rng, base_color)  # no libdispatch → just show it
 
     def _clear_main(self) -> None:
         if self._textview is None:
@@ -704,18 +750,21 @@ class TranscriptWindow:
             )
             grip.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
             grip.setWantsLayer_(True)
+            self._grip_lines = []
             for sx, sy, ex, ey in ((3, 12, 12, 3), (7, 12, 12, 7), (11, 12, 12, 11)):
                 path = CGPathCreateMutable()
                 CGPathMoveToPoint(path, None, sx, sy)
                 CGPathAddLineToPoint(path, None, ex, ey)
                 line = CAShapeLayer.alloc().init()
-                line.setStrokeColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).CGColor())
                 line.setFillColor_(NSColor.clearColor().CGColor())
                 line.setLineWidth_(1.0)
                 line.setLineCap_("round")
                 line.setPath_(path)
                 grip.layer().addSublayer_(line)
+                self._grip_lines.append(line)
             content.addSubview_(grip)
+            # stroke colour is theme-dependent (a frozen white was invisible on the
+            # light theme) — painted by _apply_grip_color / _apply_theme_now below
 
         # paint the tint underlay at the current slider value
         self._apply_transp()
