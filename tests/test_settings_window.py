@@ -81,3 +81,43 @@ def test_build_html_escapes_angle_brackets_in_state():
 def test_build_html_placeholder_is_consumed():
     html = build_html(_state())
     assert "/*__STATE__*/null" not in html
+
+
+# ── Enhance screen ────────────────────────────────────────────────────────────
+
+
+def test_build_html_has_enhance_screen_and_controls():
+    html = build_html(_state())
+    assert 'id="screen-enhance"' in html
+    for cid in ("go-enhance", "enh-enabled", "enh-style", "enh-model", "enh-status", "back-enh"):
+        assert f'id="{cid}"' in html
+
+
+def test_build_html_embeds_enhance_state():
+    html = build_html(
+        _state(
+            enhance_enabled=True,
+            enhance_model="qwen3:4b",
+            enhance_style="concise",
+            enhance_styles=[{"key": "concise", "name_uk": "Коротше", "name_en": "Concise"}],
+            enhance_status={"alive": True, "models": ["qwen3:4b"]},
+        )
+    )
+    m = re.search(r"let STATE = (\{.*?\});", html, re.DOTALL)
+    parsed = json.loads(m.group(1))
+    assert parsed["enhance_enabled"] is True
+    assert parsed["enhance_style"] == "concise"
+    assert parsed["enhance_status"]["models"] == ["qwen3:4b"]
+
+
+def test_dispatch_enhance_actions_route():
+    seen = []
+    handlers = {
+        "set_enhance_enabled": lambda v: seen.append(("enabled", v)),
+        "set_enhance_model": lambda v: seen.append(("model", v)),
+        "set_enhance_style": lambda v: seen.append(("style", v)),
+    }
+    dispatch({"action": "set_enhance_enabled", "value": True}, handlers)
+    dispatch({"action": "set_enhance_model", "value": "qwen3:4b"}, handlers)
+    dispatch({"action": "set_enhance_style", "value": "bullets"}, handlers)
+    assert seen == [("enabled", True), ("model", "qwen3:4b"), ("style", "bullets")]

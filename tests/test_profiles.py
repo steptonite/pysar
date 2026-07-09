@@ -2,16 +2,23 @@
 
 from pysar.profiles import (
     DEFAULT_PROFILES,
+    FALLBACK_STYLE_PROMPT,
     PROMPT_TOKEN_BUDGET,
+    STYLE_EXAMPLE_INPUT,
+    STYLE_PRESETS,
     active_for_language,
     active_set_index,
     budget_usage,
     compose_prompt,
+    compose_style_prompt,
     estimate_tokens,
+    import_conflicts,
     merge_profiles,
     parse_imported,
     regroup_active,
     remove_profile,
+    style_example,
+    style_preset,
     upsert_profile,
     validate_profile,
 )
@@ -77,7 +84,7 @@ def test_budget_usage_reports_requested_total():
 
 def test_validate_profile_accepts_clean():
     p = validate_profile({"name": " Dev ", "language": "UK", "prompt": " hi "})
-    assert p == {"name": "Dev", "language": "uk", "prompt": "hi"}
+    assert p == {"name": "Dev", "language": "uk", "prompt": "hi", "style_prompt": ""}
 
 
 def test_validate_profile_rejects_incomplete():
@@ -155,6 +162,40 @@ def test_merge_profiles_overwrites_same_name_appends_new():
     assert merged[0]["prompt"] == "new"  # overwritten
 
 
+def test_import_conflicts_flags_same_name_same_language_different_content():
+    existing = [{"name": "Я", "language": "uk", "prompt": "old calibrated"}]
+    incoming = [{"name": "Я", "language": "uk", "prompt": "new"}]
+    assert import_conflicts(existing, incoming) == ["Я"]
+
+
+def test_import_conflicts_allows_same_name_different_language():
+    # A "Я" for ru must coexist with the user's already-calibrated uk "Я" —
+    # same display name, different profile, not a collision.
+    existing = [{"name": "Я", "language": "uk", "prompt": "old calibrated"}]
+    incoming = [{"name": "Я", "language": "ru", "prompt": "new"}]
+    assert import_conflicts(existing, incoming) == []
+    merged = merge_profiles(existing, incoming)
+    assert len(merged) == 2
+    assert {p["language"] for p in merged if p["name"] == "Я"} == {"uk", "ru"}
+
+
+def test_import_conflicts_ignores_identical_reimport():
+    existing = [{"name": "Dev", "language": "uk", "prompt": "same", "style_prompt": ""}]
+    incoming = [{"name": "Dev", "language": "uk", "prompt": "same", "style_prompt": ""}]
+    assert import_conflicts(existing, incoming) == []
+
+
+def test_import_conflicts_ignores_brand_new_names():
+    existing = [{"name": "Dev", "language": "uk", "prompt": "x"}]
+    incoming = [{"name": "Music", "language": "uk", "prompt": "y"}]
+    assert import_conflicts(existing, incoming) == []
+
+
+def test_validate_profile_accepts_auto_language():
+    p = validate_profile({"name": "General", "language": "auto", "prompt": "y"})
+    assert p["language"] == "auto"
+
+
 # ── editor helpers (upsert / remove) ─────────────────────────────────────────
 
 
@@ -203,6 +244,29 @@ def test_remove_profile():
     assert remove_profile(profs, "Nope") == profs  # absent → unchanged
 
 
+def test_upsert_allows_same_name_different_language():
+    profs = [{"name": "Я", "language": "uk", "prompt": "укр про мене"}]
+    out, err = upsert_profile(profs, "Я", "ru", "рус про мене")
+    assert err is None
+    assert len(out) == 2
+    assert {(p["name"], p["language"]) for p in out} == {("Я", "uk"), ("Я", "ru")}
+
+
+def test_upsert_same_name_same_language_still_rejected():
+    profs = [{"name": "Я", "language": "uk", "prompt": "укр"}]
+    _, err = upsert_profile(profs, "Я", "uk", "another uk one")
+    assert err is not None
+
+
+def test_remove_profile_by_language_only_removes_that_language():
+    profs = [
+        {"name": "Я", "language": "uk", "prompt": "укр"},
+        {"name": "Я", "language": "ru", "prompt": "рус"},
+    ]
+    out = remove_profile(profs, "Я", "ru")
+    assert [(p["name"], p["language"]) for p in out] == [("Я", "uk")]
+
+
 # ── regroup_active (profile sets) ────────────────────────────────────────────
 def test_regroup_active_buckets_by_language():
     got = regroup_active(_P, ["Dev", "English"])
@@ -215,6 +279,24 @@ def test_regroup_active_drops_unknown_members():
 
 def test_regroup_active_empty():
     assert regroup_active(_P, []) == {}
+
+
+def test_regroup_active_disambiguates_duplicate_names_by_dict_member():
+    profs = [
+        {"name": "Я", "language": "uk", "prompt": "укр"},
+        {"name": "Я", "language": "ru", "prompt": "рус"},
+    ]
+    got = regroup_active(profs, [{"name": "Я", "language": "ru"}])
+    assert got == {"ru": ["Я"]}
+
+
+def test_regroup_active_legacy_bare_name_resolves_to_first_match():
+    profs = [
+        {"name": "Я", "language": "uk", "prompt": "укр"},
+        {"name": "Я", "language": "ru", "prompt": "рус"},
+    ]
+    got = regroup_active(profs, ["Я"])  # legacy set saved before dict members existed
+    assert got == {"uk": ["Я"]}
 
 
 # ── profile-set persistence normalization (recordings._norm_profile_sets) ────
@@ -271,3 +353,82 @@ def test_compose_prompt_works_for_auto_language():
     profile = {"name": "Gen", "language": "auto", "prompt": "ComfyUI, Claude, render."}
     result = compose_prompt([profile], ["Gen"], "auto")
     assert "ComfyUI" in result
+
+
+# ── Enhance styles ───────────────────────────────────────────────────────────
+def test_style_presets_unique_keys_and_meaning_guard():
+    keys = [p["key"] for p in STYLE_PRESETS]
+    assert len(keys) == len(set(keys))
+    for p in STYLE_PRESETS:
+        assert p["name_uk"] and p["name_en"]
+        low = p["prompt"].lower()
+        assert "збережи" in low or "зберігай" in low, f"{p['key']} must demand meaning preservation"
+
+
+def test_style_preset_lookup():
+    assert style_preset("concise")["key"] == "concise"
+    assert style_preset("nonexistent") is None
+
+
+def test_compose_style_preset_only():
+    result = compose_style_prompt([], [], "uk", preset_key="business")
+    assert result == style_preset("business")["prompt"]
+
+
+def test_compose_style_profiles_only():
+    profiles = [
+        {"name": "p1", "language": "uk", "prompt": "w", "style_prompt": "keep tone"},
+        {"name": "p2", "language": "uk", "prompt": "w", "style_prompt": "formal"},
+        {"name": "en", "language": "en", "prompt": "w", "style_prompt": "english only"},
+    ]
+    result = compose_style_prompt(profiles, ["p1", "p2", "en"], "uk")
+    assert "keep tone" in result
+    assert "formal" in result
+    assert "english only" not in result  # wrong language filtered out
+
+
+def test_compose_style_preset_plus_profiles():
+    profiles = [{"name": "p1", "language": "uk", "prompt": "w", "style_prompt": "extra rule"}]
+    result = compose_style_prompt(profiles, ["p1"], "uk", preset_key="concise")
+    assert result.startswith(style_preset("concise")["prompt"])
+    assert "extra rule" in result
+
+
+def test_compose_style_char_limit_drops_whole_overflow_entry():
+    huge = "x" * 3500
+    profiles = [
+        {"name": "p1", "language": "uk", "prompt": "w", "style_prompt": "keep"},
+        {"name": "p2", "language": "uk", "prompt": "w", "style_prompt": huge},
+    ]
+    result = compose_style_prompt(profiles, ["p1", "p2"], "uk")
+    assert "keep" in result
+    assert huge not in result
+
+
+def test_compose_style_empty_falls_back():
+    assert compose_style_prompt([], [], "uk") == FALLBACK_STYLE_PROMPT
+
+
+def test_validate_profile_keeps_style_prompt():
+    p = validate_profile({"name": "t", "language": "uk", "prompt": "w", "style_prompt": " x "})
+    assert p["style_prompt"] == "x"
+
+
+def test_upsert_round_trips_style_prompt():
+    out, err = upsert_profile([], "t", "uk", "whisper prompt", style_prompt="formal")
+    assert err is None
+    assert out[0]["style_prompt"] == "formal"
+
+
+def test_style_example_for_custom_business_emoji():
+    for key in (None, "custom", "business", "emoji"):
+        ex = style_example(key)
+        assert ex is not None
+        raw, rewritten = ex
+        assert raw == STYLE_EXAMPLE_INPUT
+        assert rewritten and rewritten != raw
+
+
+def test_style_example_absent_for_other_presets():
+    assert style_example("bullets") is None
+    assert style_example("nonexistent") is None

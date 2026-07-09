@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime
 
-from . import server
+from . import postprocessor, server
 from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
@@ -30,11 +30,15 @@ from .config import (
 )
 from .i18n import t
 from .profiles import (
+    STYLE_PRESETS,
     compose_prompt,
+    compose_style_prompt,
+    import_conflicts,
     merge_profiles,
     parse_imported,
     regroup_active,
     remove_profile,
+    style_example,
     upsert_profile,
 )
 from .recorder import AudioRecorder, list_input_devices
@@ -139,6 +143,13 @@ class VoiceTyper:
             on_set_meeting_source_mode=self._on_set_meeting_source_mode,
             on_set_meeting_hidden=self._on_set_meeting_hidden,
             on_set_meeting_opacity=self._on_set_meeting_opacity,
+            enhance_enabled=self._settings.get("enhance_enabled", False),
+            enhance_model=self._settings.get("enhance_model", ""),
+            enhance_style=self._settings.get("enhance_style", "custom"),
+            on_set_enhance_enabled=self._on_set_enhance_enabled,
+            on_set_enhance_model=self._on_set_enhance_model,
+            on_set_enhance_style=self._on_set_enhance_style,
+            enhance_status_provider=self._enhance_status,
         )
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
@@ -201,6 +212,41 @@ class VoiceTyper:
             target = self._finish_streaming if self._streaming else self._finish
             threading.Thread(target=target, daemon=True).start()
 
+    def _maybe_enhance(self, text: str, lang: str) -> str:
+        """Post-dictation LLM styling (postprocessor.py) when enabled. Any
+        failure returns the ORIGINAL text — dictation never blocks on the LLM."""
+        if not self._settings.get("enhance_enabled"):
+            return text
+        self._tray.set_title("✨")
+        self._tray.set_status(self._t("st.enhancing"))
+        # The HUD is the only feedback surface the user actually sees mid-flow —
+        # the menu status line is invisible until the menu is opened.
+        self._tray.show_hud(self._t("hud.enhancing"), "recognizing")
+        preset = self._settings.get("enhance_style", "custom")
+        style = compose_style_prompt(
+            self._settings["profiles"],
+            self._settings["active_profiles"].get(lang, []),
+            lang,
+            None if preset == "custom" else preset,
+        )
+        model = self._settings.get("enhance_model", "")
+        t0 = time.time()
+        result, err = postprocessor.enhance(text, style, model, example=style_example(preset))
+        dur = time.time() - t0
+        self._tray.hide_hud()
+        if err:
+            print(f"⚠️ enhance failed ({model}, {dur:.1f}s): {err}")
+            self._tray.set_status(f"⚠️ {err[:60]}")
+            self._tray.notify(
+                "Pysar", self._t("notif.enhanceFailTitle"), self._t("notif.enhanceFailMsg")
+            )
+            return text
+        print(f"✨ enhance ok ({model}, {dur:.1f}s): {len(text)} → {len(result or '')} chars")
+        # The HUD is easy to miss; the user must always learn the pasted text
+        # is an LLM rewrite, not their verbatim dictation.
+        self._tray.notify("Pysar", self._t("notif.enhanceOkTitle"), self._t("notif.enhanceOkMsg"))
+        return result or text
+
     def _finish(self) -> None:
         try:
             wav = self._recorder.stop()
@@ -235,6 +281,8 @@ class VoiceTyper:
                 self._tray.set_status(self._t("st.silence"))
                 self._tray.set_title(self._idle_title())
                 return
+
+            text = self._maybe_enhance(text, lang)
 
             target = getattr(self, "_paste_target", None)
             pasted = self._paster.paste_text(text, target)
@@ -643,14 +691,14 @@ class VoiceTyper:
         self._tray.set_status(self._t("st.keepLast", n=n))
 
     # ── Speech profiles ───────────────────────────────────────────────────────
-    def _on_toggle_profile(self, name: str, active: bool) -> None:
+    # Identity is (name, language) throughout: the same name may exist once per
+    # language (a uk "Я" and a ru "Я" are two different profiles), so every
+    # caller here is expected to know and pass the language rather than have it
+    # re-derived by an ambiguous name-only lookup.
+    def _on_toggle_profile(self, name: str, language: str, active: bool) -> None:
         # A profile belongs to its own language group, independent of the current
         # mode — toggling "English" affects the en group, "Розробка" the uk group.
-        lang = next(
-            (p.get("language", "uk") for p in self._settings["profiles"] if p.get("name") == name),
-            "uk",
-        )
-        group = self._settings["active_profiles"].setdefault(lang, [])
+        group = self._settings["active_profiles"].setdefault(language, [])
         if active and name not in group:
             group.append(name)
         elif not active and name in group:
@@ -659,42 +707,64 @@ class VoiceTyper:
         self._tray.set_status(self._t("st.profileOn" if active else "st.profileOff", name=name))
 
     def _on_save_profile(
-        self, name: str, language: str, prompt: str, original_name: str | None
+        self,
+        name: str,
+        language: str,
+        prompt: str,
+        original_name: str | None,
+        original_language: str | None = None,
     ) -> tuple[list[dict] | None, str | None]:
         """Add or edit a profile from the Settings-window editor. Returns
         (updated_profiles | None, error). Keeps the active group in sync when a
-        profile is renamed, so a toggled-on group doesn't lose its member."""
+        profile is renamed or re-languaged, so a toggled-on group doesn't lose
+        its member or bleed into the wrong language's group."""
         updated, err = upsert_profile(
-            self._settings["profiles"], name, language, prompt, original_name
+            self._settings["profiles"],
+            name,
+            language,
+            prompt,
+            original_name,
+            original_language=original_language,
         )
         if err:
             return None, err
-        if original_name and original_name != name:
-            for group in self._settings["active_profiles"].values():
-                if original_name in group:
-                    group[group.index(original_name)] = name
+        if original_name and (original_name != name or original_language != language):
+            old_group = self._settings["active_profiles"].get(original_language or language, [])
+            if original_name in old_group:
+                old_group.remove(original_name)
+                new_group = self._settings["active_profiles"].setdefault(language, [])
+                if name not in new_group:
+                    new_group.append(name)
         self._settings["profiles"] = updated
         save_settings(self._settings)
         return updated, None
 
-    def _on_delete_profile(self, name: str) -> list[dict]:
-        """Remove a profile and drop it from every active group."""
-        self._settings["profiles"] = remove_profile(self._settings["profiles"], name)
-        for group in self._settings["active_profiles"].values():
-            if name in group:
-                group.remove(name)
+    def _on_delete_profile(self, name: str, language: str) -> list[dict]:
+        """Remove a profile and drop it from its active group."""
+        self._settings["profiles"] = remove_profile(self._settings["profiles"], name, language)
+        group = self._settings["active_profiles"].get(language, [])
+        if name in group:
+            group.remove(name)
         save_settings(self._settings)
         return self._settings["profiles"]
 
-    def _on_import_profiles(self, text: str) -> tuple[list[dict] | None, int, str | None]:
+    def _on_import_profiles(
+        self, text: str, force: bool = False
+    ) -> tuple[list[dict] | None, int, str | None, list[str]]:
         """Parse pasted JSON, merge into the library, persist. Returns
-        (updated_profiles | None, added_count, error) for the tray to react."""
+        (updated_profiles | None, added_count, error, conflicts) for the tray to
+        react. If the import would silently overwrite an existing profile under
+        a different name/prompt and `force` isn't set, nothing is saved — the
+        conflicting names come back so the UI can ask before it happens."""
         incoming, err = parse_imported(text)
         if err:
-            return None, 0, err
+            return None, 0, err, []
+        conflicts = import_conflicts(self._settings["profiles"], incoming)
+        if conflicts and not force:
+            return None, 0, None, conflicts
         self._settings["profiles"] = merge_profiles(self._settings["profiles"], incoming)
         save_settings(self._settings)
-        return self._settings["profiles"], len(incoming), None
+        return self._settings["profiles"], len(incoming), None, []
 
     def _on_select_mic(self, name: str | None) -> None:
         self._settings["mic"] = name
@@ -739,6 +809,37 @@ class VoiceTyper:
         )
 
     # ── Transcribe-everything (meeting) settings ──────────────────────────────
+    # ── Enhance (post-dictation LLM styling) settings ─────────────────────────
+    def _on_set_enhance_enabled(self, on: bool) -> None:
+        self._settings["enhance_enabled"] = bool(on)
+        save_settings(self._settings)
+        if on:
+            # Warm the model in the background so the first dictation isn't cold.
+            threading.Thread(
+                target=postprocessor.preload,
+                args=(self._settings.get("enhance_model", ""),),
+                daemon=True,
+            ).start()
+
+    def _on_set_enhance_model(self, model: str) -> None:
+        self._settings["enhance_model"] = (model or "").strip()
+        save_settings(self._settings)
+        if self._settings.get("enhance_enabled"):
+            threading.Thread(
+                target=postprocessor.preload,
+                args=(self._settings["enhance_model"],),
+                daemon=True,
+            ).start()
+
+    def _on_set_enhance_style(self, style: str) -> None:
+        allowed = {"custom"} | {p["key"] for p in STYLE_PRESETS}
+        self._settings["enhance_style"] = style if style in allowed else "custom"
+        save_settings(self._settings)
+
+    def _enhance_status(self) -> dict:
+        """Lazy Ollama probe for the settings screen (called on open, no polling)."""
+        return {"alive": postprocessor.is_ollama_alive(), "models": postprocessor.list_models()}
+
     def _on_set_meeting_mic(self, on: bool) -> None:
         self._settings["meeting_capture_mic"] = bool(on)
         save_settings(self._settings)
@@ -854,13 +955,21 @@ class VoiceTyper:
             set_hotkey_bindings(self._settings["profile_sets"]),
         )
 
-    def _on_save_set(self, index, name: str, members: list[str]):
+    def _on_save_set(self, index, name: str, members: list):
         """Create (index None) or replace (index given) a profile set. Returns
-        (sets, error); the set hotkeys are re-bound so ⌃⌥<digit> works at once."""
+        (sets, error); the set hotkeys are re-bound so ⌃⌥<digit> works at once.
+
+        Each member is `{"name": ..., "language": ...}` — kept as a pair (not
+        just a name) so a set can't get confused between two profiles that
+        share a name in different languages."""
         name = (name or "").strip()
         if not name:
             return self._settings["profile_sets"], "A set needs a name."
-        members = [m for m in (members or []) if isinstance(m, str)]
+        members = [
+            m
+            for m in (members or [])
+            if isinstance(m, dict) and m.get("name") and m.get("language")
+        ]
         sets = self._settings["profile_sets"]
         if index is None:
             if len(sets) >= MAX_PROFILE_SETS:

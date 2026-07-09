@@ -83,6 +83,21 @@ def meta_prompt(lang: str = "uk") -> str:
     return _META_PROMPTS.get(lang, META_PROMPT)
 
 
+# Superseded shipped surzhyk style_prompts, kept verbatim so load_settings()
+# can migrate persisted copies to the current default (exact match only — any
+# user-edited text is left alone). v1 (pre-03.07.2026) read as "change nothing"
+# and small models obediently echoed the input; v2 (03.07 morning) said what to
+# do but lacked the explicit no-verbatim-copy rule (bench v3: lazy copies).
+LEGACY_SURZHYK_STYLES = (
+    "Збережи суржик, іншомовні слова та авторські звороти; виправ лише "
+    "пунктуацію та розриви речень. Виведи лише виправлений текст.",
+    "Відредагуй сиру диктовку: прибери слова-паразити, повтори та "
+    "обірвані фальстарти; розстав пунктуацію й розбий на речення; "
+    "склей розірвані думки в цілісні фрази. Лексику не замінюй: "
+    "збережи суржик, англіцизми, авторські звороти й нецензурні слова "
+    "як є. Нічого не вигадуй. Виведи лише відредагований текст.",
+)
+
 # Shipped starter library: general profiles + common domains, Ukrainian-first,
 # surzhyk-aware. Each prompt is a single natural sentence (see craft rule #1).
 DEFAULT_PROFILES: list[dict] = [
@@ -97,6 +112,15 @@ DEFAULT_PROFILES: list[dict] = [
         "prompt": (
             "Жива розмовна українська з суржиком та англійськими термінами, "
             "інколи російські слова й нецензурна лексика — без цензури."
+        ),
+        "style_prompt": (
+            "Відредагуй сиру диктовку: прибери слова-паразити, повтори та "
+            "обірвані фальстарти; розстав пунктуацію й розбий на речення; "
+            "склей розірвані думки в цілісні фрази. Лексику не замінюй: "
+            "збережи суржик, англіцизми, авторські звороти й нецензурні слова "
+            "як є. Нічого не вигадуй. Дослівна копія входу — це помилка: "
+            "результат мусить відрізнятися щонайменше пунктуацією та "
+            "прибраними повторами. Виведи лише відредагований текст."
         ),
     },
     {
@@ -122,6 +146,10 @@ DEFAULT_PROFILES: list[dict] = [
             "Робочі обговорення українською: дедлайн, таск, реліз, мітинг, "
             "пріоритет, спринт, фідбек, презентація."
         ),
+        "style_prompt": (
+            "Діловий тон без сленгу, чіткі речення, збережи зміст і мову. "
+            "Виведи лише виправлений текст."
+        ),
     },
     {
         "name": "English",
@@ -138,6 +166,7 @@ DEFAULT_PROFILES: list[dict] = [
 # Languages we offer in the import normalizer / validator. Anything else is
 # rejected so a malformed paste can't inject a bogus decode language.
 _KNOWN_LANGS = {
+    "auto",
     "uk",
     "en",
     "ru",
@@ -195,6 +224,174 @@ def compose_prompt(profiles: list[dict], active_names: list[str], language: str)
     return " ".join(parts)
 
 
+# ── Enhance styles (LLM post-processing) ─────────────────────────────────────
+# A *style* is the system instruction for the enhance step (postprocessor.py) —
+# unlike a whisper profile prompt it's an INSTRUCTION, and it isn't bound by the
+# 224-token whisper budget. Built-in presets cover the common asks; a profile's
+# optional `style_prompt` field carries the user's own voice on top.
+
+STYLE_PRESETS: list[dict] = [
+    {
+        "key": "business",
+        "name_uk": "Діловий",
+        "name_en": "Business",
+        # «Перепиши у діловому стилі» invites 4B models to COMPOSE a formal
+        # document from scratch (bench v3: MamayLM hallucinated a two-page
+        # «Загальні рекомендації»). Framing it as editing a work message keeps
+        # them anchored to the dictation.
+        "prompt": (
+            "Відредагуй сиру диктовку як фрагмент робочого повідомлення: "
+            "без сленгу та ненормативної лексики, чіткі повні речення, "
+            "стриманий тон. Це редагування, а не твір: нічого не додавай, "
+            "не складай документів і не оформлюй списків. Збережи зміст і "
+            "мову оригіналу. Виведи лише відредагований текст."
+        ),
+    },
+    {
+        "key": "concise",
+        "name_uk": "Коротше",
+        "name_en": "Concise",
+        "prompt": (
+            "Стисни текст: прибери слова-паразити й повтори, але збережи "
+            "кожен факт. Збережи зміст і мову оригіналу, не вигадуй фактів. "
+            "Виведи лише стислий текст, без коментарів."
+        ),
+    },
+    {
+        "key": "casual",
+        "name_uk": "Розмовний",
+        "name_en": "Casual",
+        "prompt": (
+            "Перепиши текст у легкому розмовному стилі, природно; де можливо, "
+            "зберігай авторські слова та звороти. Збережи зміст і мову "
+            "оригіналу, не вигадуй фактів. Виведи лише переписаний текст, "
+            "без коментарів."
+        ),
+    },
+    {
+        "key": "bullets",
+        "name_uk": "Список тез",
+        "name_en": "Bullet points",
+        "prompt": (
+            "Перетвори текст на маркований список ключових думок: кожен пункт "
+            "з нового рядка, починай з «- ». Збережи зміст і мову оригіналу, "
+            "не вигадуй фактів. Виведи лише список, без коментарів."
+        ),
+    },
+    {
+        "key": "emoji",
+        "name_uk": "Емоджі",
+        "name_en": "Emoji",
+        "prompt": (
+            "Розстав у тексті доречні за контекстом емоджі: стримано, 1–3 на "
+            "короткий текст, після ключових фраз або в кінці речень. Збережи "
+            "сам текст дослівно — не переписуй і не скорочуй; дозволено лише "
+            "виправити пунктуацію та очевидні помилки розпізнавання мовлення. "
+            "Нічого не вигадуй. Виведи лише текст з емоджі."
+        ),
+    },
+    {
+        "key": "clean",
+        "name_uk": "Без матюків",
+        "name_en": "No profanity",
+        "prompt": (
+            "Заміни ненормативну лексику на нейтральні слова; більше нічого не "
+            "змінюй — ні стиль, ні структуру. Збережи зміст і мову оригіналу, "
+            "не вигадуй фактів. Виведи лише виправлений текст, без коментарів."
+        ),
+    },
+]
+
+# ≈1000 tokens for Cyrillic (chars/3) — system-prompt sized, not whisper-budget
+# sized. Soft cap so a runaway pasted style can't blow the model's context.
+STYLE_PROMPT_CHAR_LIMIT = 3000
+
+# Returned when no preset is chosen and no active profile carries a style —
+# the mildest useful transform, so the toggle never silently does nothing.
+FALLBACK_STYLE_PROMPT = (
+    "Виправ пунктуацію та очевидні мовні помилки, збережи зміст і мову тексту. "
+    "Виведи лише виправлений текст."
+)
+
+
+def style_preset(key: str) -> dict | None:
+    """The preset dict for *key*, or None."""
+    return next((p for p in STYLE_PRESETS if p["key"] == key), None)
+
+
+# Few-shot for the enhance call: 4B models follow a worked example far better
+# than abstract rules (bench v3, 03.07.2026 — abstract-only prompts got verbatim
+# copies, instruction leaks and hallucinated documents). The input is a real
+# dictation (29.06.2026, not in the bench set): it has the honest raw-dictation
+# defects — a duplicated word («всіх, всіма») and a trailing false start.
+STYLE_EXAMPLE_INPUT = (
+    "Але я спостерігаю кожного дня, заходячи в будь-яку соцмережу, як всіх, "
+    "всіма клеймлять. І оце мені не сподобалось. Але особливо мене вибішує "
+    "ось така."
+)
+
+# key → rewritten example. Only the styles that earned an example so far
+# (bench v4 scope: custom + business); others fall back to no few-shot.
+_STYLE_EXAMPLE_OUTS = {
+    "custom": (
+        "Але я спостерігаю кожного дня, заходячи в будь-яку соцмережу, як усі "
+        "всіх клеймлять. І оце мені не сподобалось — а особливо вибішує ось "
+        "ця тема."
+    ),
+    "business": (
+        "Щодня я бачу в соцмережах, як користувачі навішують одне на одного "
+        "ярлики. Мені це не подобається, а особливо дратує саме ця тенденція."
+    ),
+    # Emoji: the text stays verbatim (incl. the raw-speech duplication) — the
+    # example teaches restraint: a couple of context emoji, nothing rewritten.
+    "emoji": (
+        "Але я спостерігаю кожного дня, заходячи в будь-яку соцмережу, як "
+        "всіх, всіма клеймлять 🙄. І оце мені не сподобалось 😕. Але особливо "
+        "мене вибішує ось така."
+    ),
+}
+
+
+def style_example(key: str | None) -> tuple[str, str] | None:
+    """(raw, rewritten) few-shot pair for a style, or None if it has none.
+
+    *key* is a STYLE_PRESETS key, or "custom"/None for the profile-composed
+    style (the default profiles' cleanup instructions match the example).
+    """
+    out = _STYLE_EXAMPLE_OUTS.get(key or "custom")
+    return (STYLE_EXAMPLE_INPUT, out) if out else None
+
+
+def compose_style_prompt(
+    profiles: list[dict],
+    active_names: list[str],
+    language: str,
+    preset_key: str | None = None,
+) -> str:
+    """System prompt for the enhance step: optional preset + the non-empty
+    `style_prompt` of the active same-language profiles, newline-joined.
+    Soft-capped at STYLE_PROMPT_CHAR_LIMIT, dropping whole entries that would
+    overflow (earlier profiles win — same rule as compose_prompt)."""
+    base = ""
+    if preset_key:
+        preset = style_preset(preset_key)
+        if preset:
+            base = preset["prompt"].strip()
+
+    parts: list[str] = [base] if base else []
+    used = len(base)
+    for p in active_for_language(profiles, active_names, language):
+        sp = (p.get("style_prompt") or "").strip()
+        if not sp:
+            continue
+        if used + len(sp) + 1 > STYLE_PROMPT_CHAR_LIMIT:
+            continue  # skip overflow; keep earlier (higher-priority) entries intact
+        parts.append(sp)
+        used += len(sp) + 1
+
+    return "\n".join(parts).strip() or FALLBACK_STYLE_PROMPT
+
+
 def budget_usage(profiles: list[dict], active_names: list[str], language: str) -> tuple[int, int]:
     """(used_tokens, budget) for the active same-language selection — for the
     menu meter. used counts the *requested* selection (pre-trim), so the user
@@ -212,11 +409,12 @@ def validate_profile(d: object) -> dict | None:
     name = str(d.get("name", "")).strip()
     prompt = str(d.get("prompt", "")).strip()
     lang = str(d.get("language", "")).strip().lower()
+    style_prompt = str(d.get("style_prompt", "") or "").strip()
     if not name or not prompt:
         return None
     if lang not in _KNOWN_LANGS:
         lang = "uk"  # sane default rather than dropping a useful profile
-    return {"name": name, "language": lang, "prompt": prompt}
+    return {"name": name, "language": lang, "prompt": prompt, "style_prompt": style_prompt}
 
 
 # Typographic → ASCII, for the lenient retry below. Chat AIs (notably ChatGPT)
@@ -243,6 +441,13 @@ def _loads_lenient(block: str):
             raise first from None
 
 
+def _key(p: dict) -> tuple[str, str]:
+    """A profile's identity: name scoped to its decode language. The SAME name
+    is allowed to exist once per language (e.g. a "Я" for uk and a distinct "Я"
+    for ru) — they're different profiles, not the same one re-typed."""
+    return (p.get("name", ""), p.get("language", "uk"))
+
+
 def parse_imported(text: str) -> tuple[list[dict], str | None]:
     """Parse the JSON the user pasted from their chat AI. Tolerant of code
     fences, surrounding prose, smart quotes and trailing commas: extract the
@@ -260,27 +465,57 @@ def parse_imported(text: str) -> tuple[list[dict], str | None]:
     if not isinstance(raw, list):
         return [], "Expected a JSON array of profiles."
     out: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for item in raw:
         prof = validate_profile(item)
-        if prof and prof["name"] not in seen:
+        if prof and _key(prof) not in seen:
             out.append(prof)
-            seen.add(prof["name"])
+            seen.add(_key(prof))
     if not out:
         return [], "No valid profiles in the pasted JSON."
     return out, None
 
 
 def merge_profiles(existing: list[dict], incoming: list[dict]) -> list[dict]:
-    """Merge imported profiles into the current set: same name overwrites
-    (re-import to update), new names append. Order: existing first, then new."""
-    by_name = {p["name"]: p for p in existing}
-    order = [p["name"] for p in existing]
+    """Merge imported profiles into the current set: same (name, language)
+    overwrites (re-import to update), everything else appends as a new profile
+    — including a name that already exists under a *different* language, which
+    is a distinct profile, not a duplicate. Order: existing first, then new.
+
+    Callers that don't want a silent overwrite should check `import_conflicts`
+    first and only call this once the user has confirmed."""
+    by_key = {_key(p): p for p in existing}
+    order = [_key(p) for p in existing]
     for p in incoming:
-        if p["name"] not in by_name:
-            order.append(p["name"])
-        by_name[p["name"]] = p
-    return [by_name[n] for n in order]
+        k = _key(p)
+        if k not in by_key:
+            order.append(k)
+        by_key[k] = p
+    return [by_key[k] for k in order]
+
+
+def import_conflicts(existing: list[dict], incoming: list[dict]) -> list[str]:
+    """Names in `incoming` that would silently overwrite a *different* existing
+    profile (same name AND language, different prompt/style_prompt) if merged.
+    A name that already exists only under another language is NOT a conflict —
+    it becomes a separate profile in its own right.
+
+    Pasted JSON is usually written by an AI that has no idea what the user
+    already calibrated — a name collision (the built-in meta-prompt even
+    suggests the generic "Я" as an example name) must never clobber a
+    profile the user already tuned without the user seeing it coming first."""
+    by_key = {_key(p): p for p in existing}
+    out: list[str] = []
+    for p in incoming:
+        old = by_key.get(_key(p))
+        if old is None:
+            continue
+        same = old.get("prompt") == p.get("prompt") and (old.get("style_prompt") or "") == (
+            p.get("style_prompt") or ""
+        )
+        if not same:
+            out.append(p["name"])
+    return out
 
 
 def upsert_profile(
@@ -289,52 +524,80 @@ def upsert_profile(
     language: str,
     prompt: str,
     original_name: str | None = None,
+    style_prompt: str = "",
+    original_language: str | None = None,
 ) -> tuple[list[dict], str | None]:
     """Add a new profile or edit an existing one (the Settings-window editor).
 
-    `original_name` set → edit that profile in place (lets the user rename it);
-    None → create a new one. Returns (profiles, error); error is a short message
-    on bad input or a name clash, in which case `profiles` is returned unchanged.
+    Identity is (name, language) — the same name is fine under a different
+    language (a uk "Я" and a ru "Я" are two profiles), but a clash within the
+    same language is rejected so nothing gets silently shadowed.
+
+    `original_name`/`original_language` set → edit that profile in place (lets
+    the user rename or re-language it); `original_name` None → create a new
+    one. Returns (profiles, error); error is a short message on bad input or a
+    same-language name clash, in which case `profiles` is returned unchanged.
     """
-    clean = validate_profile({"name": name, "language": language, "prompt": prompt})
+    clean = validate_profile(
+        {"name": name, "language": language, "prompt": prompt, "style_prompt": style_prompt}
+    )
     if clean is None:
         return profiles, "Name and prompt can't be empty."
 
     out = [dict(p) for p in profiles]
-    names = {p["name"] for p in out}
+    keys = {_key(p) for p in out}
 
     if original_name is None:
-        if clean["name"] in names:
-            return profiles, f"A profile named “{clean['name']}” already exists."
+        if _key(clean) in keys:
+            return profiles, f"A profile named “{clean['name']}” already exists in this language."
         out.append(clean)
         return out, None
 
-    # Edit: locate the original; a rename must not collide with a *different* one.
-    idx = next((i for i, p in enumerate(out) if p["name"] == original_name), None)
+    # Edit: locate the original by (name, language); a rename/re-language must
+    # not collide with a *different* profile that already has that identity.
+    orig_key = (original_name, original_language if original_language is not None else language)
+    idx = next((i for i, p in enumerate(out) if _key(p) == orig_key), None)
     if idx is None:
         return profiles, f"Profile “{original_name}” not found."
-    if clean["name"] != original_name and clean["name"] in names:
-        return profiles, f"A profile named “{clean['name']}” already exists."
+    if _key(clean) != orig_key and _key(clean) in keys:
+        return profiles, f"A profile named “{clean['name']}” already exists in this language."
     out[idx] = clean
     return out, None
 
 
-def remove_profile(profiles: list[dict], name: str) -> list[dict]:
-    """Drop the profile with this name (no-op if absent)."""
-    return [p for p in profiles if p.get("name") != name]
+def remove_profile(profiles: list[dict], name: str, language: str | None = None) -> list[dict]:
+    """Drop the profile with this (name, language) (no-op if absent).
+
+    `language` is optional only for backward-compat call sites; passing it is
+    required to avoid removing the wrong profile when the same name exists
+    under more than one language."""
+    if language is None:
+        return [p for p in profiles if p.get("name") != name]
+    return [p for p in profiles if _key(p) != (name, language)]
 
 
-def regroup_active(profiles: list[dict], member_names: list[str]) -> dict[str, list[str]]:
-    """Group the given profile names by their decode language → an
-    active_profiles dict ({lang: [names]}). Names with no matching profile are
-    dropped. Used to activate a profile *set* as the entire selection at once,
-    replacing whatever was on before."""
-    by_name = {p.get("name"): p for p in profiles}
+def regroup_active(profiles: list[dict], members: list) -> dict[str, list[str]]:
+    """Group the given set *members* by decode language → an active_profiles
+    dict ({lang: [names]}). Used to activate a profile *set* as the entire
+    selection at once, replacing whatever was on before.
+
+    Each member is either `{"name": ..., "language": ...}` (exact identity —
+    the format sets are saved in now) or a bare name string (legacy sets saved
+    before duplicate names across languages were possible; resolved by first
+    matching profile, same as always). Members with no matching profile are
+    dropped."""
+    by_key = {_key(p): p for p in profiles}
+    by_name_first = {}
+    for p in profiles:
+        by_name_first.setdefault(p.get("name"), p)
     out: dict[str, list[str]] = {}
-    for n in member_names:
-        p = by_name.get(n)
+    for m in members:
+        if isinstance(m, dict):
+            p = by_key.get((m.get("name"), m.get("language")))
+        else:
+            p = by_name_first.get(m)
         if p is not None:
-            out.setdefault(p.get("language", "uk"), []).append(n)
+            out.setdefault(p.get("language", "uk"), []).append(p.get("name"))
     return out
 
 

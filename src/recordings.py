@@ -21,7 +21,7 @@ from .config import (
 )
 from .i18n import UI_LANGS
 from .paths import data_dir
-from .profiles import DEFAULT_PROFILES
+from .profiles import DEFAULT_PROFILES, LEGACY_SURZHYK_STYLES
 
 _BASE = data_dir()
 _SETTINGS = _BASE / "settings.json"
@@ -89,6 +89,14 @@ DEFAULTS = {
     "meeting_hidden": False,
     #   meeting_island_opacity — floating island translucency (liquid-glass), 0.0–1.0
     "meeting_island_opacity": 0.92,
+    # Enhance — post-dictation LLM styling via Ollama (see postprocessor.py):
+    #   enhance_enabled — run the transform on every batch dictation
+    #   enhance_model   — Ollama model tag doing the rewrite
+    #   enhance_style   — a profiles.STYLE_PRESETS key, or "custom" = the
+    #                     style_prompt of the active speech profiles only
+    "enhance_enabled": False,
+    "enhance_model": "hf.co/INSAIT-Institute/MamayLM-Gemma-3-4B-IT-v1.0-GGUF:Q4_K_M",
+    "enhance_style": "custom",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20)
@@ -201,6 +209,20 @@ def load_settings() -> dict:
         merged["profiles"] = [dict(p) for p in DEFAULT_PROFILES]
     else:
         merged["profiles"] = [dict(p) for p in merged["profiles"]]
+        # Migration: superseded shipped surzhyk styles are upgraded to the
+        # current default. Only exact legacy strings are replaced;
+        # user-customized styles stay untouched.
+        new_style = next(
+            (
+                p.get("style_prompt")
+                for p in DEFAULT_PROFILES
+                if p.get("name") == "Суржик / розмова"
+            ),
+            None,
+        )
+        for p in merged["profiles"]:
+            if new_style and p.get("style_prompt") in LEGACY_SURZHYK_STYLES:
+                p["style_prompt"] = new_style
     # active_profiles: migrate the old flat list (pre-per-language) into the uk
     # group, then hand back a fresh dict of fresh lists.
     act = merged["active_profiles"]

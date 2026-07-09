@@ -28,7 +28,13 @@ from ..config import (
     set_hotkey_label,
 )
 from ..i18n import strings, t
-from ..profiles import PROMPT_TOKEN_BUDGET, active_set_index, budget_usage, meta_prompt
+from ..profiles import (
+    PROMPT_TOKEN_BUDGET,
+    STYLE_PRESETS,
+    active_set_index,
+    budget_usage,
+    meta_prompt,
+)
 
 
 def login_item_status() -> str | None:
@@ -819,10 +825,10 @@ class Tray:
         recordings_dir: str | None = None,
         profiles: list[dict] | None = None,
         active_profiles: dict[str, list[str]] | None = None,
-        on_toggle_profile: Callable[[str, bool], None] | None = None,
+        on_toggle_profile: Callable[[str, str, bool], None] | None = None,
         on_import_profiles: Callable[[str], tuple] | None = None,
-        on_save_profile: Callable[[str, str, str, str | None], tuple] | None = None,
-        on_delete_profile: Callable[[str], list] | None = None,
+        on_save_profile: Callable[[str, str, str, str | None, str | None], tuple] | None = None,
+        on_delete_profile: Callable[[str, str], list] | None = None,
         mics: list[str] | None = None,
         current_mic: str | None = None,
         on_select_mic: Callable[[str | None], None] | None = None,
@@ -861,6 +867,13 @@ class Tray:
         on_set_meeting_source_mode: Callable[[str], None] | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
+        enhance_enabled: bool = False,
+        enhance_model: str = "",
+        enhance_style: str = "custom",
+        on_set_enhance_enabled: Callable[[bool], None] | None = None,
+        on_set_enhance_model: Callable[[str], None] | None = None,
+        on_set_enhance_style: Callable[[str], None] | None = None,
+        enhance_status_provider: Callable[[], dict] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -926,6 +939,13 @@ class Tray:
         self._on_set_meeting_source_mode = on_set_meeting_source_mode
         self._on_set_meeting_hidden = on_set_meeting_hidden
         self._on_set_meeting_opacity = on_set_meeting_opacity
+        self._enhance_enabled = enhance_enabled
+        self._enhance_model = enhance_model
+        self._enhance_style = enhance_style
+        self._on_set_enhance_enabled = on_set_enhance_enabled
+        self._on_set_enhance_model = on_set_enhance_model
+        self._on_set_enhance_style = on_set_enhance_style
+        self._enhance_status_provider = enhance_status_provider
         self._settings_window = None  # built lazily on first open
         self._hud = None  # streaming status overlay, built lazily on first show
         self._wake_obs = None  # retained NSWorkspace wake-notification token
@@ -1003,7 +1023,12 @@ class Tray:
             )
 
     # ── Settings window ───────────────────────────────────────────────────────
-    def _open_settings(self, _sender) -> None:
+    def _open_settings_to_profiles(self, _sender) -> None:
+        """'Edit in Settings…' from the profile submenu — jump straight to the
+        Profiles screen instead of landing wherever the window was last left."""
+        self._open_settings(_sender, screen="profiles")
+
+    def _open_settings(self, _sender, screen: str | None = None) -> None:
         """Open the WKWebView settings panel (built lazily on first use)."""
         try:
             if self._settings_window is None:
@@ -1040,9 +1065,12 @@ class Tray:
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
                         "open_transcripts_folder": self._open_transcripts_folder,
+                        "set_enhance_enabled": self._set_enhance_enabled,
+                        "set_enhance_model": self._set_enhance_model,
+                        "set_enhance_style": self._set_enhance_style,
                     },
                 )
-            self._settings_window.show()
+            self._settings_window.show(screen)
         except Exception as e:
             rumps.notification("Pysar", self._t("notif.cantOpenSettings"), str(e)[:120])
 
@@ -1087,6 +1115,19 @@ class Tray:
             "meeting_island_opacity": self._meeting_island_opacity,
             "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
             "transcripts_dir": self._transcripts_dir(),
+            # Enhance — post-dictation LLM styling (Ollama probe runs on open only).
+            "enhance_enabled": self._enhance_enabled,
+            "enhance_model": self._enhance_model,
+            "enhance_style": self._enhance_style,
+            "enhance_styles": [
+                {"key": p["key"], "name_uk": p["name_uk"], "name_en": p["name_en"]}
+                for p in STYLE_PRESETS
+            ],
+            "enhance_status": (
+                self._enhance_status_provider()
+                if self._enhance_status_provider
+                else {"alive": False, "models": []}
+            ),
         }
 
     @staticmethod
@@ -1164,6 +1205,22 @@ class Tray:
         if self._recordings_dir:
             subprocess.run(["open", self._recordings_dir], check=False)
 
+    # Enhance handlers — same mirror+callback shape as the meeting ones ─────────
+    def _set_enhance_enabled(self, on: bool) -> None:
+        self._enhance_enabled = bool(on)
+        if self._on_set_enhance_enabled:
+            self._on_set_enhance_enabled(self._enhance_enabled)
+
+    def _set_enhance_model(self, model: str) -> None:
+        self._enhance_model = (model or "").strip()
+        if self._on_set_enhance_model:
+            self._on_set_enhance_model(self._enhance_model)
+
+    def _set_enhance_style(self, style: str) -> None:
+        self._enhance_style = style
+        if self._on_set_enhance_style:
+            self._on_set_enhance_style(style)
+
     # Transcribe-everything (meeting) handlers — same mirror+callback shape ─────
     def _set_meeting_mic(self, on: bool) -> None:
         self._meeting_capture_mic = bool(on)
@@ -1224,18 +1281,21 @@ class Tray:
     def _win_toggle_profile(self, value: dict) -> None:
         """A profile's on/off switch flipped in the window. Persist via the app
         callback and mirror it into the menu's checkmarks — no window reload, the
-        page updates its own meter live."""
+        page updates its own meter live.
+
+        The window sends its language explicitly (the row already knows it —
+        the profile list is rendered grouped by language) rather than us
+        re-deriving it by name, which would be ambiguous once the same name
+        can exist under more than one language."""
         name, active = value.get("name", ""), bool(value.get("active"))
-        lang = next(
-            (p.get("language", "uk") for p in self._profiles if p.get("name") == name), "uk"
-        )
+        lang = value.get("language") or "uk"
         group = self._active_by_lang.setdefault(lang, set())
         if active:
             group.add(name)
         else:
             group.discard(name)
         if self._on_toggle_profile:
-            self._on_toggle_profile(name, active)
+            self._on_toggle_profile(name, lang, active)
         AppHelper.callAfter(self._populate_profiles_menu, True)
 
     def _win_save_profile(self, value: dict) -> None:
@@ -1245,8 +1305,13 @@ class Tray:
         if not self._on_save_profile:
             return
         original = value.get("original") or None
+        original_lang = value.get("originalLanguage") or None
         updated, err = self._on_save_profile(
-            value.get("name", ""), value.get("language", "uk"), value.get("prompt", ""), original
+            value.get("name", ""),
+            value.get("language", "uk"),
+            value.get("prompt", ""),
+            original,
+            original_lang,
         )
         if err:
             rumps.notification("Pysar", self._t("notif.cantSaveProfile"), err)
@@ -1255,26 +1320,45 @@ class Tray:
         AppHelper.callAfter(self._populate_profiles_menu, True)
         self._refresh_settings_window(self._t("notice.saved"))
 
-    def _win_delete_profile(self, name: str) -> None:
+    def _win_delete_profile(self, value: dict) -> None:
         if not self._on_delete_profile:
             return
-        self._profiles = self._on_delete_profile(name)
-        for group in self._active_by_lang.values():
+        name, lang = value.get("name", ""), value.get("language") or "uk"
+        self._profiles = self._on_delete_profile(name, lang)
+        group = self._active_by_lang.get(lang)
+        if group is not None:
             group.discard(name)
         AppHelper.callAfter(self._populate_profiles_menu, True)
         self._refresh_settings_window(self._t("notice.deleted", name=name))
 
-    def _win_import_profiles(self, text: str) -> None:
-        """JSON pasted into the window's import panel: merge, sync menu, report."""
+    def _win_import_profiles(self, payload: str | dict) -> None:
+        """JSON pasted into the window's import panel: merge, sync menu, report.
+
+        `payload` is `{"text": str, "force": bool}` from the JS side (a bare
+        string is also accepted for older callers). `force` is only true on the
+        resend after the user confirmed an overwrite the backend flagged."""
         if not self._on_import_profiles:
             return
-        updated, count, err = self._on_import_profiles(text)
+        if isinstance(payload, dict):
+            text, force = payload.get("text", ""), bool(payload.get("force"))
+        else:
+            text, force = payload, False
+        updated, count, err, conflicts = self._on_import_profiles(text, force)
         if err:
             self._refresh_settings_window(self._t("notice.importFail", err=err))
             return
+        if conflicts:
+            # Nothing was saved — surface the conflict so the user explicitly
+            # confirms before anything of theirs gets overwritten.
+            self._refresh_settings_window(
+                extra={"import_conflict": {"text": text, "names": conflicts}}
+            )
+            return
         self._profiles = updated
         AppHelper.callAfter(self._populate_profiles_menu, True)
-        self._refresh_settings_window(self._t("notice.imported", count=count))
+        self._refresh_settings_window(
+            self._t("notice.imported", count=count), extra={"import_done": True}
+        )
 
     def _win_copy_ai_prompt(self, lang: str | None = None) -> None:
         # Copy the prompt in the picked language (sent with the action, so it works
@@ -1378,12 +1462,14 @@ class Tray:
             )
         return out
 
-    def _refresh_settings_window(self, notice: str | None = None) -> None:
+    def _refresh_settings_window(
+        self, notice: str | None = None, extra: dict | None = None
+    ) -> None:
         """Push fresh state into the open window (after add/edit/delete/import)
         without a reload, so the user stays on the Profiles screen."""
         if self._settings_window is not None:
             with contextlib.suppress(Exception):
-                self._settings_window.refresh(notice)
+                self._settings_window.refresh(notice, extra)
 
     def _make_callback(self, code: str):
         def _cb(_sender):
@@ -1437,7 +1523,9 @@ class Tray:
         # profiles now; the menu keeps only the quick on/off toggles for the
         # language you're dictating in.
         sub.add(rumps.separator)
-        sub.add(rumps.MenuItem(self._t("tray.editInSettings"), callback=self._open_settings))
+        sub.add(
+            rumps.MenuItem(self._t("tray.editInSettings"), callback=self._open_settings_to_profiles)
+        )
 
     def _refresh_budget(self) -> None:
         lang = self._lang()
@@ -1453,14 +1541,15 @@ class Tray:
             item = self._profile_items[name]
             now_on = not bool(item.state)
             item.state = 1 if now_on else 0
-            group = self._active_by_lang.setdefault(self._lang(), set())
+            lang = self._lang()
+            group = self._active_by_lang.setdefault(lang, set())
             if now_on:
                 group.add(name)
             else:
                 group.discard(name)
             self._refresh_budget()
             if self._on_toggle_profile:
-                self._on_toggle_profile(name, now_on)
+                self._on_toggle_profile(name, lang, now_on)
 
         return _cb
 
