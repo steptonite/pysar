@@ -138,6 +138,28 @@ Full design/process log: [docs/meeting-mode-settings.md](docs/meeting-mode-setti
 
 ---
 
+## Text enhancement (LLM styling via Ollama)
+
+Optional post-dictation pass: the transcribed text is rewritten by a small
+**local** LLM before pasting — like Telegram's "rephrase", but offline and in
+*your* voice. Turn it on in **Settings → Text enhancement**.
+
+- **Requires [Ollama](https://ollama.com)** running locally (`127.0.0.1:11434`).
+  Pysar never starts or stops it; if it's down, dictation just pastes the raw
+  text. An easy way to install/manage Ollama and models is **KobzarAI**.
+- **Recommended model:** `hf.co/INSAIT-Institute/MamayLM-Gemma-3-4B-IT-v1.0-GGUF:Q4_K_M`
+  (~2.5 GB) — winner of a blind bench on real Ukrainian/surzhyk dictations
+  (02.07.2026; runner-up `gemma3:4b`). Any Ollama model can be selected in
+  Settings; on 8 GB machines stay at ≤4B q4.
+- **Styles.** Built-in presets (Business, Concise, Casual, Bullet points,
+  No profanity) or **My style** — composed from the *style* field of your
+  active Speech profiles, so the rewrite keeps your own voice.
+- **Never blocks dictation.** Any LLM error or timeout falls back to the raw
+  transcript; the model is kept warm only briefly (`keep_alive 5m`) so it
+  doesn't pin your RAM.
+
+---
+
 ## How it works
 
 ```

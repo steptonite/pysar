@@ -309,3 +309,8 @@ MIN_RECORDING_SEC = 0.3  # shorter recordings are ignored (guards against accide
 CLIPBOARD_RESTORE_DELAY = 0.4  # delay before restoring the clipboard after Cmd+V
 # (long enough that the front app reads the paste before the old clipboard is
 # swapped back in — was 0.15 s, too tight on 8 GB under memory pressure)
+
+# ── Enhance (LLM post-processing via Ollama) ─────────────────────────────────
+OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_TIMEOUT = 60  # seconds — a 4B model on 8 GB needs headroom on long dictations
+ENHANCE_KEEP_ALIVE = "5m"  # short: RAM is shared with KobzarAI, don't pin the model

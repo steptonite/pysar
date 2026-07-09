@@ -208,6 +208,8 @@ _TEMPLATE = r"""<!doctype html>
 
   .pform{margin:8px 0 4px; padding:13px; border:1px solid var(--line-strong);
     border-radius:10px; background:var(--bg)}
+  .pform.warn{border-color:var(--danger); margin-top:8px}
+  .pform.warn #import-conflict-msg{font-size:12px; line-height:1.5; margin-bottom:11px}
   .pform label{display:block; font-size:11px; color:var(--muted); margin:0 0 4px;
     text-transform:uppercase; letter-spacing:.04em; font-weight:600}
   .pform input[type=text], .pform textarea{
@@ -313,6 +315,15 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </section>
 
+    <div class="sec-title" data-i18n="sec.enhance">Enhance</div>
+    <section>
+      <div class="row nav" id="go-enhance">
+        <div class="body"><div class="label" data-i18n="enhance.nav">Text enhancement</div>
+          <div class="help" data-i18n="enhance.navHelp">Post-dictation LLM styling via Ollama</div></div>
+        <span class="chev">›</span>
+      </div>
+    </section>
+
     <div class="sec-title" data-i18n="sec.system">System</div>
     <section>
       <div class="row">
@@ -375,6 +386,13 @@ _TEMPLATE = r"""<!doctype html>
           <div class="frow">
             <button class="ghost" id="import-cancel" data-i18n="import.cancel">Cancel</button>
             <button class="primary" id="import-do" data-i18n="import.do">Import</button>
+          </div>
+        </div>
+        <div id="import-conflict" class="pform warn" hidden style="margin:0">
+          <div id="import-conflict-msg"></div>
+          <div class="frow">
+            <button class="ghost" id="import-conflict-cancel" data-i18n="import.conflict.cancel">Cancel</button>
+            <button class="primary" id="import-conflict-overwrite" data-i18n="import.conflict.overwrite">Overwrite</button>
           </div>
         </div>
       </div>
@@ -492,6 +510,40 @@ _TEMPLATE = r"""<!doctype html>
     </section>
   </div>
 
+  <!-- ── Enhance screen (drill-in) ─────────────────────────────────────────── -->
+  <div id="screen-enhance" class="screen">
+    <header>
+      <span class="back" id="back-enh">
+        <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+          stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
+      <h1 data-i18n="enhance.nav">Text enhancement</h1>
+    </header>
+    <div class="help" id="enh-warn" style="display:none; white-space:normal;
+      color:var(--danger); margin:0 2px 10px"></div>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="enhance.enable.label">Enable LLM styling</div>
+          <div class="help" data-i18n="enhance.enable.help">Post-process every dictation through Ollama</div></div>
+        <label class="toggle"><input type="checkbox" id="enh-enabled">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="enhance.style.label">Style</div>
+          <div class="help" data-i18n="enhance.style.help">Built-in preset or custom from your speech profiles</div></div>
+        <select id="enh-style"></select>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="enhance.model.label">Model</div>
+          <div class="help" data-i18n="enhance.model.help">Ollama model that rewrites the text</div></div>
+        <select id="enh-model"></select>
+      </div>
+      <div class="help" id="enh-status" style="margin:6px 2px 0"></div>
+    </section>
+    <div class="help" style="white-space:normal; margin:10px 2px 0" data-i18n="enhance.profilesNote">
+      "Custom" style uses the style field of your active speech profiles.</div>
+  </div>
+
 <script>
 let STATE = /*__STATE__*/null;
 let view = "main";
@@ -558,14 +610,17 @@ function show(name){
   $("screen-profiles").classList.toggle("on", name === "profiles");
   $("screen-hotkeys").classList.toggle("on", name === "hotkeys");
   $("screen-meeting").classList.toggle("on", name === "meeting");
+  $("screen-enhance").classList.toggle("on", name === "enhance");
   window.scrollTo(0, 0);
 }
 $("go-profiles").addEventListener("click", () => show("profiles"));
 $("go-hotkeys").addEventListener("click", () => show("hotkeys"));
 $("go-meeting").addEventListener("click", () => show("meeting"));
+$("go-enhance").addEventListener("click", () => show("enhance"));
 $("back").addEventListener("click", () => show("main"));
 $("back-hk").addEventListener("click", () => show("main"));
 $("back-mt").addEventListener("click", () => show("main"));
+$("back-enh").addEventListener("click", () => show("main"));
 
 // ── Static general controls (built once) ───────────────────────────────────
 (function(){
@@ -630,6 +685,55 @@ $("back-mt").addEventListener("click", () => show("main"));
 
   $("rec-path").textContent = STATE.recordings_dir || "";
   $("open-folder").addEventListener("click", () => send("open_folder"));
+
+  // ── Enhance (post-dictation LLM styling) controls ─────────────────────────
+  const enhEnabled = $("enh-enabled");
+  enhEnabled.checked = !!STATE.enhance_enabled;
+  enhEnabled.addEventListener("change", () => send("set_enhance_enabled", enhEnabled.checked));
+
+  const enhStyle = $("enh-style");
+  const styleOpt = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label;
+    if (value === (STATE.enhance_style || "custom")) o.selected = true;
+    enhStyle.appendChild(o);
+  };
+  styleOpt("custom", T("enhance.style.custom", "My style (profiles)"));
+  (STATE.enhance_styles || []).forEach(p =>
+    styleOpt(p.key, STATE.ui_lang === "uk" ? p.name_uk : (p.name_en || p.name_uk)));
+  enhStyle.addEventListener("change", () => send("set_enhance_style", enhStyle.value));
+
+  const enhModel = $("enh-model");
+  const enhModels = (STATE.enhance_status && STATE.enhance_status.models) || [];
+  const savedModel = STATE.enhance_model || "";
+  if (savedModel && !enhModels.includes(savedModel)) enhModels.unshift(savedModel);
+  enhModels.forEach(m => {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m;
+    if (m === savedModel) o.selected = true;
+    enhModel.appendChild(o);
+  });
+  if (!enhModels.length) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = T("enhance.model.none", "No models — is Ollama running?");
+    o.disabled = true; o.selected = true;
+    enhModel.appendChild(o);
+  }
+  enhModel.addEventListener("change", () => send("set_enhance_model", enhModel.value));
+
+  const enhStatus = $("enh-status");
+  enhStatus.textContent = (STATE.enhance_status && STATE.enhance_status.alive)
+    ? T("enhance.status.ok", "Ollama is running")
+    : T("enhance.status.down", "Ollama not found — install/start it (e.g. via KobzarAI)");
+
+  // Enhance only runs in batch mode (streaming types live, can't rewrite after
+  // the fact) — say so loudly, or the toggle looks silently broken.
+  const enhWarn = $("enh-warn");
+  if (STATE.dictation_mode === "streaming") {
+    enhWarn.style.display = "block";
+    enhWarn.textContent = T("enhance.streamingWarn",
+      "Works only in regular (batch) dictation mode — streaming is currently on.");
+  }
 
   // ── Transcribe-everything (meeting) controls ──────────────────────────────
   const mtMic = $("mt-mic");
@@ -738,13 +842,31 @@ $("back-mt").addEventListener("click", () => show("main"));
   });
 
   const panel = $("import-panel"), ta = $("import-text");
+  const conflictBox = $("import-conflict"), conflictMsg = $("import-conflict-msg");
+  const closeImportPanel = () => {
+    panel.hidden = true; ta.value = ""; conflictBox.hidden = true;
+  };
+  window._closeImportPanel = closeImportPanel;
+  window._showImportConflict = (c) => {
+    const names = (c.names || []).join(", ");
+    conflictMsg.textContent = T("import.conflict.msg",
+      "These profiles already exist and will be overwritten: {names}").replace("{names}", names);
+    conflictBox.hidden = false;
+  };
+  window._hideImportConflict = () => { conflictBox.hidden = true; };
   $("import-toggle").addEventListener("click", () => {
     panel.hidden = !panel.hidden; if (!panel.hidden) ta.focus();
   });
-  $("import-cancel").addEventListener("click", () => { panel.hidden = true; ta.value = ""; });
+  $("import-cancel").addEventListener("click", closeImportPanel);
   $("import-do").addEventListener("click", () => {
     const t = ta.value.trim(); if (!t) return;
-    send("import_profiles", t); ta.value = ""; panel.hidden = true;
+    conflictBox.hidden = true;
+    send("import_profiles", {text: t, force: false});
+  });
+  $("import-conflict-cancel").addEventListener("click", () => { conflictBox.hidden = true; });
+  $("import-conflict-overwrite").addEventListener("click", () => {
+    const t = ta.value.trim(); if (!t) return;
+    send("import_profiles", {text: t, force: true});
   });
 })();
 
@@ -811,7 +933,9 @@ function renderProfiles(){
         if (!cb.checked) { const i = arr.indexOf(p.name); if (i >= 0) arr.splice(i, 1); }
         name.classList.toggle("off", !cb.checked);
         refreshMeter();
-        send("toggle_profile", {name: p.name, active: cb.checked});
+        // lang comes from this row's group, not re-derived from the name alone —
+        // the same name can exist once per language (a uk "Я" and a ru "Я").
+        send("toggle_profile", {name: p.name, language: lang, active: cb.checked});
       });
       const edit = el("button", "iconbtn ghost", T("prow.edit", "Edit"));
       edit.addEventListener("click", () => openForm(sec, row, lang, langOptions, p));
@@ -825,7 +949,7 @@ function renderProfiles(){
           return;
         }
         clearTimeout(armTimer);
-        send("delete_profile", p.name);  // Python persists, then pushes fresh state
+        send("delete_profile", {name: p.name, language: lang});  // Python persists, then pushes fresh state
       });
       row.appendChild(tog); row.appendChild(name); row.appendChild(edit); row.appendChild(del);
       sec.appendChild(row);
@@ -875,6 +999,7 @@ function openForm(sec, anchorRow, lang, langOptions, profile){
     const payload = {
       name: name.value.trim(), language: langSel.value,
       prompt: ta.value.trim(), original: profile ? profile.name : "",
+      originalLanguage: profile ? (profile.language || lang) : "",
     };
     if (!payload.name || !payload.prompt) { name.focus(); return; }
     send("save_profile", payload);  // Python persists then pushes fresh state
@@ -907,7 +1032,8 @@ function renderSets(){
     row.appendChild(el("kbd", s.active ? "on" : "", s.label || ""));
     const body = el("div", "sbody");
     body.appendChild(el("div", "sname", s.name));
-    body.appendChild(el("div", "smeta", (s.members || []).join(", ") || T("set.empty", "(empty set)")));
+    const memberLabels = (s.members || []).map(m => (typeof m === "string") ? m : m.name);
+    body.appendChild(el("div", "smeta", memberLabels.join(", ") || T("set.empty", "(empty set)")));
     row.appendChild(body);
 
     // Explicit live state: an "Active" pill when this set IS the current
@@ -956,16 +1082,26 @@ function openSetForm(sec, anchorRow, set, index){
   f.appendChild(el("label", null, T("set.members", "Profiles in set")));
   const list = el("div", "setmembers");
   const profiles = STATE.profiles || [];
-  const chosen = new Set(set ? (set.members || []) : []);
+  // Identity is (name, language) — the same name can exist once per language,
+  // so membership is a Set of "name language" keys, not bare names; each
+  // checkbox carries its own profile index rather than a (possibly ambiguous)
+  // name string. Legacy sets saved bare name strings — treat those as
+  // "any language" for backward compat.
+  const memberKey = (m) => (typeof m === "string") ? m : (m.name + " " + m.language);
+  const legacyNames = new Set((set ? (set.members || []) : []).filter(m => typeof m === "string"));
+  const chosen = new Set((set ? (set.members || []) : []).map(memberKey));
   const boxes = [];
   if (profiles.length === 0) list.appendChild(el("div", "none", "—"));
-  profiles.forEach(p => {
+  profiles.forEach((p, i) => {
     const lab = el("label");
-    const cb = el("input"); cb.type = "checkbox"; cb.checked = chosen.has(p.name); cb.value = p.name;
+    const lang = p.language || "uk";
+    const cb = el("input"); cb.type = "checkbox";
+    cb.checked = chosen.has(p.name + " " + lang) || legacyNames.has(p.name);
+    cb.dataset.idx = String(i);
     cb.addEventListener("change", updateMeters);
     lab.appendChild(cb);
     lab.appendChild(el("span", null, p.name));
-    lab.appendChild(el("span", "mlang", langLabel(p.language || "uk")));
+    lab.appendChild(el("span", "mlang", langLabel(lang)));
     list.appendChild(lab); boxes.push(cb);
   });
   f.appendChild(list);
@@ -981,7 +1117,7 @@ function openSetForm(sec, anchorRow, set, index){
     const byLang = {};
     boxes.forEach(b => {
       if (!b.checked) return;
-      const p = profiles.find(x => x.name === b.value); if (!p) return;
+      const p = profiles[Number(b.dataset.idx)]; if (!p) return;
       const l = p.language || "uk";
       byLang[l] = (byLang[l] || 0) + est(p.prompt || "");
     });
@@ -1004,7 +1140,10 @@ function openSetForm(sec, anchorRow, set, index){
   const save = el("button", "primary", T("form.save", "Save"));
   save.addEventListener("click", () => {
     const nm = name.value.trim(); if (!nm) { name.focus(); return; }
-    const members = boxes.filter(b => b.checked).map(b => b.value);
+    const members = boxes.filter(b => b.checked).map(b => {
+      const p = profiles[Number(b.dataset.idx)];
+      return {name: p.name, language: p.language || "uk"};
+    });
     send("save_set", {index: (index === null || index === undefined) ? null : index, name: nm, members});
   });
   frow.appendChild(cancel); frow.appendChild(save);
@@ -1086,6 +1225,9 @@ window.creamApply = function(s){
   renderSets();
   renderSetShortcuts();
   renderHotkeys();
+  if (s.import_conflict && window._showImportConflict) window._showImportConflict(s.import_conflict);
+  if (s.import_done && window._closeImportPanel) window._closeImportPanel();
+  if (s.open_screen) show(s.open_screen);
   if (s.notice) flash(s.notice);
 };
 
@@ -1094,6 +1236,7 @@ applyI18n();
 renderProfiles();
 renderSets();
 renderHotkeys();
+if (STATE.open_screen) show(STATE.open_screen);
 </script>
 </body>
 </html>"""
@@ -1218,13 +1361,23 @@ class SettingsWindow:
             state["accent"] = accent
         return state
 
-    def show(self) -> None:
-        """Build (first call) or re-show the window. Must run on the main thread."""
+    def show(self, screen: str | None = None) -> None:
+        """Build (first call) or re-show the window. Must run on the main thread.
+
+        `screen` optionally jumps straight to a drill-in screen ("profiles",
+        "hotkeys", "meeting", "enhance") instead of landing on the root — e.g.
+        "Edit in Settings…" from the profile submenu should open on Profiles,
+        not wherever the window happened to be left."""
         first = self._window is None
         if first:
             self._build()
-            self._webview.loadHTMLString_baseURL_(build_html(self._state()), None)
+            state = self._state()
+            if screen:
+                state["open_screen"] = screen
+            self._webview.loadHTMLString_baseURL_(build_html(state), None)
             self._loaded = True
+        elif screen:
+            self.refresh(extra={"open_screen": screen})
         else:
             self.refresh()
 
@@ -1254,14 +1407,18 @@ class SettingsWindow:
             ap = NSAppearance.appearanceNamed_(name) if name else None
             self._window.setAppearance_(ap)
 
-    def refresh(self, notice: str | None = None) -> None:
+    def refresh(self, notice: str | None = None, extra: dict | None = None) -> None:
         """Push fresh state into the open page (after an edit/delete/import), so
-        the front-end re-renders without a reload — the current screen is kept."""
+        the front-end re-renders without a reload — the current screen is kept.
+        `extra` merges transient one-shot fields (e.g. import_conflict) into the
+        pushed state without persisting them anywhere."""
         if not self._loaded or self._webview is None:
             return
         state = self._state()
         if notice:
             state["notice"] = notice
+        if extra:
+            state.update(extra)
         js = f"window.creamApply({_encode(state)});"
         with contextlib.suppress(Exception):
             self._webview.evaluateJavaScript_completionHandler_(js, None)
@@ -1272,6 +1429,7 @@ class SettingsWindow:
             NSMakeRect,
             NSMakeSize,
             NSWindow,
+            NSWindowCollectionBehaviorFullScreenNone,
             NSWindowStyleMaskClosable,
             NSWindowStyleMaskMiniaturizable,
             NSWindowStyleMaskResizable,
@@ -1315,6 +1473,11 @@ class SettingsWindow:
         win.setDelegate_(self._bridge)
         with contextlib.suppress(Exception):
             win.setMinSize_(NSMakeSize(self._MIN_W, self._MIN_H))
+        with contextlib.suppress(Exception):
+            # Resizable windows get an implicit fullscreen affordance (green-button
+            # double-click, drag-to-top) unless explicitly opted out. A settings
+            # panel has no reason to go fullscreen.
+            win.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenNone)
         self._window = win
 
 
