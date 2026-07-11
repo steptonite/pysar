@@ -130,7 +130,8 @@ def test_build_html_has_ft_screen_and_controls():
     html = build_html(_state())
     assert 'id="screen-ft"' in html
     for cid in ("go-ft", "ft-lang", "ft-pick", "ft-bar", "ft-status", "ft-cancel",
-                "ft-reveal", "back-ft"):
+                "ft-reveal", "back-ft", "ft-prompt-src", "ft-prompt", "ft-meter",
+                "ft-count"):
         assert f'id="{cid}"' in html
 
 
@@ -147,3 +148,14 @@ def test_dispatch_ft_actions_route():
     dispatch({"action": "ft_cancel"}, handlers)
     dispatch({"action": "ft_open_result"}, handlers)
     assert seen == [("pick",), ("lang", "uk"), ("cancel",), ("open",)]
+
+
+def test_dispatch_ft_prompt_actions_route():
+    seen = []
+    handlers = {
+        "set_ft_prompt": lambda v: seen.append(("prompt", v)),
+        "set_ft_prompt_source": lambda v: seen.append(("src", v)),
+    }
+    dispatch({"action": "set_ft_prompt", "value": "Claude, MCP"}, handlers)
+    dispatch({"action": "set_ft_prompt_source", "value": "custom"}, handlers)
+    assert seen == [("prompt", "Claude, MCP"), ("src", "custom")]
