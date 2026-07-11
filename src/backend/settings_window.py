@@ -195,6 +195,10 @@ _TEMPLATE = r"""<!doctype html>
   .plang .meter i{display:block; height:100%; background:var(--accent); width:0;
     transition:width .2s ease}
   .plang .meter.over i{background:var(--danger)}
+  /* File-transcription progress bar: same idiom as the token meter, full width */
+  .pbar{height:6px; border-radius:999px; background:var(--line-strong); overflow:hidden}
+  .pbar i{display:block; height:100%; background:var(--accent); width:0;
+    transition:width .3s ease}
   .rrow{display:flex; align-items:center; gap:12px}
   .rrow input[type=range]{flex:1; accent-color:var(--accent); height:4px; cursor:pointer}
   .rrow .rval{flex:0 0 auto; font-size:12px; color:var(--muted);
@@ -311,6 +315,11 @@ _TEMPLATE = r"""<!doctype html>
       <div class="row nav" id="go-meeting">
         <div class="body"><div class="label" data-i18n="meeting.nav">Transcribe everything</div>
           <div class="help" data-i18n="meeting.navHelp">Meetings &amp; calls into a live transcript</div></div>
+        <span class="chev">›</span>
+      </div>
+      <div class="row nav" id="go-ft">
+        <div class="body"><div class="label" data-i18n="ft.nav">Transcribe a file</div>
+          <div class="help" data-i18n="ft.navHelp">Audio or video file into a transcript, in the background</div></div>
         <span class="chev">›</span>
       </div>
     </section>
@@ -510,6 +519,44 @@ _TEMPLATE = r"""<!doctype html>
     </section>
   </div>
 
+  <!-- ── File-transcription screen (drill-in) ─────────────────────────────── -->
+  <div id="screen-ft" class="screen">
+    <header>
+      <span class="back" id="back-ft">
+        <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+          stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
+      <h1 data-i18n="ft.title">Transcribe a file</h1>
+    </header>
+    <div class="ai" data-i18n="ft.intro">Pick a video or audio file — it is decoded and
+      recognized locally in the background. The result is a Markdown transcript with
+      timecodes in the transcripts folder.</div>
+    <div class="help" id="ft-warn" style="display:none; white-space:normal;
+      color:var(--danger); margin:0 2px 10px"></div>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="ft.lang.label">Transcription language</div>
+          <div class="help" data-i18n="ft.lang.help">The language spoken in the file</div></div>
+        <select id="ft-lang"></select>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="ft.pick.label">Media file</div>
+          <div class="help" id="ft-file"></div></div>
+        <button id="ft-pick" data-i18n="ft.pick.btn">Choose file…</button>
+      </div>
+    </section>
+    <section id="ft-progress-sec" style="display:none">
+      <div class="row" style="display:block">
+        <div class="label" id="ft-status"></div>
+        <div class="pbar" style="margin-top:10px"><i id="ft-bar"></i></div>
+        <div class="rrow" style="margin-top:10px; justify-content:flex-end">
+          <button id="ft-cancel" data-i18n="ft.cancel">Cancel</button>
+          <button id="ft-reveal" data-i18n="ft.reveal">Show in Finder</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <!-- ── Enhance screen (drill-in) ─────────────────────────────────────────── -->
   <div id="screen-enhance" class="screen">
     <header>
@@ -610,16 +657,19 @@ function show(name){
   $("screen-profiles").classList.toggle("on", name === "profiles");
   $("screen-hotkeys").classList.toggle("on", name === "hotkeys");
   $("screen-meeting").classList.toggle("on", name === "meeting");
+  $("screen-ft").classList.toggle("on", name === "ft");
   $("screen-enhance").classList.toggle("on", name === "enhance");
   window.scrollTo(0, 0);
 }
 $("go-profiles").addEventListener("click", () => show("profiles"));
 $("go-hotkeys").addEventListener("click", () => show("hotkeys"));
 $("go-meeting").addEventListener("click", () => show("meeting"));
+$("go-ft").addEventListener("click", () => show("ft"));
 $("go-enhance").addEventListener("click", () => show("enhance"));
 $("back").addEventListener("click", () => show("main"));
 $("back-hk").addEventListener("click", () => show("main"));
 $("back-mt").addEventListener("click", () => show("main"));
+$("back-ft").addEventListener("click", () => show("main"));
 $("back-enh").addEventListener("click", () => show("main"));
 
 // ── Static general controls (built once) ───────────────────────────────────
@@ -826,6 +876,19 @@ $("back-enh").addEventListener("click", () => show("main"));
   };
   mtSrc.addEventListener("change", () => { send("set_meeting_prompt_source", mtSrc.value); applyMtSrc(); });
   applyMtSrc();
+
+  // ── File-transcription controls (static part; live status → renderFt) ─────
+  const ftLang = $("ft-lang");
+  (STATE.meeting_modes || []).forEach(m => {
+    const o = document.createElement("option");
+    o.value = m.value; o.textContent = m.label;
+    if (m.value === STATE.ft_lang) o.selected = true;
+    ftLang.appendChild(o);
+  });
+  ftLang.addEventListener("change", () => send("set_ft_lang", ftLang.value));
+  $("ft-pick").addEventListener("click", () => send("ft_pick_file"));
+  $("ft-cancel").addEventListener("click", () => send("ft_cancel"));
+  $("ft-reveal").addEventListener("click", () => send("ft_open_result"));
 
   // Capture the dictation toggle: ask Python to record the next keypress. The
   // kbd label and the language rows are refreshed by renderHotkeys() once the
@@ -1216,6 +1279,43 @@ function renderHotkeys(){
   });
 }
 
+// ── File transcription (re-rendered on every state push) ───────────────────
+function renderFt(){
+  const warn = $("ft-warn");
+  if (!warn) return;
+  const status = STATE.ft_status || "idle";
+  const running = status === "running";
+
+  if (STATE.ft_ffmpeg_ok === false) {
+    warn.style.display = "block";
+    warn.textContent = T("ft.noFfmpeg",
+      "ffmpeg not found — install it: brew install ffmpeg");
+  } else {
+    warn.style.display = "none";
+  }
+  $("ft-pick").disabled = running || STATE.ft_ffmpeg_ok === false;
+  $("ft-lang").disabled = running;
+  $("ft-file").textContent = STATE.ft_file || T("ft.noFile", "No file selected");
+
+  const sec = $("ft-progress-sec");
+  sec.style.display = status === "idle" ? "none" : "block";
+  const pct = Math.round((STATE.ft_progress || 0) * 100);
+  $("ft-bar").style.width = pct + "%";
+
+  const st = $("ft-status");
+  st.style.color = "";
+  if (running) {
+    st.textContent = T("ft.running", "Transcribing…") + " " + pct + "%";
+  } else if (status === "done") {
+    st.textContent = T("ft.done", "Done — transcript saved");
+  } else if (status === "error") {
+    st.textContent = T("ft.error", "Error: {err}").replace("{err}", STATE.ft_error || "");
+    st.style.color = "var(--danger)";
+  }
+  $("ft-cancel").style.display = running ? "" : "none";
+  $("ft-reveal").style.display = (!running && STATE.ft_result_path) ? "" : "none";
+}
+
 // ── State push from Python (no reload → keeps the current screen) ──────────
 window.creamApply = function(s){
   STATE = s;
@@ -1225,6 +1325,7 @@ window.creamApply = function(s){
   renderSets();
   renderSetShortcuts();
   renderHotkeys();
+  renderFt();
   if (s.import_conflict && window._showImportConflict) window._showImportConflict(s.import_conflict);
   if (s.import_done && window._closeImportPanel) window._closeImportPanel();
   if (s.open_screen) show(s.open_screen);
@@ -1236,6 +1337,7 @@ applyI18n();
 renderProfiles();
 renderSets();
 renderHotkeys();
+renderFt();
 if (STATE.open_screen) show(STATE.open_screen);
 </script>
 </body>
