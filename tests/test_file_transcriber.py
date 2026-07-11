@@ -143,7 +143,7 @@ def _stub_decode(monkeypatch, pcm: bytes, duration: float, tmp_path: Path):
 
 def test_job_end_to_end(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(2.5), 2.5, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode: ("hello world", None))
+    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("hello world", None))
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("test_audio.mp3", "en", progress.append, done.append, errors.append)
@@ -163,7 +163,7 @@ def test_job_end_to_end(monkeypatch, tmp_path):
 def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(CHUNK_SEC * 2 + 15), CHUNK_SEC * 2 + 15, tmp_path)
 
-    def fake_transcribe(wav, mode):
+    def fake_transcribe(wav, mode, prompt=""):
         job.cancel()  # cancel mid-run: flag is checked before the next chunk
         return "some text", None
 
@@ -182,7 +182,7 @@ def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
 
 def test_job_transcribe_error(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(10.0), 10.0, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode: (None, "boom"))
+    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": (None, "boom"))
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("err.mp3", "auto", progress.append, done.append, errors.append)
@@ -194,10 +194,28 @@ def test_job_transcribe_error(monkeypatch, tmp_path):
     assert "_— aborted: boom —_" in md.read_text(encoding="utf-8")
 
 
+def test_job_forwards_prompt_to_transcribe(monkeypatch, tmp_path):
+    _stub_decode(monkeypatch, _silent_pcm(2.5), 2.5, tmp_path)
+    seen_prompts = []
+
+    def fake_transcribe(wav, mode, prompt=""):
+        seen_prompts.append(prompt)
+        return "ok", None
+
+    monkeypatch.setattr("src.file_transcriber.transcribe", fake_transcribe)
+
+    job = FileTranscriptionJob(
+        "hinted.mp3", "uk", lambda p: None, lambda p: None, lambda e: None,
+        prompt="вебінар про Claude, MCP, агенти",
+    )
+    job._run()
+    assert seen_prompts and all(p == "вебінар про Claude, MCP, агенти" for p in seen_prompts)
+
+
 def test_job_shorter_decode_than_probe_terminates(monkeypatch, tmp_path):
     # ffprobe over-reports duration; the loop must end on real EOF, not spin.
     _stub_decode(monkeypatch, _silent_pcm(1.0), 5.0, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode: ("ok", None))
+    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None))
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("short.wav", "en", progress.append, done.append, errors.append)
@@ -212,7 +230,7 @@ def test_temp_raw_file_removed(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr("src.file_transcriber.probe", lambda p: (1.0, None))
     monkeypatch.setattr("src.file_transcriber.transcripts_dir", lambda: tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode: ("ok", None))
+    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None))
 
     def fake_run(cmd, **kw):
         seen["raw"] = cmd[-1]

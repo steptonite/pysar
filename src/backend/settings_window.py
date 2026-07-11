@@ -540,6 +540,20 @@ _TEMPLATE = r"""<!doctype html>
         <select id="ft-lang"></select>
       </div>
       <div class="row">
+        <div class="body"><div class="label" data-i18n="ft.ctx.label">Context source</div>
+          <div class="help" data-i18n="ft.ctx.help">Speech profiles of the file's language, or a custom hint</div></div>
+        <select id="ft-prompt-src"></select>
+      </div>
+      <div class="row" style="display:block">
+        <div class="label" data-i18n="ft.prompt.label">Context hint</div>
+        <div class="help" style="white-space:normal" data-i18n="ft.prompt.help">Topics, names, terms — in your own words; biases recognition</div>
+        <textarea id="ft-prompt" style="margin-top:8px"></textarea>
+        <div class="plang" style="margin-top:8px">
+          <div class="meter" id="ft-meter"><i></i></div>
+          <span class="count" id="ft-count">0/224</span>
+        </div>
+      </div>
+      <div class="row">
         <div class="body"><div class="label" data-i18n="ft.pick.label">Media file</div>
           <div class="help" id="ft-file"></div></div>
         <button id="ft-pick" data-i18n="ft.pick.btn">Choose file…</button>
@@ -886,6 +900,37 @@ $("back-enh").addEventListener("click", () => show("main"));
     ftLang.appendChild(o);
   });
   ftLang.addEventListener("change", () => send("set_ft_lang", ftLang.value));
+  const ftPrompt = $("ft-prompt");
+  ftPrompt.placeholder = T("ft.prompt.ph", "");
+  ftPrompt.value = STATE.ft_prompt || "";
+  ftPrompt.addEventListener("change", () => send("set_ft_prompt", ftPrompt.value));
+  const ftMeterBox = $("ft-meter");
+  const ftBar = ftMeterBox.firstElementChild;
+  const ftCount = $("ft-count");
+  const refreshFtMeter = () => {
+    const used = estMt(ftPrompt.value || "");
+    ftBar.style.width = Math.min(100, used / MT_BUDGET * 100) + "%";
+    ftMeterBox.classList.toggle("over", used > MT_BUDGET);
+    ftCount.textContent = used + "/" + MT_BUDGET;
+  };
+  ftPrompt.addEventListener("input", () => { refreshFtMeter(); renderFt(); });
+  refreshFtMeter();
+  const ftSrc = $("ft-prompt-src");
+  [["auto", T("ft.ctx.auto", "Auto — language profiles")],
+   ["custom", T("ft.ctx.custom", "Custom hint")]].forEach(([val, label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.ft_prompt_source || "auto")) o.selected = true;
+    ftSrc.appendChild(o);
+  });
+  const applyFtSrc = () => {
+    const custom = ftSrc.value === "custom";
+    ftPrompt.disabled = !custom;
+    ftPrompt.style.opacity = custom ? "1" : "0.5";
+    ftMeterBox.style.opacity = custom ? "1" : "0.5";
+  };
+  ftSrc.addEventListener("change", () => { send("set_ft_prompt_source", ftSrc.value); applyFtSrc(); renderFt(); });
+  applyFtSrc();
   $("ft-pick").addEventListener("click", () => send("ft_pick_file"));
   $("ft-cancel").addEventListener("click", () => send("ft_cancel"));
   $("ft-reveal").addEventListener("click", () => send("ft_open_result"));
@@ -1293,9 +1338,18 @@ function renderFt(){
   } else {
     warn.style.display = "none";
   }
-  $("ft-pick").disabled = running || STATE.ft_ffmpeg_ok === false;
+  // The custom hint gates the pick button live — read the DOM, not STATE:
+  // the textarea only commits to Python on blur ("change").
+  const ftPromptEl = $("ft-prompt");
+  const needPrompt = $("ft-prompt-src").value === "custom" && !(ftPromptEl.value || "").trim();
+  $("ft-pick").disabled = running || STATE.ft_ffmpeg_ok === false || needPrompt;
   $("ft-lang").disabled = running;
-  $("ft-file").textContent = STATE.ft_file || T("ft.noFile", "No file selected");
+  $("ft-prompt-src").disabled = running;
+  if (running) ftPromptEl.disabled = true;
+  else ftPromptEl.disabled = $("ft-prompt-src").value !== "custom";
+  $("ft-file").textContent = needPrompt
+    ? T("ft.needPrompt", "Type a hint or switch to Auto")
+    : (STATE.ft_file || T("ft.noFile", "No file selected"));
 
   const sec = $("ft-progress-sec");
   sec.style.display = status === "idle" ? "none" : "block";

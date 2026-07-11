@@ -178,9 +178,11 @@ class FileTranscriptionJob:
         on_progress: Callable[[float], None],
         on_done: Callable[[str], None],
         on_error: Callable[[str], None],
+        prompt: str = "",
     ) -> None:
         self._path = path
         self._mode = mode
+        self._prompt = prompt
         self._on_progress = on_progress
         self._on_done = on_done
         self._on_error = on_error
@@ -287,7 +289,7 @@ class FileTranscriptionJob:
                             # A degenerate split; push everything through as-is.
                             to_transcribe, carry = chunk, b""
 
-                        text, err = transcribe(pcm_to_wav(to_transcribe), self._mode)
+                        text, err = transcribe(pcm_to_wav(to_transcribe), self._mode, self._prompt)
                         if err is not None:
                             md.write(f"_— aborted: {err} —_\n")
                             md.flush()

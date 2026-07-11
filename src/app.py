@@ -143,6 +143,10 @@ class VoiceTyper:
             on_set_meeting_source_mode=self._on_set_meeting_source_mode,
             on_set_meeting_hidden=self._on_set_meeting_hidden,
             on_set_meeting_opacity=self._on_set_meeting_opacity,
+            ft_prompt=self._settings.get("ft_prompt", ""),
+            ft_prompt_source=self._settings.get("ft_prompt_source", "auto"),
+            on_set_ft_prompt=self._on_set_ft_prompt,
+            on_set_ft_prompt_source=self._on_set_ft_prompt_source,
             enhance_enabled=self._settings.get("enhance_enabled", False),
             enhance_model=self._settings.get("enhance_model", ""),
             enhance_style=self._settings.get("enhance_style", "custom"),
@@ -869,6 +873,14 @@ class VoiceTyper:
         self._settings["meeting_prompt_source"] = (
             source if source in ("custom", "profiles") else "custom"
         )
+        save_settings(self._settings)
+
+    def _on_set_ft_prompt(self, text: str) -> None:
+        self._settings["ft_prompt"] = (text or "").strip()
+        save_settings(self._settings)
+
+    def _on_set_ft_prompt_source(self, source: str) -> None:
+        self._settings["ft_prompt_source"] = source if source in ("auto", "custom") else "auto"
         save_settings(self._settings)
 
     def _on_set_meeting_hidden(self, on: bool) -> None:

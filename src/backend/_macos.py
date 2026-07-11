@@ -19,6 +19,7 @@ from ..config import (
     CLIPBOARD_RESTORE_DELAY,
     DEFAULT_HOTKEY,
     DEFAULT_LANG_HOTKEYS,
+    LANG_SEED,
     MAX_PROFILE_SETS,
     MODE_LABELS,
     MODE_SHORTCUTS,
@@ -33,6 +34,7 @@ from ..profiles import (
     STYLE_PRESETS,
     active_set_index,
     budget_usage,
+    compose_prompt,
     meta_prompt,
 )
 
@@ -867,6 +869,10 @@ class Tray:
         on_set_meeting_source_mode: Callable[[str], None] | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
+        ft_prompt: str = "",
+        ft_prompt_source: str = "auto",
+        on_set_ft_prompt: Callable[[str], None] | None = None,
+        on_set_ft_prompt_source: Callable[[str], None] | None = None,
         enhance_enabled: bool = False,
         enhance_model: str = "",
         enhance_style: str = "custom",
@@ -951,6 +957,12 @@ class Tray:
         # app object so it keeps running with the settings window closed.
         self._ft_job = None
         self._ft_lang: str | None = None  # None → follow the dictation language
+        # Context source for the whisper prompt: "auto" uses the active speech
+        # profiles of the file's language; "custom" uses a free-text hint.
+        self._ft_prompt_source = ft_prompt_source if ft_prompt_source in ("auto", "custom") else "auto"
+        self._ft_prompt = ft_prompt
+        self._on_set_ft_prompt = on_set_ft_prompt
+        self._on_set_ft_prompt_source = on_set_ft_prompt_source
         self._ft_status = "idle"  # idle | running | done | error
         self._ft_progress = 0.0
         self._ft_file = ""
@@ -1077,6 +1089,8 @@ class Tray:
                         "open_transcripts_folder": self._open_transcripts_folder,
                         "ft_pick_file": self._ft_pick_file,
                         "set_ft_lang": self._set_ft_lang,
+                        "set_ft_prompt": self._set_ft_prompt,
+                        "set_ft_prompt_source": self._set_ft_prompt_source,
                         "ft_cancel": self._ft_cancel,
                         "ft_open_result": self._ft_open_result,
                         "set_enhance_enabled": self._set_enhance_enabled,
@@ -1131,6 +1145,8 @@ class Tray:
             "transcripts_dir": self._transcripts_dir(),
             # File transcription: current job status for the drill-in screen.
             "ft_lang": self._ft_lang or self._lang(),
+            "ft_prompt": self._ft_prompt,
+            "ft_prompt_source": self._ft_prompt_source,
             "ft_status": self._ft_status,
             "ft_progress": self._ft_progress,
             "ft_file": self._ft_file,
@@ -1312,10 +1328,34 @@ class Tray:
         if mode in valid:
             self._ft_lang = mode
 
+    def _set_ft_prompt(self, text: str) -> None:
+        self._ft_prompt = (text or "").strip()
+        if self._on_set_ft_prompt:
+            self._on_set_ft_prompt(self._ft_prompt)
+
+    def _set_ft_prompt_source(self, source: str) -> None:
+        self._ft_prompt_source = source if source in ("auto", "custom") else "auto"
+        if self._on_set_ft_prompt_source:
+            self._on_set_ft_prompt_source(self._ft_prompt_source)
+
+    def _ft_resolve_prompt(self) -> str:
+        """Whisper context for the file job — mirrors the meeting resolver:
+        a non-empty custom hint wins; otherwise the active speech profiles of
+        the file's language (or the neutral language seed)."""
+        if self._ft_prompt_source == "custom" and self._ft_prompt.strip():
+            return self._ft_prompt.strip()
+        mode = MODES.get(self._ft_lang or self._current)
+        lang = mode["language"] if mode else ""
+        active = sorted(self._active_by_lang.get(lang, set()))
+        return compose_prompt(self._profiles, active, lang) or LANG_SEED.get(lang, "")
+
     def _ft_pick_file(self) -> None:
         """NSOpenPanel → start a background FileTranscriptionJob. Runs on the
         main thread (JS bridge messages arrive there), so the panel is safe."""
         if self._ft_job is not None and self._ft_job.running:
+            return
+        # The UI disables the button in this state; the guard covers a stale page.
+        if self._ft_prompt_source == "custom" and not self._ft_prompt.strip():
             return
         try:
             from AppKit import NSOpenPanel
@@ -1352,6 +1392,7 @@ class Tray:
             on_progress=self._ft_on_progress,
             on_done=self._ft_on_done,
             on_error=self._ft_on_error,
+            prompt=self._ft_resolve_prompt(),
         )
         self._ft_job.start()
         self._refresh_settings_window()
