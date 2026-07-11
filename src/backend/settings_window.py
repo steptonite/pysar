@@ -222,14 +222,14 @@ _TEMPLATE = r"""<!doctype html>
     margin-bottom:11px; resize:vertical}
   .pform textarea{min-height:70px; line-height:1.4}
   .pform input:focus, .pform textarea:focus{outline:2px solid var(--accent); outline-offset:1px}
-  /* Meeting context-hint textarea — same look as profile prompts; box-sizing +
+  /* Meeting/file context-hint textareas — same look as profile prompts; box-sizing +
      resize:vertical keep width:100% inside the container and stop the user from
      dragging it past the window edge. */
-  #mt-prompt{width:100%; max-width:100%; box-sizing:border-box; min-height:70px;
+  #mt-prompt, #ft-prompt{width:100%; max-width:100%; box-sizing:border-box; min-height:70px;
     font:inherit; color:var(--ink); background:var(--panel);
     border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px;
     line-height:1.4; resize:vertical}
-  #mt-prompt:focus{outline:2px solid var(--accent); outline-offset:1px}
+  #mt-prompt:focus, #ft-prompt:focus{outline:2px solid var(--accent); outline-offset:1px}
   .pform .frow{display:flex; gap:9px; align-items:center; justify-content:flex-end}
   .pform .frow .est{margin-right:auto; font-size:11px; color:var(--muted)}
 
@@ -539,6 +539,8 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" data-i18n="ft.lang.help">The language spoken in the file</div></div>
         <select id="ft-lang"></select>
       </div>
+    </section>
+    <section>
       <div class="row">
         <div class="body"><div class="label" data-i18n="ft.ctx.label">Context source</div>
           <div class="help" data-i18n="ft.ctx.help">Speech profiles of the file's language, or a custom hint</div></div>
@@ -552,12 +554,20 @@ _TEMPLATE = r"""<!doctype html>
           <div class="meter" id="ft-meter"><i></i></div>
           <span class="count" id="ft-count">0/224</span>
         </div>
+        <div class="help" id="ft-example" style="white-space:normal; margin-top:2px"
+          data-i18n="ft.prompt.example">Example: “A webinar about Claude Code: MCP, subagents,
+          skills; speaker — Lex”. Just list the topics, names and terms heard in the file.</div>
       </div>
+    </section>
+    <section>
       <div class="row">
         <div class="body"><div class="label" data-i18n="ft.pick.label">Media file</div>
           <div class="help" id="ft-file"></div></div>
         <button id="ft-pick" data-i18n="ft.pick.btn">Choose file…</button>
       </div>
+      <div class="help" id="ft-need" style="display:none; white-space:normal;
+        color:var(--danger); margin:2px 2px 8px" data-i18n="ft.needPrompt">Type a context
+        hint above or switch the source to “Auto” — file picking is blocked.</div>
     </section>
     <section id="ft-progress-sec" style="display:none">
       <div class="row" style="display:block">
@@ -928,6 +938,7 @@ $("back-enh").addEventListener("click", () => show("main"));
     ftPrompt.disabled = !custom;
     ftPrompt.style.opacity = custom ? "1" : "0.5";
     ftMeterBox.style.opacity = custom ? "1" : "0.5";
+    $("ft-example").style.opacity = custom ? "1" : "0.5";
   };
   ftSrc.addEventListener("change", () => { send("set_ft_prompt_source", ftSrc.value); applyFtSrc(); renderFt(); });
   applyFtSrc();
@@ -1343,13 +1354,12 @@ function renderFt(){
   const ftPromptEl = $("ft-prompt");
   const needPrompt = $("ft-prompt-src").value === "custom" && !(ftPromptEl.value || "").trim();
   $("ft-pick").disabled = running || STATE.ft_ffmpeg_ok === false || needPrompt;
+  $("ft-need").style.display = needPrompt ? "block" : "none";
   $("ft-lang").disabled = running;
   $("ft-prompt-src").disabled = running;
   if (running) ftPromptEl.disabled = true;
   else ftPromptEl.disabled = $("ft-prompt-src").value !== "custom";
-  $("ft-file").textContent = needPrompt
-    ? T("ft.needPrompt", "Type a hint or switch to Auto")
-    : (STATE.ft_file || T("ft.noFile", "No file selected"));
+  $("ft-file").textContent = STATE.ft_file || T("ft.noFile", "No file selected");
 
   const sec = $("ft-progress-sec");
   sec.style.display = status === "idle" ? "none" : "block";
