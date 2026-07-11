@@ -1,4 +1,4 @@
-.PHONY: all setup install venv whisper-build whisper-model whisper-vad whisper run up app icon lint fmt test clean distclean
+.PHONY: all setup install venv whisper-build whisper-model whisper-vad whisper run up app icon lint fmt test clean distclean check-ffmpeg
 
 # Full install in one go: everything + the menu-bar app. (install.sh wraps this
 # with prerequisite + clone handling for a fresh Mac.)
@@ -8,6 +8,7 @@ all: setup app
 # Override any of these via env; defaults install everything into vendor/.
 WHISPER_DIR        ?= vendor/whisper.cpp
 WHISPER_REPO       ?= https://github.com/ggerganov/whisper.cpp.git
+WHISPER_REF        ?= df7638d8229a243af8a4b5a8ae557e0d74e0a0ae
 WHISPER_SERVER     ?= $(WHISPER_DIR)/build/bin/whisper-server
 WHISPER_MODEL_NAME ?= large-v3-turbo-q5_0
 WHISPER_MODEL      ?= $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL_NAME).bin
@@ -21,11 +22,16 @@ PY = . venv/bin/activate &&
 # ── User-facing targets ─────────────────────────────────────────────────────
 
 # One-shot install: venv + python deps + whisper.cpp + speech & VAD models.
-setup: install whisper-build whisper-model whisper-vad
+setup: install whisper-build whisper-model whisper-vad check-ffmpeg
 	@echo ""
 	@echo "✅ Done. Next:"
 	@echo "   make app   # install the menu-bar app into /Applications (recommended)"
 	@echo "   make up    # or just run server + app from this terminal"
+
+# ffmpeg powers "transcribe a file" (Settings); live dictation doesn't need it.
+check-ffmpeg:
+	@command -v ffmpeg >/dev/null 2>&1 || \
+		echo "⚠️  ffmpeg not found — 'transcribe a file' will be disabled. Install: brew install ffmpeg"
 
 venv:
 	@test -d venv || python3 -m venv venv
@@ -80,9 +86,12 @@ whisper-build: $(WHISPER_SERVER)
 
 $(WHISPER_SERVER):
 	@if [ ! -d "$(WHISPER_DIR)/.git" ]; then \
-		echo "📥 Cloning whisper.cpp into $(WHISPER_DIR)…"; \
+		echo "📥 Cloning whisper.cpp @ $(WHISPER_REF)…"; \
 		mkdir -p $(dir $(WHISPER_DIR)); \
-		git clone --depth 1 $(WHISPER_REPO) $(WHISPER_DIR); \
+		git init -q $(WHISPER_DIR); \
+		git -C $(WHISPER_DIR) remote add origin $(WHISPER_REPO); \
+		git -C $(WHISPER_DIR) fetch --depth 1 origin $(WHISPER_REF); \
+		git -C $(WHISPER_DIR) checkout -q FETCH_HEAD; \
 	fi
 	@echo "🔨 Building whisper.cpp (Metal is enabled automatically on Apple Silicon)…"
 	cmake -B $(WHISPER_DIR)/build -S $(WHISPER_DIR) -DWHISPER_BUILD_SERVER=ON -DCMAKE_BUILD_TYPE=Release

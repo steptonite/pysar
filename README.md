@@ -35,8 +35,10 @@ Model stays `large-v3-turbo-q5_0` — the best speed/quality fit for 8 GB of uni
 ## Install
 
 **One command** (Apple Silicon Mac). It installs the prerequisites (Homebrew,
-`cmake`, `git`, Python) if they're missing, clones the repo, builds whisper.cpp,
-downloads the models, and installs the menu-bar app:
+`cmake`, `git`, Python, `ffmpeg`) if they're missing, clones the repo, builds
+whisper.cpp, downloads the models, and installs the menu-bar app. `ffmpeg` is
+only needed for the "transcribe a file" feature — live dictation works
+without it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/steptonite/pysar/main/install.sh | bash
@@ -48,7 +50,7 @@ Makefile directly:
 ```bash
 ./install.sh        # bootstrap (deps + setup + app), idempotent
 # …or…
-make all            # setup + app, assuming cmake/git/python are already present
+make all            # setup + app, assuming cmake/git/python/ffmpeg are already present
 ```
 
 `make setup` (venv + whisper.cpp + ~550 MB speech model + Silero VAD) and

@@ -110,3 +110,6 @@ site/
 *.local.toml
 scratch/
 tmp/
+# LLM-enhance blind-judging benchmark dumps (raw runs, not canon)
+bench_in/
+bench_out*/

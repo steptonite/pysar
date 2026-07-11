@@ -9,8 +9,9 @@
 #
 # It is idempotent — safe to re-run to update an existing install. It:
 #   1. checks this is an Apple-Silicon Mac,
-#   2. makes sure Homebrew + cmake + git + python are present (installs the
-#      missing ones via Homebrew),
+#   2. makes sure Homebrew + cmake + git + python + ffmpeg are present
+#      (installs the missing ones via Homebrew; ffmpeg is needed to
+#      transcribe audio/video files, not for live dictation),
 #   3. clones the repo if you ran it via curl (skips if already in a clone),
 #   4. runs `make setup` (venv + whisper.cpp + speech & VAD models),
 #   5. runs `make app` (the menu-bar app into /Applications + the `pysar` alias).
@@ -38,6 +39,7 @@ need_brew=()
 command -v cmake  >/dev/null 2>&1 || need_brew+=("cmake")
 command -v git    >/dev/null 2>&1 || need_brew+=("git")
 command -v python3 >/dev/null 2>&1 || need_brew+=("python@3.12")
+command -v ffmpeg >/dev/null 2>&1 || need_brew+=("ffmpeg")
 if [ "${#need_brew[@]}" -gt 0 ]; then
     say "📦 Installing: ${need_brew[*]}"
     brew install "${need_brew[@]}"
