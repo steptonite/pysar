@@ -959,7 +959,9 @@ class Tray:
         self._ft_lang: str | None = None  # None → follow the dictation language
         # Context source for the whisper prompt: "auto" uses the active speech
         # profiles of the file's language; "custom" uses a free-text hint.
-        self._ft_prompt_source = ft_prompt_source if ft_prompt_source in ("auto", "custom") else "auto"
+        self._ft_prompt_source = (
+            ft_prompt_source if ft_prompt_source in ("auto", "custom") else "auto"
+        )
         self._ft_prompt = ft_prompt
         self._on_set_ft_prompt = on_set_ft_prompt
         self._on_set_ft_prompt_source = on_set_ft_prompt_source

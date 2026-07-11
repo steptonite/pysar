@@ -129,9 +129,22 @@ def test_dispatch_enhance_actions_route():
 def test_build_html_has_ft_screen_and_controls():
     html = build_html(_state())
     assert 'id="screen-ft"' in html
-    for cid in ("go-ft", "ft-lang", "ft-pick", "ft-bar", "ft-status", "ft-cancel",
-                "ft-reveal", "back-ft", "ft-prompt-src", "ft-prompt", "ft-meter",
-                "ft-count", "ft-example", "ft-need"):
+    for cid in (
+        "go-ft",
+        "ft-lang",
+        "ft-pick",
+        "ft-bar",
+        "ft-status",
+        "ft-cancel",
+        "ft-reveal",
+        "back-ft",
+        "ft-prompt-src",
+        "ft-prompt",
+        "ft-meter",
+        "ft-count",
+        "ft-example",
+        "ft-need",
+    ):
         assert f'id="{cid}"' in html
 
 
