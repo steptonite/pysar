@@ -131,7 +131,7 @@ def test_build_html_has_ft_screen_and_controls():
     assert 'id="screen-ft"' in html
     for cid in ("go-ft", "ft-lang", "ft-pick", "ft-bar", "ft-status", "ft-cancel",
                 "ft-reveal", "back-ft", "ft-prompt-src", "ft-prompt", "ft-meter",
-                "ft-count"):
+                "ft-count", "ft-example", "ft-need"):
         assert f'id="{cid}"' in html
 
 
