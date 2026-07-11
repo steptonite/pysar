@@ -136,6 +136,10 @@ _TEMPLATE = r"""<!doctype html>
   .row.nav:hover{background:color-mix(in srgb, var(--accent) 7%, transparent);
     margin:0 -14px; padding-left:14px; padding-right:14px; border-radius:8px}
   .chev{color:var(--muted); font-size:15px}
+  .badge-beta{display:inline-block; margin-left:7px; padding:1px 7px; font-size:10px;
+    font-weight:600; letter-spacing:.03em; text-transform:uppercase; color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 14%, transparent); border-radius:999px;
+    vertical-align:1px}
 
   /* Toggle */
   .toggle{position:relative; width:38px; height:22px; flex:0 0 auto}
@@ -327,7 +331,8 @@ _TEMPLATE = r"""<!doctype html>
     <div class="sec-title" data-i18n="sec.enhance">Enhance</div>
     <section>
       <div class="row nav" id="go-enhance">
-        <div class="body"><div class="label" data-i18n="enhance.nav">Text enhancement</div>
+        <div class="body"><div class="label"><span data-i18n="enhance.nav">Text enhancement</span><span
+          class="badge-beta" data-i18n="badge.beta">Beta</span></div>
           <div class="help" data-i18n="enhance.navHelp">Post-dictation LLM styling via Ollama</div></div>
         <span class="chev">›</span>
       </div>
@@ -588,8 +593,10 @@ _TEMPLATE = r"""<!doctype html>
         <svg viewBox="0 0 12 12" fill="none"><path d="M7.5 1.5L3 6l4.5 4.5"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
           stroke-linejoin="round"/></svg><span data-i18n="back">Settings</span></span>
-      <h1 data-i18n="enhance.nav">Text enhancement</h1>
+      <h1><span data-i18n="enhance.nav">Text enhancement</span><span class="badge-beta" data-i18n="badge.beta">Beta</span></h1>
     </header>
+    <div class="help" style="white-space:normal; margin:0 2px 10px" data-i18n="enhance.betaNote">
+      Still in development — quality and behavior may change between versions.</div>
     <div class="help" id="enh-warn" style="display:none; white-space:normal;
       color:var(--danger); margin:0 2px 10px"></div>
     <section>
