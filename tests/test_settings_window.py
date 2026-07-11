@@ -121,3 +121,29 @@ def test_dispatch_enhance_actions_route():
     dispatch({"action": "set_enhance_model", "value": "qwen3:4b"}, handlers)
     dispatch({"action": "set_enhance_style", "value": "bullets"}, handlers)
     assert seen == [("enabled", True), ("model", "qwen3:4b"), ("style", "bullets")]
+
+
+# ── File-transcription screen ─────────────────────────────────────────────────
+
+
+def test_build_html_has_ft_screen_and_controls():
+    html = build_html(_state())
+    assert 'id="screen-ft"' in html
+    for cid in ("go-ft", "ft-lang", "ft-pick", "ft-bar", "ft-status", "ft-cancel",
+                "ft-reveal", "back-ft"):
+        assert f'id="{cid}"' in html
+
+
+def test_dispatch_ft_actions_route():
+    seen = []
+    handlers = {
+        "ft_pick_file": lambda: seen.append(("pick",)),
+        "set_ft_lang": lambda v: seen.append(("lang", v)),
+        "ft_cancel": lambda: seen.append(("cancel",)),
+        "ft_open_result": lambda: seen.append(("open",)),
+    }
+    dispatch({"action": "ft_pick_file"}, handlers)
+    dispatch({"action": "set_ft_lang", "value": "uk"}, handlers)
+    dispatch({"action": "ft_cancel"}, handlers)
+    dispatch({"action": "ft_open_result"}, handlers)
+    assert seen == [("pick",), ("lang", "uk"), ("cancel",), ("open",)]
