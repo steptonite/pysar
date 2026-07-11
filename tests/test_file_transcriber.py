@@ -28,7 +28,9 @@ def _pcm_with_silent_region(total_sec: float, silent_start: float, silent_dur: f
     """Loud square-ish signal everywhere except one silent patch."""
     total = int(total_sec * SAMPLE_RATE)
     samples = array.array("h", [1000, -1000] * (total // 2 + 1))[:total]
-    for i in range(int(silent_start * SAMPLE_RATE), min(int((silent_start + silent_dur) * SAMPLE_RATE), total)):
+    for i in range(
+        int(silent_start * SAMPLE_RATE), min(int((silent_start + silent_dur) * SAMPLE_RATE), total)
+    ):
         samples[i] = 0
     return samples.tobytes()
 
@@ -132,6 +134,7 @@ def test_probe_missing_ffmpeg(monkeypatch):
 def _stub_decode(monkeypatch, pcm: bytes, duration: float, tmp_path: Path):
     """Wire probe/ffmpeg/transcripts_dir stubs; ffmpeg 'decodes' to given pcm."""
     monkeypatch.setattr("src.file_transcriber.probe", lambda p: (duration, None))
+    monkeypatch.setattr("src.file_transcriber.ffmpeg_path", lambda: "/fake/ffmpeg")
     monkeypatch.setattr("src.file_transcriber.transcripts_dir", lambda: tmp_path)
 
     def fake_run(cmd, **kw):
@@ -143,7 +146,9 @@ def _stub_decode(monkeypatch, pcm: bytes, duration: float, tmp_path: Path):
 
 def test_job_end_to_end(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(2.5), 2.5, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("hello world", None))
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("hello world", None)
+    )
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("test_audio.mp3", "en", progress.append, done.append, errors.append)
@@ -182,7 +187,9 @@ def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
 
 def test_job_transcribe_error(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(10.0), 10.0, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": (None, "boom"))
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": (None, "boom")
+    )
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("err.mp3", "auto", progress.append, done.append, errors.append)
@@ -205,7 +212,11 @@ def test_job_forwards_prompt_to_transcribe(monkeypatch, tmp_path):
     monkeypatch.setattr("src.file_transcriber.transcribe", fake_transcribe)
 
     job = FileTranscriptionJob(
-        "hinted.mp3", "uk", lambda p: None, lambda p: None, lambda e: None,
+        "hinted.mp3",
+        "uk",
+        lambda p: None,
+        lambda p: None,
+        lambda e: None,
         prompt="вебінар про Claude, MCP, агенти",
     )
     job._run()
@@ -215,7 +226,9 @@ def test_job_forwards_prompt_to_transcribe(monkeypatch, tmp_path):
 def test_job_shorter_decode_than_probe_terminates(monkeypatch, tmp_path):
     # ffprobe over-reports duration; the loop must end on real EOF, not spin.
     _stub_decode(monkeypatch, _silent_pcm(1.0), 5.0, tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None))
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None)
+    )
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("short.wav", "en", progress.append, done.append, errors.append)
@@ -229,8 +242,11 @@ def test_job_shorter_decode_than_probe_terminates(monkeypatch, tmp_path):
 def test_temp_raw_file_removed(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr("src.file_transcriber.probe", lambda p: (1.0, None))
+    monkeypatch.setattr("src.file_transcriber.ffmpeg_path", lambda: "/fake/ffmpeg")
     monkeypatch.setattr("src.file_transcriber.transcripts_dir", lambda: tmp_path)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None))
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None)
+    )
 
     def fake_run(cmd, **kw):
         seen["raw"] = cmd[-1]
@@ -247,6 +263,7 @@ def test_temp_raw_file_removed(monkeypatch, tmp_path):
 def test_temp_raw_file_removed_on_ffmpeg_error(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr("src.file_transcriber.probe", lambda p: (10.0, None))
+    monkeypatch.setattr("src.file_transcriber.ffmpeg_path", lambda: "/fake/ffmpeg")
     monkeypatch.setattr("src.file_transcriber.transcripts_dir", lambda: tmp_path)
 
     def fake_run(cmd, **kw):
