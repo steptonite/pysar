@@ -566,22 +566,26 @@ _TEMPLATE = r"""<!doctype html>
     </section>
     <section>
       <div class="row">
-        <div class="body"><div class="label" data-i18n="ft.pick.label">Media file</div>
-          <div class="help" id="ft-file"></div></div>
-        <button id="ft-pick" data-i18n="ft.pick.btn">Choose file…</button>
+        <div class="body"><div class="label" data-i18n="ft.pick.label">Media files</div>
+          <div class="help" data-i18n="ft.pick.help">Files or a folder — a folder is
+            scanned for media recursively</div></div>
+        <button id="ft-pick" data-i18n="ft.pick.btn">Choose files…</button>
       </div>
       <div class="help" id="ft-need" style="display:none; white-space:normal;
         color:var(--danger); margin:2px 2px 8px" data-i18n="ft.needPrompt">Type a context
         hint above or switch the source to “Auto” — file picking is blocked.</div>
     </section>
-    <section id="ft-progress-sec" style="display:none">
+    <section id="ft-queue-sec" style="display:none">
       <div class="row" style="display:block">
-        <div class="label" id="ft-status"></div>
-        <div class="pbar" style="margin-top:10px"><i id="ft-bar"></i></div>
-        <div class="rrow" style="margin-top:10px; justify-content:flex-end">
-          <button id="ft-cancel" data-i18n="ft.cancel">Cancel</button>
-          <button id="ft-reveal" data-i18n="ft.reveal">Show in Finder</button>
+        <div class="rrow" style="justify-content:space-between; align-items:center">
+          <div class="label" id="ft-qstatus"></div>
+          <div class="rrow">
+            <button id="ft-pause"></button>
+            <button id="ft-cancel-all" data-i18n="ft.cancelAll">Cancel all</button>
+          </div>
         </div>
+        <div class="pbar" style="margin-top:10px"><i id="ft-bar"></i></div>
+        <div id="ft-qlist" style="margin-top:6px"></div>
       </div>
     </section>
   </div>
@@ -949,9 +953,17 @@ $("back-enh").addEventListener("click", () => show("main"));
   };
   ftSrc.addEventListener("change", () => { send("set_ft_prompt_source", ftSrc.value); applyFtSrc(); renderFt(); });
   applyFtSrc();
-  $("ft-pick").addEventListener("click", () => send("ft_pick_file"));
-  $("ft-cancel").addEventListener("click", () => send("ft_cancel"));
-  $("ft-reveal").addEventListener("click", () => send("ft_open_result"));
+  $("ft-pick").addEventListener("click", () => send("ft_pick_files"));
+  $("ft-pause").addEventListener("click", () => send("ft_pause"));
+  $("ft-cancel-all").addEventListener("click", () => send("ft_cancel_all"));
+  // Queue rows are rebuilt on every state push — one delegated listener
+  // instead of re-wiring per-row buttons after each render.
+  $("ft-qlist").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-ft-act]");
+    if (!btn) return;
+    e.preventDefault();
+    send(btn.dataset.ftAct, Number(btn.dataset.ftId));
+  });
 
   // Capture the dictation toggle: ask Python to record the next keypress. The
   // kbd label and the language rows are refreshed by renderHotkeys() once the
@@ -1346,8 +1358,8 @@ function renderHotkeys(){
 function renderFt(){
   const warn = $("ft-warn");
   if (!warn) return;
-  const status = STATE.ft_status || "idle";
-  const running = status === "running";
+  const q = STATE.ft_queue || {state: "idle", items: [], done_count: 0, total: 0};
+  const active = q.state === "scanning" || q.state === "running" || q.state === "pausing" || q.state === "paused";
 
   if (STATE.ft_ffmpeg_ok === false) {
     warn.style.display = "block";
@@ -1360,31 +1372,94 @@ function renderFt(){
   // the textarea only commits to Python on blur ("change").
   const ftPromptEl = $("ft-prompt");
   const needPrompt = $("ft-prompt-src").value === "custom" && !(ftPromptEl.value || "").trim();
-  $("ft-pick").disabled = running || STATE.ft_ffmpeg_ok === false || needPrompt;
+  $("ft-pick").disabled = active || STATE.ft_ffmpeg_ok === false || needPrompt;
   $("ft-need").style.display = needPrompt ? "block" : "none";
-  $("ft-lang").disabled = running;
-  $("ft-prompt-src").disabled = running;
-  if (running) ftPromptEl.disabled = true;
+  $("ft-lang").disabled = active;
+  $("ft-prompt-src").disabled = active;
+  if (active) ftPromptEl.disabled = true;
   else ftPromptEl.disabled = $("ft-prompt-src").value !== "custom";
-  $("ft-file").textContent = STATE.ft_file || T("ft.noFile", "No file selected");
 
-  const sec = $("ft-progress-sec");
-  sec.style.display = status === "idle" ? "none" : "block";
-  const pct = Math.round((STATE.ft_progress || 0) * 100);
-  $("ft-bar").style.width = pct + "%";
+  $("ft-queue-sec").style.display = q.state === "idle" ? "none" : "block";
+  if (q.state === "idle") return;
 
-  const st = $("ft-status");
+  const current = q.items.find(i => i.status === "running");
+  const pct = Math.round(((current || {}).progress || 0) * 100);
+  $("ft-bar").style.width = (q.state === "done" ? 100 : pct) + "%";
+
+  const st = $("ft-qstatus");
+  const counts = q.done_count + "/" + q.total;
   st.style.color = "";
-  if (running) {
-    st.textContent = T("ft.running", "Transcribing…") + " " + pct + "%";
-  } else if (status === "done") {
-    st.textContent = T("ft.done", "Done — transcript saved");
-  } else if (status === "error") {
-    st.textContent = T("ft.error", "Error: {err}").replace("{err}", STATE.ft_error || "");
-    st.style.color = "var(--danger)";
+  if (q.state === "scanning") {
+    st.textContent = T("ft.scanning", "Checking files…");
+  } else if (q.state === "running") {
+    st.textContent = T("ft.running", "Transcribing…") + " " + counts + " · " + pct + "%";
+  } else if (q.state === "pausing") {
+    st.textContent = T("ft.pausing", "Finishing the current fragment…") + " — " + counts;
+  } else if (q.state === "paused") {
+    st.textContent = T("ft.paused", "Paused") + " — " + counts;
+  } else if (q.state === "cancelled") {
+    st.textContent = T("ft.cancelled", "Cancelled") + " — " + counts;
+  } else {
+    st.textContent = T("ft.qdone", "Done") + " — " + counts;
   }
-  $("ft-cancel").style.display = running ? "" : "none";
-  $("ft-reveal").style.display = (!running && STATE.ft_result_path) ? "" : "none";
+
+  $("ft-pause").style.display = (q.state === "running" || q.state === "pausing" || q.state === "paused") ? "" : "none";
+  $("ft-pause").textContent = (q.state === "pausing" || q.state === "paused")
+    ? T("ft.resume", "Resume") : T("ft.pause", "Pause");
+  $("ft-cancel-all").style.display = active ? "" : "none";
+
+  // File names come from the filesystem — build rows via textContent, never HTML.
+  const list = $("ft-qlist");
+  list.textContent = "";
+  q.items.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "rrow";
+    row.style.cssText = "justify-content:space-between; align-items:center;" +
+      " padding:5px 0; border-bottom:1px solid var(--line)";
+    const name = document.createElement("span");
+    name.textContent = item.name;
+    name.style.cssText = "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" +
+      " flex:1; min-width:0; margin-right:10px";
+    if (item.status === "skipped" || item.status === "cancelled") name.style.opacity = "0.5";
+    row.appendChild(name);
+
+    const stat = document.createElement("span");
+    stat.className = "help";
+    stat.style.whiteSpace = "nowrap";
+    if (item.status === "pending") {
+      stat.textContent = T("ft.item.pending", "queued");
+    } else if (item.status === "running") {
+      stat.textContent = Math.round((item.progress || 0) * 100) + "%";
+    } else if (item.status === "done") {
+      const link = document.createElement("a");
+      link.textContent = T("ft.reveal", "Show in Finder");
+      link.href = "#";
+      link.dataset.ftAct = "ft_open_result";
+      link.dataset.ftId = item.id;
+      stat.textContent = T("ft.item.done", "done") + " · ";
+      stat.appendChild(link);
+    } else if (item.status === "error") {
+      stat.textContent = item.error;
+      stat.style.color = "var(--danger)";
+    } else if (item.status === "skipped") {
+      stat.textContent = T("ft.item.skipped", "skipped") + ": " + item.error;
+      stat.style.color = "var(--danger)";
+    } else {
+      stat.textContent = T("ft.item.cancelled", "cancelled");
+    }
+    row.appendChild(stat);
+
+    if (item.status === "pending" || item.status === "running") {
+      const x = document.createElement("button");
+      x.textContent = "✕";
+      x.title = T("ft.item.remove", "Remove from queue");
+      x.style.cssText = "margin-left:10px; padding:1px 7px";
+      x.dataset.ftAct = "ft_remove";
+      x.dataset.ftId = item.id;
+      row.appendChild(x);
+    }
+    list.appendChild(row);
+  });
 }
 
 // ── State push from Python (no reload → keeps the current screen) ──────────

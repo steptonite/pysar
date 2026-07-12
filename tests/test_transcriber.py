@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from pysar.transcriber import is_alive, transcribe
+from pysar.transcriber import is_alive, transcribe, transcribe_segments
 
 
 def _wav_bytes() -> bytes:
@@ -47,6 +47,40 @@ def test_transcribe_empty_text_returns_none_none():
 
     assert text is None
     assert err is None
+
+
+def test_transcribe_segments_requests_verbose_json_and_preserves_text():
+    with patch("pysar.transcriber.requests.post") as mock_post:
+        resp = MagicMock()
+        resp.json.return_value = {
+            "segments": [
+                {
+                    "start": 1.25,
+                    "end": 2.5,
+                    "text": "  exact words  ",
+                    "no_speech_prob": 0.15,
+                }
+            ]
+        }
+        resp.raise_for_status = MagicMock()
+        mock_post.return_value = resp
+
+        segments, err = transcribe_segments(_wav_bytes(), mode="uk", prompt="names")
+
+    assert err is None
+    assert segments == [{"start": 1.25, "end": 2.5, "text": "exact words", "no_speech_prob": 0.15}]
+    assert mock_post.call_args.kwargs["data"]["response_format"] == "verbose_json"
+    assert mock_post.call_args.kwargs["data"]["prompt"] == "names"
+
+
+def test_transcribe_segments_unstructured_response_signals_safe_fallback():
+    with patch("pysar.transcriber.requests.post") as mock_post:
+        resp = MagicMock()
+        resp.json.return_value = {"text": "all words"}
+        resp.raise_for_status = MagicMock()
+        mock_post.return_value = resp
+        segments, err = transcribe_segments(_wav_bytes(), mode="en")
+    assert segments is None and err is None
 
 
 @pytest.mark.parametrize("mode", ["ru", "en", "translate", "ja", "ar"])

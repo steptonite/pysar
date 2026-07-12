@@ -134,9 +134,10 @@ def test_build_html_has_ft_screen_and_controls():
         "ft-lang",
         "ft-pick",
         "ft-bar",
-        "ft-status",
-        "ft-cancel",
-        "ft-reveal",
+        "ft-qstatus",
+        "ft-qlist",
+        "ft-pause",
+        "ft-cancel-all",
         "back-ft",
         "ft-prompt-src",
         "ft-prompt",
@@ -151,16 +152,27 @@ def test_build_html_has_ft_screen_and_controls():
 def test_dispatch_ft_actions_route():
     seen = []
     handlers = {
-        "ft_pick_file": lambda: seen.append(("pick",)),
+        "ft_pick_files": lambda: seen.append(("pick",)),
         "set_ft_lang": lambda v: seen.append(("lang", v)),
-        "ft_cancel": lambda: seen.append(("cancel",)),
-        "ft_open_result": lambda: seen.append(("open",)),
+        "ft_pause": lambda: seen.append(("pause",)),
+        "ft_cancel_all": lambda: seen.append(("cancel_all",)),
+        "ft_remove": lambda v: seen.append(("remove", v)),
+        "ft_open_result": lambda v: seen.append(("open", v)),
     }
-    dispatch({"action": "ft_pick_file"}, handlers)
+    dispatch({"action": "ft_pick_files"}, handlers)
     dispatch({"action": "set_ft_lang", "value": "uk"}, handlers)
-    dispatch({"action": "ft_cancel"}, handlers)
-    dispatch({"action": "ft_open_result"}, handlers)
-    assert seen == [("pick",), ("lang", "uk"), ("cancel",), ("open",)]
+    dispatch({"action": "ft_pause"}, handlers)
+    dispatch({"action": "ft_cancel_all"}, handlers)
+    dispatch({"action": "ft_remove", "value": 2}, handlers)
+    dispatch({"action": "ft_open_result", "value": 1}, handlers)
+    assert seen == [
+        ("pick",),
+        ("lang", "uk"),
+        ("pause",),
+        ("cancel_all",),
+        ("remove", 2),
+        ("open", 1),
+    ]
 
 
 def test_dispatch_ft_prompt_actions_route():
