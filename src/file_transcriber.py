@@ -14,8 +14,6 @@ caller's job.
 import array
 import contextlib
 import io
-import json
-import math
 import os
 import shutil
 import subprocess
@@ -29,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .transcriber import transcribe, transcribe_segments
+from .transcriber import transcribe
 from .transcripts import transcripts_dir
 
 SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz mono s16le
@@ -190,126 +188,6 @@ def is_clearly_silent(pcm: bytes) -> bool:
     return peak <= SILENCE_PEAK and rms <= SILENCE_RMS
 
 
-@dataclass
-class TranscriptSegment:
-    start: float
-    end: float
-    text: str
-    no_speech_prob: float = 0.0
-    speaker: str = ""
-
-
-def _speaker_feature(pcm: bytes) -> np.ndarray | None:
-    """Small, dependency-free spectral voice signature for best-effort labels."""
-    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
-    if samples.size < SAMPLE_RATE // 3:
-        return None
-    samples -= float(np.mean(samples))
-    peak = float(np.max(np.abs(samples)))
-    if peak < 32:
-        return None
-    samples /= peak
-    frame = 400
-    hop = 160
-    count = 1 + (samples.size - frame) // hop
-    if count <= 0:
-        return None
-    # Cap work on long segments while sampling their full duration.
-    indices = np.linspace(0, count - 1, min(count, 160), dtype=int)
-    window = np.hanning(frame).astype(np.float32)
-    spectra = []
-    for idx in indices:
-        chunk = samples[idx * hop : idx * hop + frame] * window
-        power = np.abs(np.fft.rfft(chunk)) ** 2
-        bands = np.array_split(power[1:161], 16)
-        spectra.append([math.log1p(float(np.mean(b))) for b in bands])
-    matrix = np.asarray(spectra, dtype=np.float32)
-    feature = np.concatenate((matrix.mean(axis=0), matrix.std(axis=0)))
-    norm = float(np.linalg.norm(feature))
-    return feature / norm if norm > 0 else None
-
-
-def _kmeans(features: np.ndarray, k: int) -> tuple[np.ndarray, float]:
-    """Deterministic tiny k-means; returns labels and within-cluster loss."""
-    centers = [features[0]]
-    while len(centers) < k:
-        distances = np.min(np.stack([np.sum((features - c) ** 2, axis=1) for c in centers]), axis=0)
-        centers.append(features[int(np.argmax(distances))])
-    centers_arr = np.asarray(centers)
-    labels = np.zeros(len(features), dtype=int)
-    for _ in range(30):
-        distances = np.stack(
-            [np.sum((features - center) ** 2, axis=1) for center in centers_arr], axis=1
-        )
-        new_labels = np.argmin(distances, axis=1)
-        if np.array_equal(new_labels, labels) and _:
-            break
-        labels = new_labels
-        for idx in range(k):
-            members = features[labels == idx]
-            if len(members):
-                centers_arr[idx] = members.mean(axis=0)
-    loss = float(np.sum((features - centers_arr[labels]) ** 2))
-    return labels, loss
-
-
-def assign_speakers(segments: list[TranscriptSegment], pcm: bytes) -> None:
-    """Add best-effort speaker labels; never touches segment text."""
-    usable: list[tuple[int, np.ndarray]] = []
-    for idx, segment in enumerate(segments):
-        start = max(0, int(segment.start * SAMPLE_RATE) * 2)
-        end = min(len(pcm), int(segment.end * SAMPLE_RATE) * 2)
-        feature = _speaker_feature(pcm[start:end])
-        if feature is not None:
-            usable.append((idx, feature))
-    if not usable:
-        return
-    features = np.stack([feature for _, feature in usable])
-    max_k = min(4, len(features))
-    candidates = []
-    for k in range(1, max_k + 1):
-        labels, loss = _kmeans(features, k)
-        # BIC-like penalty prevents every short segment becoming a speaker.
-        score = len(features) * math.log(max(loss / len(features), 1e-9)) + k * 8.0
-        candidates.append((score, labels))
-    labels = min(candidates, key=lambda item: item[0])[1]
-    durations: dict[int, float] = {}
-    for (segment_idx, _), label in zip(usable, labels, strict=True):
-        segment = segments[segment_idx]
-        durations[int(label)] = durations.get(int(label), 0.0) + max(
-            0.0, segment.end - segment.start
-        )
-    order = {
-        label: rank + 1
-        for rank, label in enumerate(sorted(durations, key=durations.get, reverse=True))
-    }
-    for (segment_idx, _), label in zip(usable, labels, strict=True):
-        number = order[int(label)]
-        segments[segment_idx].speaker = f"Спікер {number}" + (" (основний)" if number == 1 else "")
-    for segment in segments:
-        if not segment.speaker:
-            segment.speaker = "Спікер ?"
-
-
-def render_segments(segments: list[TranscriptSegment]) -> str:
-    """Format labels while proving that the canonical Whisper text survives."""
-    before = " ".join(segment.text for segment in segments).split()
-    blocks = []
-    rendered_text = []
-    for segment in segments:
-        h, rem = divmod(int(segment.start), 3600)
-        m, s = divmod(rem, 60)
-        label = f" {segment.speaker}:" if segment.speaker else ""
-        blocks.append(f"**[{h}:{m:02d}:{s:02d}]{label}**\n\n{segment.text}\n\n")
-        rendered_text.append(segment.text)
-    if " ".join(rendered_text).split() != before:
-        # Defensive fallback: labels are expendable, recognized text is not.
-        for segment in segments:
-            segment.speaker = ""
-        return render_segments(segments)
-    return "".join(blocks)
-
-
 # ── The job ──────────────────────────────────────────────────────────────────
 
 
@@ -423,25 +301,18 @@ class FileTranscriptionJob:
             bytes_per_chunk = CHUNK_SEC * SAMPLE_RATE * 2
             consumed = 0
             carry = b""
-            canonical: list[TranscriptSegment] = []
-            can_diarize = True
 
             with open(md_path, "w", encoding="utf-8") as md:
                 md.write(
                     f"# Pysar — {src.name}\n\n"
                     f"_transcribed {now.strftime('%Y-%m-%d %H:%M')}, "
                     f"language: {self._mode}_\n\n"
-                    "_Спікери визначені автоматично; номери не ідентифікують людей._\n\n"
                 )
                 md.flush()
 
                 with open(raw_path, "rb") as raw:
                     while True:
                         if self._cancel_event.is_set():
-                            if can_diarize:
-                                with contextlib.suppress(Exception):
-                                    assign_speakers(canonical, Path(raw_path).read_bytes())
-                            md.write(render_segments(canonical))
                             md.write("_— cancelled —_\n")
                             md.flush()
                             self._on_done(str(md_path))
@@ -469,72 +340,30 @@ class FileTranscriptionJob:
                             # A degenerate split; push everything through as-is.
                             to_transcribe, carry = chunk, b""
 
-                        chunk_start = consumed / (SAMPLE_RATE * 2)
                         if is_clearly_silent(to_transcribe):
-                            segments, err = [], None
+                            text, err = None, None
                         else:
-                            wav = pcm_to_wav(to_transcribe)
-                            raw_segments, err = transcribe_segments(wav, self._mode, self._prompt)
-                            if raw_segments is None and err is None:
-                                can_diarize = False
-                                text, err = transcribe(wav, self._mode, self._prompt)
-                                raw_segments = (
-                                    [
-                                        {
-                                            "start": 0.0,
-                                            "end": len(to_transcribe) / (SAMPLE_RATE * 2),
-                                            "text": text,
-                                        }
-                                    ]
-                                    if text
-                                    else []
-                                )
-                            segments = [
-                                TranscriptSegment(
-                                    start=chunk_start + float(segment["start"]),
-                                    end=chunk_start + float(segment["end"]),
-                                    text=str(segment["text"]),
-                                    no_speech_prob=float(segment.get("no_speech_prob", 0.0)),
-                                )
-                                for segment in (raw_segments or [])
-                                if str(segment.get("text", "")).strip()
-                            ]
+                            text, err = transcribe(
+                                pcm_to_wav(to_transcribe), self._mode, self._prompt
+                            )
                         if err is not None:
                             md.write(f"_— aborted: {err} —_\n")
                             md.flush()
                             self._on_error(err)
                             return
 
-                        canonical.extend(segments)
+                        if text and text.strip():
+                            start_sec = consumed / (SAMPLE_RATE * 2)
+                            h, rem = divmod(int(start_sec), 3600)
+                            m, s = divmod(rem, 60)
+                            md.write(f"**[{h}:{m:02d}:{s:02d}]**\n\n{text.strip()}\n\n")
+                            md.flush()
 
                         consumed += len(to_transcribe)
                         self._on_progress(min(consumed / total_bytes, 1.0))
 
-                raw_pcm = Path(raw_path).read_bytes()
-                if can_diarize:
-                    with contextlib.suppress(Exception):
-                        assign_speakers(canonical, raw_pcm)
-                md.write(render_segments(canonical))
                 md.write("_— end —_\n")
                 md.flush()
-            sidecar = md_path.with_suffix(".segments.json")
-            sidecar.write_text(
-                json.dumps(
-                    [
-                        {
-                            "start": segment.start,
-                            "end": segment.end,
-                            "text": segment.text,
-                            "no_speech_prob": segment.no_speech_prob,
-                            "speaker": segment.speaker,
-                        }
-                        for segment in canonical
-                    ],
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
             self._on_done(str(md_path))
 
         except Exception as exc:
