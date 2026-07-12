@@ -3,7 +3,6 @@ subprocess and whisper layers are stubbed via monkeypatch."""
 
 import array
 import itertools
-import json
 import os
 import struct
 import subprocess
@@ -12,20 +11,16 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pytest
 from src.file_transcriber import (
     CHUNK_SEC,
     SAMPLE_RATE,
     TAIL_SEARCH_SEC,
     FileTranscriptionJob,
     FileTranscriptionQueue,
-    TranscriptSegment,
-    assign_speakers,
     find_quiet_split,
     is_clearly_silent,
     pcm_to_wav,
     probe,
-    render_segments,
     scan_media,
     split_plan,
 )
@@ -39,13 +34,6 @@ def _voiced_pcm(duration_sec: float, frequency: float = 180.0) -> bytes:
     t = np.arange(int(duration_sec * SAMPLE_RATE), dtype=np.float32) / SAMPLE_RATE
     signal = np.sin(2 * np.pi * frequency * t) * 4000
     return signal.astype("<i2").tobytes()
-
-
-@pytest.fixture(autouse=True)
-def _structured_whisper_falls_back(monkeypatch):
-    monkeypatch.setattr(
-        "src.file_transcriber.transcribe_segments", lambda wav, mode, prompt="": (None, None)
-    )
 
 
 def _pcm_with_silent_region(total_sec: float, silent_start: float, silent_dur: float) -> bytes:
@@ -123,22 +111,6 @@ def test_silence_gate_rejects_only_near_digital_silence():
     assert not is_clearly_silent(quiet.tobytes())
 
 
-def test_speaker_labels_preserve_every_word():
-    pieces = []
-    segments = []
-    for idx, frequency in enumerate((180, 420, 180, 420)):
-        pieces.append(_voiced_pcm(1.0, frequency))
-        segments.append(TranscriptSegment(idx, idx + 1, f"word-{idx}"))
-    before = [segment.text for segment in segments]
-    assign_speakers(segments, b"".join(pieces))
-    rendered = render_segments(segments)
-    assert [segment.text for segment in segments] == before
-    assert all(word in rendered for word in before)
-    assert segments[0].speaker == segments[2].speaker
-    assert segments[1].speaker == segments[3].speaker
-    assert segments[0].speaker != segments[1].speaker
-
-
 # ── probe ────────────────────────────────────────────────────────────────────
 
 
@@ -210,46 +182,25 @@ def test_job_end_to_end(monkeypatch, tmp_path):
     assert "hello world" in content
     assert "**[0:00:00]**" in content
     assert "_— end —_" in content
-    sidecar = Path(done[0]).with_suffix(".segments.json")
-    assert sidecar.exists()
-    assert json.loads(sidecar.read_text(encoding="utf-8"))[0]["text"] == "hello world"
 
 
 def test_job_digital_silence_never_calls_whisper(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(2.5), 2.5, tmp_path)
     monkeypatch.setattr(
         "src.file_transcriber.transcribe",
-        lambda *args, **kwargs: pytest.fail("digital silence reached Whisper"),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("silence reached Whisper")),
     )
     done = []
-    job = FileTranscriptionJob("silent.wav", "uk", lambda p: None, done.append, pytest.fail)
+    job = FileTranscriptionJob(
+        "silent.wav",
+        "uk",
+        lambda p: None,
+        done.append,
+        lambda e: (_ for _ in ()).throw(AssertionError(e)),
+    )
     job._run()
     content = Path(done[0]).read_text(encoding="utf-8")
     assert "дякую за перегляд" not in content.lower()
-
-
-def test_job_uses_structured_segments_verbatim(monkeypatch, tmp_path):
-    _stub_decode(monkeypatch, _voiced_pcm(2.5), 2.5, tmp_path)
-    monkeypatch.setattr(
-        "src.file_transcriber.transcribe_segments",
-        lambda wav, mode, prompt="": (
-            [
-                {"start": 0.2, "end": 1.0, "text": "перше слово", "no_speech_prob": 0.1},
-                {"start": 1.1, "end": 2.0, "text": "друге слово", "no_speech_prob": 0.2},
-            ],
-            None,
-        ),
-    )
-    monkeypatch.setattr(
-        "src.file_transcriber.transcribe",
-        lambda *args, **kwargs: pytest.fail("plain fallback should not run"),
-    )
-    done = []
-    job = FileTranscriptionJob("dialog.wav", "uk", lambda p: None, done.append, pytest.fail)
-    job._run()
-    content = Path(done[0]).read_text(encoding="utf-8")
-    assert "перше слово" in content and "друге слово" in content
-    assert "Спікер 1 (основний)" in content
 
 
 def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
@@ -507,6 +458,9 @@ def test_queue_pause_at_chunk_boundary(monkeypatch, tmp_path):
     assert snap["state"] == "paused"
     assert snap["items"][0]["status"] == "running"
     assert snap["items"][1]["status"] == "pending"
+    partial_files = list(tmp_path.glob("file_a_*.md"))
+    assert len(partial_files) == 1
+    assert "text" in partial_files[0].read_text(encoding="utf-8")
     q.resume()
     assert _wait_for_state(q, "done")
     assert q.snapshot()["done_count"] == 2

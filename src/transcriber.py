@@ -54,59 +54,6 @@ def transcribe(
         return None, f"Whisper error: {e}"
 
 
-def transcribe_segments(
-    wav_bytes: bytes, mode: str = "ru", prompt: str = ""
-) -> tuple[list[dict] | None, str | None]:
-    """Return immutable Whisper segments with timestamps.
-
-    ``None, None`` means the installed server did not return structured
-    segments; file transcription can then fall back to :func:`transcribe`
-    without risking any recognized text.
-    """
-    params = dict(MODES.get(mode, MODES["ru"]))
-    params["response_format"] = "verbose_json"
-    if prompt:
-        params["prompt"] = prompt
-    try:
-        resp = requests.post(
-            WHISPER_URL,
-            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            data=params,
-            timeout=WHISPER_TIMEOUT,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        raw_segments = result.get("segments") if isinstance(result, dict) else None
-        if not isinstance(raw_segments, list):
-            return None, None
-        segments = []
-        for raw in raw_segments:
-            if not isinstance(raw, dict):
-                continue
-            text = _clean(str(raw.get("text", "")))
-            if not text:
-                continue
-            try:
-                start = max(0.0, float(raw.get("start", 0.0)))
-                end = max(start, float(raw.get("end", start)))
-                no_speech_prob = float(raw.get("no_speech_prob", 0.0))
-            except (TypeError, ValueError):
-                return None, None
-            segments.append(
-                {
-                    "start": start,
-                    "end": end,
-                    "text": text,
-                    "no_speech_prob": min(1.0, max(0.0, no_speech_prob)),
-                }
-            )
-        return segments, None
-    except requests.exceptions.ConnectionError:
-        return None, f"Whisper not running at {WHISPER_URL}. Run `make whisper`."
-    except Exception as e:
-        return None, f"Whisper error: {e}"
-
-
 def is_alive() -> bool:
     """Pings the server. Used to show the startup health status in the menu."""
     try:
