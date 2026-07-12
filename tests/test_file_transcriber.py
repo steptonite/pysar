@@ -525,6 +525,29 @@ def test_queue_remove_running_continues_with_next(monkeypatch, tmp_path):
     assert items[1]["status"] == "done"
 
 
+def test_queue_remove_last_running_while_paused_finishes(monkeypatch, tmp_path):
+    media = tmp_path / "only.mp3"
+    media.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    started, release = _gated_transcribe(monkeypatch)
+
+    q = FileTranscriptionQueue([str(media)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert started.wait(timeout=5)
+    q.pause()
+    release.set()
+    assert _wait_for_state(q, "paused")
+
+    q.remove(1)
+
+    assert _wait_for_state(q, "done")
+    q._worker.join(timeout=2)
+    snap = q.snapshot()
+    assert snap["state"] == "done"
+    assert snap["items"][0]["status"] == "cancelled"
+    assert snap["items"][0]["result_path"] != ""
+
+
 def test_queue_cancel_all_during_scanning(monkeypatch, tmp_path):
     probe_entered = threading.Event()
     probe_release = threading.Event()

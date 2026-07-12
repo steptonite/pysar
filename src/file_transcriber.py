@@ -611,7 +611,14 @@ class FileTranscriptionQueue:
 
         while not self._cancel_all_event.is_set():
             with self._cond:
-                while self._paused and not self._cancel_all_event.is_set():
+                # A removed last item must let the queue finish even while it
+                # is paused.  Otherwise the worker waits forever before it
+                # gets a chance to discover that no pending work remains.
+                while (
+                    self._paused
+                    and any(i.status == "pending" for i in self._items)
+                    and not self._cancel_all_event.is_set()
+                ):
                     self._cond.wait()
             if self._cancel_all_event.is_set():
                 break
@@ -687,6 +694,8 @@ class FileTranscriptionQueue:
             snap = self._make_snapshot()
         self._on_change(snap)
         self._job_complete_event.set()
+        with self._cond:
+            self._cond.notify_all()
 
     def _on_job_error(self, item_id: int, error: str) -> None:
         with self._lock:
