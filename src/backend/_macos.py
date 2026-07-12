@@ -953,9 +953,9 @@ class Tray:
         self._on_set_enhance_style = on_set_enhance_style
         self._enhance_status_provider = enhance_status_provider
         self._settings_window = None  # built lazily on first open
-        # File-transcription job (Settings → "Transcribe a file"). Lives on the
-        # app object so it keeps running with the settings window closed.
-        self._ft_job = None
+        # File-transcription queue (Settings → "Transcribe a file"). Lives on
+        # the app object so it keeps running with the settings window closed.
+        self._ft_queue = None
         self._ft_lang: str | None = None  # None → follow the dictation language
         # Context source for the whisper prompt: "auto" uses the active speech
         # profiles of the file's language; "custom" uses a free-text hint.
@@ -965,12 +965,8 @@ class Tray:
         self._ft_prompt = ft_prompt
         self._on_set_ft_prompt = on_set_ft_prompt
         self._on_set_ft_prompt_source = on_set_ft_prompt_source
-        self._ft_status = "idle"  # idle | running | done | error
-        self._ft_progress = 0.0
-        self._ft_file = ""
-        self._ft_result = ""
-        self._ft_error = ""
         self._ft_last_push = 0.0  # progress → UI push throttle (1 Hz)
+        self._ft_last_state = "idle"  # queue state at the last UI push
         self._hud = None  # streaming status overlay, built lazily on first show
         self._wake_obs = None  # retained NSWorkspace wake-notification token
 
@@ -1089,11 +1085,13 @@ class Tray:
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
                         "open_transcripts_folder": self._open_transcripts_folder,
-                        "ft_pick_file": self._ft_pick_file,
+                        "ft_pick_files": self._ft_pick_files,
                         "set_ft_lang": self._set_ft_lang,
                         "set_ft_prompt": self._set_ft_prompt,
                         "set_ft_prompt_source": self._set_ft_prompt_source,
-                        "ft_cancel": self._ft_cancel,
+                        "ft_pause": self._ft_pause_toggle,
+                        "ft_cancel_all": self._ft_cancel_all,
+                        "ft_remove": self._ft_remove,
                         "ft_open_result": self._ft_open_result,
                         "set_enhance_enabled": self._set_enhance_enabled,
                         "set_enhance_model": self._set_enhance_model,
@@ -1145,15 +1143,15 @@ class Tray:
             "meeting_island_opacity": self._meeting_island_opacity,
             "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
             "transcripts_dir": self._transcripts_dir(),
-            # File transcription: current job status for the drill-in screen.
+            # File transcription: current queue snapshot for the drill-in screen.
             "ft_lang": self._ft_lang or self._lang(),
             "ft_prompt": self._ft_prompt,
             "ft_prompt_source": self._ft_prompt_source,
-            "ft_status": self._ft_status,
-            "ft_progress": self._ft_progress,
-            "ft_file": self._ft_file,
-            "ft_result_path": self._ft_result,
-            "ft_error": self._ft_error,
+            "ft_queue": (
+                self._ft_queue.snapshot()
+                if self._ft_queue is not None
+                else {"state": "idle", "items": [], "done_count": 0, "total": 0}
+            ),
             "ft_ffmpeg_ok": self._ft_ffmpeg_ok(),
             # Enhance — post-dictation LLM styling (Ollama probe runs on open only).
             "enhance_enabled": self._enhance_enabled,
@@ -1351,10 +1349,16 @@ class Tray:
         active = sorted(self._active_by_lang.get(lang, set()))
         return compose_prompt(self._profiles, active, lang) or LANG_SEED.get(lang, "")
 
-    def _ft_pick_file(self) -> None:
-        """NSOpenPanel → start a background FileTranscriptionJob. Runs on the
-        main thread (JS bridge messages arrive there), so the panel is safe."""
-        if self._ft_job is not None and self._ft_job.running:
+    def _ft_queue_active(self) -> bool:
+        if self._ft_queue is None:
+            return False
+        return self._ft_queue.snapshot()["state"] in ("scanning", "running", "pausing", "paused")
+
+    def _ft_pick_files(self) -> None:
+        """NSOpenPanel (multi-select, folders allowed) → start a background
+        FileTranscriptionQueue. Runs on the main thread (JS bridge messages
+        arrive there), so the panel is safe."""
+        if self._ft_queue_active():
             return
         # The UI disables the button in this state; the guard covers a stale page.
         if self._ft_prompt_source == "custom" and not self._ft_prompt.strip():
@@ -1363,81 +1367,89 @@ class Tray:
             from AppKit import NSOpenPanel
 
             panel = NSOpenPanel.openPanel()
-            panel.setCanChooseDirectories_(False)
-            panel.setAllowsMultipleSelection_(False)
+            panel.setCanChooseDirectories_(True)
+            panel.setAllowsMultipleSelection_(True)
             with contextlib.suppress(Exception):
                 from UniformTypeIdentifiers import UTType
 
+                # Folders must stay selectable alongside media files.
                 panel.setAllowedContentTypes_(
-                    [UTType.typeWithIdentifier_("public.audiovisual-content")]
+                    [
+                        UTType.typeWithIdentifier_("public.audiovisual-content"),
+                        UTType.typeWithIdentifier_("public.folder"),
+                    ]
                 )
             if panel.runModal() != 1:  # NSModalResponseOK
                 return
-            url = panel.URLs()[0]
-            path = str(url.path())
+            paths = [str(url.path()) for url in panel.URLs()]
         except Exception as e:
             rumps.notification("Pysar", "File transcription", str(e)[:120])
             return
+        if not paths:
+            return
 
-        from pathlib import Path
+        from ..file_transcriber import FileTranscriptionQueue
 
-        from ..file_transcriber import FileTranscriptionJob
-
-        self._ft_file = Path(path).name
-        self._ft_status = "running"
-        self._ft_progress = 0.0
-        self._ft_result = ""
-        self._ft_error = ""
-        self._ft_job = FileTranscriptionJob(
-            path,
+        self._ft_last_state = "idle"
+        self._ft_queue = FileTranscriptionQueue(
+            paths,
             self._ft_lang or self._lang(),
-            on_progress=self._ft_on_progress,
-            on_done=self._ft_on_done,
-            on_error=self._ft_on_error,
             prompt=self._ft_resolve_prompt(),
+            on_change=self._ft_on_change,
         )
-        self._ft_job.start()
+        self._ft_queue.start()
         self._refresh_settings_window()
 
-    # Job callbacks arrive on the worker thread → hop to main for any UI work.
-
-    def _ft_on_progress(self, fraction: float) -> None:
-        self._ft_progress = fraction
+    def _ft_on_change(self, snap: dict) -> None:
+        """Queue callback — arrives on worker threads. Progress ticks are
+        throttled to 1 Hz; any queue-state transition pushes immediately (a
+        missed final push would freeze the UI on a stale 'running')."""
+        state = snap["state"]
         now = time.monotonic()
-        if fraction >= 1.0 or now - self._ft_last_push >= 1.0:
-            self._ft_last_push = now
-            AppHelper.callAfter(self._refresh_settings_window)
-
-    def _ft_on_done(self, md_path: str) -> None:
-        self._ft_status = "done"
-        self._ft_progress = 1.0
-        self._ft_result = md_path
+        state_changed = state != self._ft_last_state
+        if not state_changed and now - self._ft_last_push < 1.0:
+            return
+        self._ft_last_push = now
+        if state_changed:
+            self._ft_last_state = state
+            if state in ("done", "cancelled"):
+                AppHelper.callAfter(
+                    rumps.notification,
+                    "Pysar",
+                    self._t("ft.notif.done" if state == "done" else "ft.notif.cancelled"),
+                    f"{snap['done_count']}/{snap['total']}",
+                )
         AppHelper.callAfter(self._refresh_settings_window)
-        AppHelper.callAfter(
-            rumps.notification,
-            "Pysar",
-            self._t("ft.notif.done"),
-            self._ft_file,
-        )
 
-    def _ft_on_error(self, err: str) -> None:
-        self._ft_status = "error"
-        self._ft_error = err
-        AppHelper.callAfter(self._refresh_settings_window)
-        AppHelper.callAfter(
-            rumps.notification,
-            "Pysar",
-            self._t("ft.notif.error"),
-            err[:120],
-        )
+    def _ft_pause_toggle(self) -> None:
+        if self._ft_queue is None:
+            return
+        if self._ft_queue.snapshot()["state"] in ("pausing", "paused"):
+            self._ft_queue.resume()
+        else:
+            self._ft_queue.pause()
 
-    def _ft_cancel(self) -> None:
-        if self._ft_job is not None:
-            self._ft_job.cancel()
+    def _ft_cancel_all(self) -> None:
+        if self._ft_queue is not None:
+            self._ft_queue.cancel_all()
 
-    def _ft_open_result(self) -> None:
-        if self._ft_result:
-            subprocess.run(["open", "-R", self._ft_result], check=False)
+    def _ft_remove(self, item_id) -> None:
+        if self._ft_queue is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                self._ft_queue.remove(int(item_id))
+
+    def _ft_open_result(self, item_id) -> None:
+        if self._ft_queue is None:
+            return
+        snap = self._ft_queue.snapshot()
+        try:
+            wanted = int(item_id)
+        except (TypeError, ValueError):
+            return
+        for item in snap["items"]:
+            if item["id"] == wanted and item["result_path"]:
+                subprocess.run(["open", "-R", item["result_path"]], check=False)
+                return
 
     # Profile editor handlers (from the Settings window's JS bridge) ───────────
     def _win_toggle_profile(self, value: dict) -> None:
