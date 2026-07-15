@@ -82,6 +82,7 @@ class VoiceTyper:
         # built lazily on first use so the normal dictation path pays nothing.
         self._meeting = False
         self._meeting_mic = False  # is the running capture holding the mic?
+        self._meeting_stopping = False  # drain in progress — no new capture yet
         self._sysrec: SystemAudioRecorder | None = None
         self._transcript_window: TranscriptWindow | None = None
         self._transcript_file: TranscriptFile | None = None
@@ -526,6 +527,12 @@ class VoiceTyper:
         if self._recording or self._busy:
             self._tray.set_status(self._t("st.transcribing"))
             return
+        if self._meeting_stopping:
+            # The previous capture is still draining its queue (can take up to
+            # a minute); starting a second one on top would race the worker and
+            # desync the menu state (stress test 08.07.2026, bug 1).
+            self._tray.set_status(self._t("st.meetingStopping"))
+            return
         self._meeting = True
         self._meeting_tails = {}
         self._meeting_server_down = False
@@ -662,33 +669,39 @@ class VoiceTyper:
             return
         self._meeting = False
         self._meeting_mic = False
-        # Stop capture first (flushes the trailing segment into the queue), then
-        # drain the worker so the final sentence lands before the file is closed.
-        if self._sysrec is not None:
-            with contextlib.suppress(Exception):
-                self._sysrec.stop()
-        if self._meeting_queue is not None:
-            self._meeting_queue.put(None)
-        if self._meeting_worker is not None:
-            self._meeting_worker.join(timeout=60)
-
+        self._meeting_stopping = True  # _start_meeting refuses until the drain ends
         saved_path = None
-        if self._transcript_file is not None:
-            saved_path = str(self._transcript_file.path or "")
-            self._transcript_file.close()
-            self._transcript_file = None
+        try:
+            # Stop capture first (flushes the trailing segment into the queue), then
+            # drain the worker so the final sentence lands before the file is closed.
+            if self._sysrec is not None:
+                with contextlib.suppress(Exception):
+                    self._sysrec.stop()
+            if self._meeting_queue is not None:
+                self._meeting_queue.put(None)
+            if self._meeting_worker is not None:
+                self._meeting_worker.join(timeout=60)
 
-        if self._transcript_window is not None:
-            self._transcript_window.hide()  # island shows only while transcribing
-        self._tray.set_meeting_active(False)
-        self._tray.set_status(self._t("st.meetingOff"))
-        self._tray.set_title(self._idle_title())
-        if saved_path:
-            self._tray.notify(
-                "Pysar",
-                self._t("notif.meetingSavedTitle"),
-                self._t("notif.meetingSavedMsg", path=saved_path),
-            )
+            if self._transcript_file is not None:
+                saved_path = str(self._transcript_file.path or "")
+                self._transcript_file.close()
+                self._transcript_file = None
+        finally:
+            # The UI reset must land even if the drain/close above blew up —
+            # otherwise the menu keeps offering "stop transcription" for a
+            # capture that no longer exists (stress test 08.07.2026, bug 1).
+            self._meeting_stopping = False
+            if self._transcript_window is not None:
+                self._transcript_window.hide()  # island shows only while transcribing
+            self._tray.set_meeting_active(False)
+            self._tray.set_status(self._t("st.meetingOff"))
+            self._tray.set_title(self._idle_title())
+            if saved_path:
+                self._tray.notify(
+                    "Pysar",
+                    self._t("notif.meetingSavedTitle"),
+                    self._t("notif.meetingSavedMsg", path=saved_path),
+                )
 
     # ── Mode selection ───────────────────────────────────────────────────────
     def _on_mode_select(self, code: str) -> None:

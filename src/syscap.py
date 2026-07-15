@@ -350,9 +350,15 @@ class SystemAudioRecorder:
             self._fail(f"system capture setup failed: {e}")
 
     def _on_stream_stop(self, error) -> None:
-        # SCK stopped on its own (display reconfigured, permission revoked, …).
-        if error is not None and not self._stopped.is_set():
-            self._fail(f"capture stopped: {error}")
+        # SCK stopped on its own (display reconfigured, permission revoked,
+        # system sleep, …). A silent stop carries no error object but is just
+        # as dead — without reporting it the owner keeps believing the capture
+        # is live forever (stuck "stop transcription" state, stress test
+        # 08.07.2026), so any stop we didn't request goes through _fail().
+        if not self._stopped.is_set():
+            self._fail(
+                f"capture stopped: {error}" if error is not None else "capture stopped by macOS"
+            )
 
     def _ingest(self, source: int, sbuf) -> None:
         """Decode one buffer (source 0 = system, 1 = mic), resample to 16 kHz and
