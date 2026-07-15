@@ -1,10 +1,16 @@
 """HTTP client for the local whisper.cpp server."""
 
 import re
+import threading
 
 import requests
 
 from .config import MODES, WHISPER_TIMEOUT, WHISPER_URL
+
+# One whisper server on a memory-tight Mac: dictation and the meeting capture
+# may now run at the same time, so their transcription requests are serialized
+# here — the server is never hit concurrently, whichever paths are active.
+_whisper_lock = threading.Lock()
 
 # whisper.cpp breaks long output into segments and joins them with newlines
 # (and sometimes leading spaces). Pasted verbatim, a word can land split across
@@ -35,14 +41,15 @@ def transcribe(
     if prompt:
         params["prompt"] = prompt
     try:
-        resp = requests.post(
-            WHISPER_URL,
-            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            # Without an explicit `language` the whisper-server defaults to "en"
-            # and returns a translation instead of a transcription for non-EN speech.
-            data=params,
-            timeout=WHISPER_TIMEOUT,
-        )
+        with _whisper_lock:
+            resp = requests.post(
+                WHISPER_URL,
+                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+                # Without an explicit `language` the whisper-server defaults to "en"
+                # and returns a translation instead of a transcription for non-EN speech.
+                data=params,
+                timeout=WHISPER_TIMEOUT,
+            )
         resp.raise_for_status()
         result = resp.json()
         raw = result.get("text", "") if isinstance(result, dict) else str(result)

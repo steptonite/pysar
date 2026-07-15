@@ -81,6 +81,7 @@ class VoiceTyper:
         # file. A separate on/off capture, independent of the dictation hotkey,
         # built lazily on first use so the normal dictation path pays nothing.
         self._meeting = False
+        self._meeting_mic = False  # is the running capture holding the mic?
         self._sysrec: SystemAudioRecorder | None = None
         self._transcript_window: TranscriptWindow | None = None
         self._transcript_file: TranscriptFile | None = None
@@ -184,12 +185,27 @@ class VoiceTyper:
         return t(self._ui_lang, key, **kw)
 
     def _idle_title(self) -> str:
-        """Menu-bar glyph when idle — the active language's flag."""
+        """Menu-bar glyph when idle — the active language's flag, or the meeting
+        glyph while a capture is running (a dictation finishing mid-meeting must
+        not repaint the title back to a flag)."""
+        if self._meeting:
+            return "🎧"
         return MODE_ICONS.get(self._mode, IDLE_ICON_FALLBACK)
 
     # ── Hotkey ───────────────────────────────────────────────────────────────
     def _on_toggle(self) -> None:
-        if self._busy or self._meeting:
+        if self._busy:
+            return
+        # Dictation may run alongside a meeting capture as long as the capture
+        # isn't taking the mic itself (system-audio-only, e.g. transcribing a
+        # video) — the whisper server is serialized in transcriber.py, so the
+        # two paths no longer compete. When the capture DOES hold the mic, the
+        # dictated speech would land in the transcript too; refuse loudly
+        # instead of the old silent ignore.
+        if self._meeting and not self._recording and self._meeting_mic:
+            self._tray.set_status(self._t("st.micBusyMeeting"))
+            self._tray.show_hud(self._t("hud.micBusyMeeting"), "error")
+            threading.Timer(1.6, self._tray.hide_hud).start()
             return
 
         if not self._recording:
@@ -503,8 +519,10 @@ class VoiceTyper:
             self._start_meeting()
 
     def _start_meeting(self) -> None:
-        # One whisper server, 8 GB — never run a meeting capture and a dictation
-        # transcription concurrently.
+        # Starting a capture mid-dictation stays blocked (finish the sentence
+        # first); the reverse — dictating while a capture runs — is allowed when
+        # the capture doesn't hold the mic (see _on_toggle). Whisper requests
+        # from the two paths are serialized in transcriber.py.
         if self._recording or self._busy:
             self._tray.set_status(self._t("st.transcribing"))
             return
@@ -551,6 +569,7 @@ class VoiceTyper:
         self._meeting_worker.start()
 
         capture_mic = self._settings.get("meeting_capture_mic", True)
+        self._meeting_mic = bool(capture_mic)
         source_mode = self._settings.get("meeting_source_mode", "off")
         if self._sysrec is None:
             self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
@@ -642,6 +661,7 @@ class VoiceTyper:
         if not self._meeting:
             return
         self._meeting = False
+        self._meeting_mic = False
         # Stop capture first (flushes the trailing segment into the queue), then
         # drain the worker so the final sentence lands before the file is closed.
         if self._sysrec is not None:
