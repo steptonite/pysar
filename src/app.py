@@ -9,6 +9,7 @@ Platform-specific adapters (hotkey, paste, tray) live in pysar.backend.
 
 import contextlib
 import queue
+import sys
 import threading
 import time
 from datetime import datetime
@@ -157,6 +158,12 @@ class VoiceTyper:
             on_set_enhance_style=self._on_set_enhance_style,
             enhance_status_provider=self._enhance_status,
         )
+
+        # Raise the Input Monitoring / Accessibility system prompts ourselves —
+        # macOS never shows them from CGEventTapCreate or a failed paste, so a
+        # fresh (or re-signed) .app would otherwise die silently: hotkeys idle,
+        # user never asked. Mic and Screen Recording prompt on first use as-is.
+        threading.Thread(target=self._request_permissions, daemon=True).start()
 
         # Hotkey listener is blocking — runs in its own thread. Bindings come from
         # settings and can be re-captured live (set_bindings), no relaunch needed.
@@ -1047,6 +1054,24 @@ class VoiceTyper:
         save_settings(self._settings)
         self._tray.set_active_profiles(self._settings["active_profiles"])
         self._tray.set_status(self._t("st.setOn", name=s["name"]))
+
+    # ── Permissions ──────────────────────────────────────────────────────────
+    def _request_permissions(self) -> None:
+        """Fire the Input Monitoring / Accessibility system dialogs (macOS).
+
+        Off the main thread — both calls can block on TCC IPC. Denials are not
+        fatal here: the hotkey listener keeps polling for Input Monitoring, and
+        the paste path falls back to the clipboard without Accessibility.
+        """
+        if sys.platform != "darwin":
+            return
+        from .backend import _permissions
+
+        if _permissions.input_monitoring_status() != _permissions.GRANTED:
+            print("🔐 requesting Input Monitoring permission…")
+            _permissions.request_input_monitoring()
+        if not _permissions.ensure_accessibility(prompt=True):
+            print("⚠️ Accessibility not granted — paste falls back to the clipboard")
 
     # ── Whisper health ───────────────────────────────────────────────────────
     def _check_whisper(self) -> None:
