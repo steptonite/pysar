@@ -2,7 +2,7 @@
 
 import requests
 
-from pysar.postprocessor import enhance, is_ollama_alive, list_models, preload
+from pysar.postprocessor import enhance, is_ollama_alive, limit_emoji, list_models, preload
 
 
 def _fake_response(json_data, status=200):
@@ -214,3 +214,26 @@ def test_preload_swallows_exceptions(monkeypatch):
 
     monkeypatch.setattr(requests, "post", _fake_response({}))
     preload("model")
+
+
+# ── limit_emoji ──────────────────────────────────────────────────────────────
+def test_limit_emoji_under_cap_untouched():
+    text = "Привіт 😠! Все ок 🙏."
+    assert limit_emoji(text) == text
+
+
+def test_limit_emoji_cuts_extras_and_orphan_spaces():
+    text = "Один 🤔. Два 😟. Три 🙏. Чотири 😱. П'ять 🤯."
+    assert limit_emoji(text) == "Один 🤔. Два 😟. Три 🙏. Чотири. П'ять."
+
+
+def test_limit_emoji_keeps_zwj_sequences_whole():
+    text = "А 🤷‍♀️. Б 🤦‍♂️. В 🙏. Г 🤷‍♀️кінець."
+    out = limit_emoji(text)
+    assert out == "А 🤷‍♀️. Б 🤦‍♂️. В 🙏. Г кінець."
+    assert "\u200d" not in out.replace("🤷‍♀️", "").replace("🤦‍♂️", "")
+
+
+def test_limit_emoji_plain_text_untouched():
+    text = "Жодного емоджі, просто текст — з тире і трьома крапками…"
+    assert limit_emoji(text) == text

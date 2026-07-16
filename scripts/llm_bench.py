@@ -24,7 +24,7 @@ from pathlib import Path
 
 from pysar import server
 from pysar.postprocessor import enhance, is_ollama_alive, preload
-from pysar.profiles import DEFAULT_PROFILES, compose_style_prompt, style_example
+from pysar.profiles import DEFAULT_PROFILES, compose_style_prompt, style_anchor, style_example
 from pysar.transcriber import transcribe
 
 DEFAULT_MODELS = [
@@ -630,7 +630,11 @@ def main() -> None:
                     therm_snap = _therm_state()
                     t0 = time.perf_counter()
                     out_text, err = enhance(
-                        inp["text"], prompt, model, example=style_example(style_key)
+                        inp["text"],
+                        prompt,
+                        model,
+                        example=style_example(style_key),
+                        anchor_hint=style_anchor(style_key),
                     )
                     dur = time.perf_counter() - t0
                     preamble_flag = _suspect_preamble(out_text) if not err and out_text else False

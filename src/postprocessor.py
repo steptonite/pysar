@@ -22,6 +22,31 @@ from .config import ENHANCE_KEEP_ALIVE, OLLAMA_TIMEOUT, OLLAMA_URL
 # block even when not asked to; it's never part of the rewritten text.
 _THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 
+# A whole emoji sequence: base pictograph + any ZWJ continuations, skin tones
+# and variation selectors — so stripping never leaves half of a 🤷‍♀️ behind.
+_EMOJI_SEQ = re.compile(
+    "[\U0001f000-\U0001faff☀-➿⬀-⯿](?:[️\U0001f3fb-\U0001f3ff]|‍[\U0001f000-\U0001faff☀-➿♀-♂][️]?)*"
+)
+
+
+def limit_emoji(text: str, cap: int = 3) -> str:
+    """Keep the first *cap* emoji sequences, drop the rest (with their leading
+    space). 4B models can't hold the 1–3 limit on long texts no matter how the
+    prompt is phrased (bench v4–v6, in4 group: 14–35 emoji) — the cap has to be
+    deterministic code, not a request."""
+    seen = 0
+
+    def _cut(m: re.Match) -> str:
+        nonlocal seen
+        seen += 1
+        return m.group(0) if seen <= cap else ""
+
+    trimmed = _EMOJI_SEQ.sub(_cut, text)
+    if seen <= cap:
+        return text
+    return re.sub(r" +([.,!?;:…])", r"\1", trimmed).replace("  ", " ")
+
+
 # Appended to EVERY style prompt. Without it small models treat the dictation
 # as a message addressed to them — they answer it, moralize about profanity or
 # refuse outright instead of rewriting (seen on all 4 bench candidates).
@@ -114,8 +139,9 @@ _ANCHOR = (
 )
 
 
-def _wrap_input(text: str) -> str:
-    return f"<<<\n{text}\n>>>\n{_ANCHOR}"
+def _wrap_input(text: str, anchor_hint: str | None = None) -> str:
+    anchor = f"{_ANCHOR} {anchor_hint}" if anchor_hint else _ANCHOR
+    return f"<<<\n{text}\n>>>\n{anchor}"
 
 
 def enhance(
@@ -124,6 +150,7 @@ def enhance(
     model: str,
     url: str = OLLAMA_URL,
     example: tuple[str, str] | None = None,
+    anchor_hint: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Style-transform *text* per *style_prompt*. Returns (text, error).
 
@@ -141,9 +168,9 @@ def enhance(
     # were addressed to them, even with the system-side guard in place.
     messages = [{"role": "system", "content": f"{style_prompt}\n\n{_TOOL_GUARD}"}]
     if example:
-        messages.append({"role": "user", "content": _wrap_input(example[0])})
+        messages.append({"role": "user", "content": _wrap_input(example[0], anchor_hint)})
         messages.append({"role": "assistant", "content": example[1]})
-    messages.append({"role": "user", "content": _wrap_input(text)})
+    messages.append({"role": "user", "content": _wrap_input(text, anchor_hint)})
     payload = {
         "model": model,
         "messages": messages,

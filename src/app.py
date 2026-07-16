@@ -39,6 +39,7 @@ from .profiles import (
     parse_imported,
     regroup_active,
     remove_profile,
+    style_anchor,
     style_example,
     upsert_profile,
 )
@@ -259,7 +260,9 @@ class VoiceTyper:
         )
         model = self._settings.get("enhance_model", "")
         t0 = time.time()
-        result, err = postprocessor.enhance(text, style, model, example=style_example(preset))
+        result, err = postprocessor.enhance(
+            text, style, model, example=style_example(preset), anchor_hint=style_anchor(preset)
+        )
         dur = time.time() - t0
         self._tray.hide_hud()
         if err:
@@ -269,6 +272,10 @@ class VoiceTyper:
                 "Pysar", self._t("notif.enhanceFailTitle"), self._t("notif.enhanceFailMsg")
             )
             return text
+        if result and preset == "emoji":
+            # 4B models can't hold the 1–3 emoji limit on long texts however
+            # the prompt is phrased — the cap is enforced in code (bench v4–v6).
+            result = postprocessor.limit_emoji(result)
         print(f"✨ enhance ok ({model}, {dur:.1f}s): {len(text)} → {len(result or '')} chars")
         # The HUD is easy to miss; the user must always learn the pasted text
         # is an LLM rewrite, not their verbatim dictation.
