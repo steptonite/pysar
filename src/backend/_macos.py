@@ -249,22 +249,26 @@ class HotkeyListener:
         self._on_mode = on_mode
         self._on_set = on_set
 
-        tap = self._create_tap()
-        if tap is None:
-            # No Input Monitoring yet (or a stale grant after a re-signed
-            # `make app`). The system prompt was already requested at startup;
-            # instead of dying with the hotkeys, wait for the user to flip the
-            # toggle and attach as soon as TCC says yes.
+        # Gate on the TCC verdict, not on tap creation: with Accessibility
+        # granted CGEventTapCreate succeeds even while Input Monitoring is
+        # denied — the tap exists but never receives a single event. Only
+        # IOHIDCheckAccess tells the truth.
+        if _permissions.input_monitoring_status() != _permissions.GRANTED:
             print(
                 "⚠️ Input Monitoring not granted — hotkeys idle.\n"
                 "   System Settings → Privacy & Security → Input Monitoring → Pysar.\n"
                 "   Waiting for the permission…"
             )
-            while tap is None:
+            while _permissions.input_monitoring_status() != _permissions.GRANTED:
                 time.sleep(2)
-                if _permissions.input_monitoring_status() == _permissions.GRANTED:
-                    tap = self._create_tap()
             print("✅ Input Monitoring granted — attaching hotkeys")
+
+        tap = self._create_tap()
+        while tap is None:
+            # Granted, but the tap still won't come up (stale TCC row after a
+            # re-signed build). Keep trying; a fresh grant fixes it live.
+            time.sleep(2)
+            tap = self._create_tap()
 
         self._tap = tap
         source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
