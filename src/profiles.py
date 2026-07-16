@@ -283,11 +283,20 @@ STYLE_PRESETS: list[dict] = [
         "name_uk": "Емоджі",
         "name_en": "Emoji",
         "prompt": (
-            "Розстав у тексті доречні за контекстом емоджі: стримано, 1–3 на "
-            "короткий текст, після ключових фраз або в кінці речень. Збережи "
-            "сам текст дослівно — не переписуй і не скорочуй; дозволено лише "
-            "виправити пунктуацію та очевидні помилки розпізнавання мовлення. "
-            "Нічого не вигадуй. Виведи лише текст з емоджі."
+            "Додай до тексту доречні за контекстом емоджі: щонайменше 1 і "
+            "щонайбільше 3 НА ВЕСЬ текст, хоч би яким довгим він був. Обери "
+            "1–3 найемоційніші місця; решту речень залиш без емоджі. Ніколи "
+            "не став емоджі після кожного речення. Збережи сам текст "
+            "дослівно — не переписуй і не скорочуй; дозволено лише виправити "
+            "пунктуацію та очевидні помилки розпізнавання мовлення. Нічого не "
+            "вигадуй. Виведи лише текст з емоджі."
+        ),
+        # Re-stated AFTER the dictation (postprocessor anchor): on long texts
+        # recency beats the system prompt and 4B models either spray an emoji
+        # per sentence or drop them entirely (bench v4/v5, in4 group).
+        "anchor": (
+            "Нагадування: додай щонайменше 1 і щонайбільше 3 емоджі НА ВЕСЬ "
+            "текст, не після кожного речення; сам текст залиш дослівно."
         ),
     },
     {
@@ -317,6 +326,12 @@ FALLBACK_STYLE_PROMPT = (
 def style_preset(key: str) -> dict | None:
     """The preset dict for *key*, or None."""
     return next((p for p in STYLE_PRESETS if p["key"] == key), None)
+
+
+def style_anchor(key: str | None) -> str | None:
+    """The preset's post-text reminder line, if the style declares one."""
+    preset = style_preset(key) if key else None
+    return preset.get("anchor") if preset else None
 
 
 # Few-shot for the enhance call: 4B models follow a worked example far better

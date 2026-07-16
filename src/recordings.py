@@ -95,7 +95,7 @@ DEFAULTS = {
     #   enhance_style   — a profiles.STYLE_PRESETS key, or "custom" = the
     #                     style_prompt of the active speech profiles only
     "enhance_enabled": False,
-    "enhance_model": "hf.co/INSAIT-Institute/MamayLM-Gemma-3-4B-IT-v1.0-GGUF:Q4_K_M",
+    "enhance_model": "gemma3:4b",
     "enhance_style": "custom",
 }
 UI_THEMES = ("auto", "light", "dark")
