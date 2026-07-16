@@ -30,6 +30,7 @@ from .config import (
     set_hotkey_bindings,
 )
 from .i18n import t
+from .meetingfilter import MeetingFilter
 from .profiles import (
     STYLE_PRESETS,
     compose_prompt,
@@ -52,7 +53,7 @@ from .recordings import (
     save_settings,
 )
 from .syscap import SystemAudioRecorder
-from .transcriber import is_alive, transcribe
+from .transcriber import is_alive, transcribe, transcribe_meeting
 from .transcripts import TranscriptFile
 
 
@@ -633,15 +634,19 @@ class VoiceTyper:
             base = compose_prompt(self._settings["profiles"], active, lang) or LANG_SEED.get(
                 lang, ""
             )
+        # Per-meeting hallucination/echo filter (see meetingfilter.py). Lives for
+        # one capture: language votes and the echo window must not leak between
+        # meetings.
+        mfilter = MeetingFilter(auto_lang=(lang == "auto"))
         while True:
             item = self._meeting_queue.get()
             if item is None:  # sentinel queued by _stop_meeting
                 break
             seg_wav, source = item
-            self._process_meeting_segment(seg_wav, source, base, mode)
+            self._process_meeting_segment(seg_wav, source, base, mode, mfilter)
 
     def _process_meeting_segment(
-        self, seg_wav: bytes, source: str | None, base: str, mode: str
+        self, seg_wav: bytes, source: str | None, base: str, mode: str, mfilter: MeetingFilter
     ) -> None:
         # When the mic is off the whole stream is system audio, so label it
         # "System" even in the mixed ("off") mode where syscap can't tag a source.
@@ -655,7 +660,7 @@ class VoiceTyper:
         else:
             tail = self._meeting_tails.get(source, "")[-self._CTX_TAIL_CHARS :]
             prompt = f"{base} {tail}".strip() if (base or tail) else ""
-        text, err = transcribe(seg_wav, mode=mode, prompt=prompt)
+        text, meta, err = transcribe_meeting(seg_wav, mode=mode, prompt=prompt)
         if err:
             if not self._meeting_server_down:
                 self._meeting_server_down = True
@@ -667,6 +672,13 @@ class VoiceTyper:
         if not text:
             return
         self._meeting_server_down = False
+        drop = mfilter.verdict(text, source, meta)
+        if drop is not None:
+            # Dropped lines also stay out of the rolling tail: a mic-bleed echo
+            # would otherwise prime this channel's decoder with the other
+            # speaker's words.
+            print(f"🧹 meeting filter [{drop}]: {text[:80]}")
+            return
         ts = datetime.now()  # stamp at transcription time = when the line was said
         prev = self._meeting_tails.get(source, "")
         self._meeting_tails[source] = f"{prev} {text}".strip()[-self._CTX_TAIL_CHARS :]
