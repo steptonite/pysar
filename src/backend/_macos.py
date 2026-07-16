@@ -37,6 +37,7 @@ from ..profiles import (
     compose_prompt,
     meta_prompt,
 )
+from . import _permissions
 
 
 def login_item_status() -> str | None:
@@ -226,6 +227,18 @@ class HotkeyListener:
         self._cap_pending = None
         self._capture = lambda binding: AppHelper.callAfter(on_captured, binding)
 
+    def _create_tap(self):
+        """A listen-only keyboard tap, or None while Input Monitoring is denied."""
+        event_mask = (1 << Quartz.kCGEventFlagsChanged) | (1 << Quartz.kCGEventKeyDown)
+        return Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            event_mask,
+            self._callback,
+            None,
+        )
+
     def start(
         self,
         on_toggle: Callable[[], None],
@@ -236,21 +249,22 @@ class HotkeyListener:
         self._on_mode = on_mode
         self._on_set = on_set
 
-        event_mask = (1 << Quartz.kCGEventFlagsChanged) | (1 << Quartz.kCGEventKeyDown)
-        tap = Quartz.CGEventTapCreate(
-            Quartz.kCGSessionEventTap,
-            Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionListenOnly,
-            event_mask,
-            self._callback,
-            None,
-        )
+        tap = self._create_tap()
         if tap is None:
-            raise RuntimeError(
-                "Failed to create CGEventTap.\n"
-                "System Settings → Privacy & Security → Input Monitoring\n"
-                "Add Terminal (or iTerm) and toggle the switch on."
+            # No Input Monitoring yet (or a stale grant after a re-signed
+            # `make app`). The system prompt was already requested at startup;
+            # instead of dying with the hotkeys, wait for the user to flip the
+            # toggle and attach as soon as TCC says yes.
+            print(
+                "⚠️ Input Monitoring not granted — hotkeys idle.\n"
+                "   System Settings → Privacy & Security → Input Monitoring → Pysar.\n"
+                "   Waiting for the permission…"
             )
+            while tap is None:
+                time.sleep(2)
+                if _permissions.input_monitoring_status() == _permissions.GRANTED:
+                    tap = self._create_tap()
+            print("✅ Input Monitoring granted — attaching hotkeys")
 
         self._tap = tap
         source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
