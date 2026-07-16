@@ -61,6 +61,62 @@ def transcribe(
         return None, f"Whisper error: {e}"
 
 
+def transcribe_meeting(
+    wav_bytes: bytes, mode: str = "ru", prompt: str = ""
+) -> tuple[str | None, dict, str | None]:
+    """Meeting-path variant of transcribe(): asks the server for verbose_json
+    and returns (text, meta, error) where meta feeds meetingfilter.MeetingFilter:
+
+      lang / lang_prob — best guess from language_probabilities (codes),
+      no_speech / logprob — duration-weighted means over the result segments.
+
+    meta is best-effort: any field the server didn't provide is simply absent,
+    and the filter degrades to "keep". Text handling matches transcribe()."""
+    params = dict(MODES.get(mode, MODES["ru"]))
+    params["response_format"] = "verbose_json"
+    if prompt:
+        params["prompt"] = prompt
+    try:
+        with _whisper_lock:
+            resp = requests.post(
+                WHISPER_URL,
+                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+                data=params,
+                timeout=WHISPER_TIMEOUT,
+            )
+        resp.raise_for_status()
+        result = resp.json()
+    except requests.exceptions.ConnectionError:
+        return None, {}, f"Whisper not running at {WHISPER_URL}. Run `make whisper`."
+    except Exception as e:
+        return None, {}, f"Whisper error: {e}"
+    if not isinstance(result, dict):
+        text = _clean(str(result))
+        return (text or None), {}, None
+    text = _clean(result.get("text", ""))
+    meta: dict = {}
+    probs = result.get("language_probabilities")
+    if isinstance(probs, dict) and probs:
+        lang, prob = max(probs.items(), key=lambda kv: kv[1])
+        meta["lang"], meta["lang_prob"] = lang, float(prob)
+    segs = result.get("segments")
+    if isinstance(segs, list) and segs:
+        try:
+            durs = [max(float(s.get("end", 0)) - float(s.get("start", 0)), 0.01) for s in segs]
+            total = sum(durs)
+            meta["no_speech"] = (
+                sum(float(s.get("no_speech_prob", 0)) * d for s, d in zip(segs, durs, strict=True))
+                / total
+            )
+            meta["logprob"] = (
+                sum(float(s.get("avg_logprob", 0)) * d for s, d in zip(segs, durs, strict=True))
+                / total
+            )
+        except (TypeError, ValueError):
+            pass  # malformed segment payload — keep whatever meta we already have
+    return (text or None), meta, None
+
+
 def is_alive() -> bool:
     """Pings the server. Used to show the startup health status in the menu."""
     try:
