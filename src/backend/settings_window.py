@@ -520,6 +520,12 @@ _TEMPLATE = r"""<!doctype html>
           <div class="meter" id="mt-meter"><i></i></div>
           <span class="count" id="mt-count">0/224</span>
         </div>
+        <div class="pbank" style="display:flex; gap:6px; margin-top:8px; align-items:center">
+          <select id="mt-pbank" style="flex:1; min-width:0"></select>
+          <input id="mt-pname" style="width:120px">
+          <button type="button" id="mt-psave" class="ghost"></button>
+          <button type="button" id="mt-pdel" class="danger"></button>
+        </div>
       </div>
     </section>
   </div>
@@ -558,6 +564,12 @@ _TEMPLATE = r"""<!doctype html>
         <div class="plang" style="margin-top:8px">
           <div class="meter" id="ft-meter"><i></i></div>
           <span class="count" id="ft-count">0/224</span>
+        </div>
+        <div class="pbank" style="display:flex; gap:6px; margin-top:8px; align-items:center">
+          <select id="ft-pbank" style="flex:1; min-width:0"></select>
+          <input id="ft-pname" style="width:120px">
+          <button type="button" id="ft-psave" class="ghost"></button>
+          <button type="button" id="ft-pdel" class="danger"></button>
         </div>
         <div class="help" id="ft-example" style="white-space:normal; margin-top:2px"
           data-i18n="ft.prompt.example">Example: “A webinar about Claude Code: MCP, subagents,
@@ -953,6 +965,65 @@ $("back-enh").addEventListener("click", () => show("main"));
   };
   ftSrc.addEventListener("change", () => { send("set_ft_prompt_source", ftSrc.value); applyFtSrc(); renderFt(); });
   applyFtSrc();
+
+  // ── Saved-prompt bank (shared by meeting + file screens). The bare
+  // meeting_prompt/ft_prompt fields kept losing hand-crafted hints on every
+  // overwrite, so presets live in STATE.saved_prompts and persist via Python.
+  const pbanks = [];
+  const rebuildPBanks = () => pbanks.forEach(fn => fn());
+  function wirePromptBank(prefix, promptEl, afterFill){
+    const sel = $(prefix + "-pbank"), nameEl = $(prefix + "-pname");
+    const saveBtn = $(prefix + "-psave"), delBtn = $(prefix + "-pdel");
+    nameEl.placeholder = T("pbank.name.ph", "preset name…");
+    saveBtn.textContent = T("pbank.save", "Save");
+    delBtn.textContent = "✕";
+    delBtn.title = T("pbank.delete", "Delete selected preset");
+    const rebuild = () => {
+      const keep = sel.value;
+      sel.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = ""; ph.textContent = T("pbank.pick.ph", "Saved prompts…");
+      sel.appendChild(ph);
+      (STATE.saved_prompts || []).forEach(p => {
+        const o = document.createElement("option");
+        o.value = p.name; o.textContent = p.name; o.title = p.text;
+        if (p.name === keep) o.selected = true;
+        sel.appendChild(o);
+      });
+    };
+    pbanks.push(rebuild);
+    rebuild();
+    sel.addEventListener("change", () => {
+      const p = (STATE.saved_prompts || []).find(x => x.name === sel.value);
+      if (!p) return;
+      promptEl.value = p.text;
+      nameEl.value = p.name;
+      promptEl.dispatchEvent(new Event("change"));  // persist via set_*_prompt
+      if (afterFill) afterFill();
+    });
+    saveBtn.addEventListener("click", () => {
+      const text = (promptEl.value || "").trim();
+      if (!text) return;
+      // No typed name → derive one from the first words so saving stays 1-click.
+      const name = (nameEl.value || "").trim() ||
+        text.split(/\s+/).slice(0, 4).join(" ").slice(0, 40);
+      nameEl.value = name;
+      STATE.saved_prompts = (STATE.saved_prompts || []).filter(p => p.name !== name);
+      STATE.saved_prompts.push({name, text});
+      send("save_prompt", {name, text});
+      rebuildPBanks();
+      sel.value = name;
+    });
+    delBtn.addEventListener("click", () => {
+      const name = sel.value;
+      if (!name) return;
+      STATE.saved_prompts = (STATE.saved_prompts || []).filter(p => p.name !== name);
+      send("delete_prompt", name);
+      rebuildPBanks();
+    });
+  }
+  wirePromptBank("mt", mtPrompt, () => refreshMtMeter());
+  wirePromptBank("ft", ftPrompt, () => { refreshFtMeter(); renderFt(); });
   $("ft-pick").addEventListener("click", () => send("ft_pick_files"));
   $("ft-pause").addEventListener("click", () => send("ft_pause"));
   $("ft-cancel-all").addEventListener("click", () => send("ft_cancel_all"));
