@@ -152,6 +152,9 @@ class VoiceTyper:
             ft_prompt_source=self._settings.get("ft_prompt_source", "auto"),
             on_set_ft_prompt=self._on_set_ft_prompt,
             on_set_ft_prompt_source=self._on_set_ft_prompt_source,
+            saved_prompts=self._settings.get("saved_prompts", []),
+            on_save_saved_prompt=self._on_save_saved_prompt,
+            on_delete_saved_prompt=self._on_delete_saved_prompt,
             enhance_enabled=self._settings.get("enhance_enabled", False),
             enhance_model=self._settings.get("enhance_model", ""),
             enhance_style=self._settings.get("enhance_style", "custom"),
@@ -940,6 +943,22 @@ class VoiceTyper:
 
     def _on_set_ft_prompt_source(self, source: str) -> None:
         self._settings["ft_prompt_source"] = source if source in ("auto", "custom") else "auto"
+        save_settings(self._settings)
+
+    def _on_save_saved_prompt(self, name: str, text: str) -> None:
+        # Upsert by name so re-saving a preset refines it instead of duplicating.
+        name, text = (name or "").strip(), (text or "").strip()
+        if not name or not text:
+            return
+        bank = [p for p in self._settings.get("saved_prompts", []) if p.get("name") != name]
+        bank.append({"name": name, "text": text})
+        self._settings["saved_prompts"] = bank
+        save_settings(self._settings)
+
+    def _on_delete_saved_prompt(self, name: str) -> None:
+        self._settings["saved_prompts"] = [
+            p for p in self._settings.get("saved_prompts", []) if p.get("name") != name
+        ]
         save_settings(self._settings)
 
     def _on_set_meeting_hidden(self, on: bool) -> None:

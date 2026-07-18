@@ -891,6 +891,9 @@ class Tray:
         ft_prompt_source: str = "auto",
         on_set_ft_prompt: Callable[[str], None] | None = None,
         on_set_ft_prompt_source: Callable[[str], None] | None = None,
+        saved_prompts: list | None = None,
+        on_save_saved_prompt: Callable[[str, str], None] | None = None,
+        on_delete_saved_prompt: Callable[[str], None] | None = None,
         enhance_enabled: bool = False,
         enhance_model: str = "",
         enhance_style: str = "custom",
@@ -983,6 +986,9 @@ class Tray:
         self._ft_prompt = ft_prompt
         self._on_set_ft_prompt = on_set_ft_prompt
         self._on_set_ft_prompt_source = on_set_ft_prompt_source
+        self._saved_prompts = [dict(p) for p in (saved_prompts or [])]
+        self._on_save_saved_prompt = on_save_saved_prompt
+        self._on_delete_saved_prompt = on_delete_saved_prompt
         self._ft_last_push = 0.0  # progress → UI push throttle (1 Hz)
         self._ft_last_state = "idle"  # queue state at the last UI push
         self._hud = None  # streaming status overlay, built lazily on first show
@@ -1107,6 +1113,8 @@ class Tray:
                         "set_ft_lang": self._set_ft_lang,
                         "set_ft_prompt": self._set_ft_prompt,
                         "set_ft_prompt_source": self._set_ft_prompt_source,
+                        "save_prompt": self._save_saved_prompt,
+                        "delete_prompt": self._delete_saved_prompt,
                         "ft_pause": self._ft_pause_toggle,
                         "ft_cancel_all": self._ft_cancel_all,
                         "ft_remove": self._ft_remove,
@@ -1165,6 +1173,7 @@ class Tray:
             "ft_lang": self._ft_lang or self._lang(),
             "ft_prompt": self._ft_prompt,
             "ft_prompt_source": self._ft_prompt_source,
+            "saved_prompts": [dict(p) for p in self._saved_prompts],
             "ft_queue": (
                 self._ft_queue.snapshot()
                 if self._ft_queue is not None
@@ -1355,6 +1364,27 @@ class Tray:
         self._ft_prompt_source = source if source in ("auto", "custom") else "auto"
         if self._on_set_ft_prompt_source:
             self._on_set_ft_prompt_source(self._ft_prompt_source)
+
+    def _save_saved_prompt(self, payload) -> None:
+        # payload = {"name": …, "text": …} from the settings webview.
+        if not isinstance(payload, dict):
+            return
+        name = str(payload.get("name") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not name or not text:
+            return
+        self._saved_prompts = [p for p in self._saved_prompts if p.get("name") != name]
+        self._saved_prompts.append({"name": name, "text": text})
+        if self._on_save_saved_prompt:
+            self._on_save_saved_prompt(name, text)
+
+    def _delete_saved_prompt(self, name) -> None:
+        name = str(name or "").strip()
+        if not name:
+            return
+        self._saved_prompts = [p for p in self._saved_prompts if p.get("name") != name]
+        if self._on_delete_saved_prompt:
+            self._on_delete_saved_prompt(name)
 
     def _ft_resolve_prompt(self) -> str:
         """Whisper context for the file job — mirrors the meeting resolver:

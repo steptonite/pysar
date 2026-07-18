@@ -76,6 +76,11 @@ DEFAULTS = {
     #   meeting_prompt_source — "custom" = use the field above; "profiles" = use
     #                           the active dictation profiles of the meeting language
     "meeting_prompt_source": "custom",
+    #   saved_prompts — named custom-hint presets shared by the meeting and
+    #                   file-transcription screens ([{name, text}]); the plain
+    #                   meeting_prompt/ft_prompt fields kept losing hand-crafted
+    #                   hints on every overwrite
+    "saved_prompts": [],
     #   meeting_source_mode — speaker separation in the transcript:
     #     "off"   = mixed stream, no source labels (as before)
     #     "fast"  = one mixed pass; label each segment by the louder source (RMS)
