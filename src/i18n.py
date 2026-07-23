@@ -273,6 +273,9 @@ _UK = {
     "notif.hiddenNoSaveMsg": "Запис без вікна увімкнено, але збереження у файл вимкнено",
     "notif.captureErrorTitle": "Не вдалося захопити звук",
     "notif.captureErrorMsg": "Дай дозвіл «Запис екрана» для Pysar у Системних налаштуваннях, тоді перезапусти.",
+    "st.meetingRecovering": "🔁 Відновлюю захоплення звуку…",
+    "notif.captureLostTitle": "Захоплення звуку втрачено",
+    "notif.captureLostMsg": "Не вдалось відновити захоплення після кількох спроб. Транскрипт збережено до цього моменту. Перевір дозвіл «Запис екрана» і запусти транскрипцію знову.",
     # Enhance — post-dictation LLM styling via Ollama.
     "st.enhancing": "Покращую… ✨",
     "hud.enhancing": "Покращую… ✨",
@@ -559,6 +562,9 @@ _EN = {
     "notif.hiddenNoSaveMsg": "Record-without-window is on, but saving to file is off",
     "notif.captureErrorTitle": "Couldn't capture audio",
     "notif.captureErrorMsg": "Grant Screen Recording to Pysar in System Settings, then relaunch.",
+    "st.meetingRecovering": "🔁 Recovering audio capture…",
+    "notif.captureLostTitle": "Audio capture lost",
+    "notif.captureLostMsg": "Couldn't recover capture after several tries. The transcript is saved up to this point. Check Screen Recording permission and start transcription again.",
     # Enhance — post-dictation LLM styling via Ollama.
     "st.enhancing": "Enhancing… ✨",
     "hud.enhancing": "Enhancing… ✨",
