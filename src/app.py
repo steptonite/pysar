@@ -93,6 +93,12 @@ class VoiceTyper:
         self._meeting_worker: threading.Thread | None = None
         self._meeting_tails: dict[str | None, str] = {}  # per-source rolling context
         self._meeting_server_down = False
+        # Watchdog & capture-recover guards (08.07 / 15.07 / 23.07 regressions).
+        self._recover_lock = threading.Lock()  # serialises watchdog + error recover
+        self._watchdog_stop = threading.Event()  # signals the watchdog to exit
+        self._watchdog_thread: threading.Thread | None = None
+        self._meeting_recover_count = 0  # restarts in the current window
+        self._meeting_recover_window_start = 0.0  # monotonic start of that window
 
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
@@ -384,6 +390,17 @@ class VoiceTyper:
     # context (~last spoken sentence) so the vocabulary prompt still fits in front.
     _CTX_TAIL_CHARS = 180
 
+    # Meeting-stream liveness watchdog (regression 23.07.2026): a mute/unmute
+    # cycle silently killed the SCK stream without a didStop callback, leaving the
+    # transcriber mute while the UI showed "on". Instead of killing the whole
+    # session on any capture stop, we restart only the capture stream (file /
+    # worker / queue / tails preserved) and a heartbeat watchdog catches silent
+    # stalls where no error ever fires.
+    _MEETING_STALL_SEC = 8.0  # no audio buffer for this long ⇒ suspect a stall
+    _MEETING_WATCHDOG_TICK = 3.0  # heartbeat check interval
+    _MEETING_RECOVER_MAX = 3  # max restarts within the window below
+    _MEETING_RECOVER_WINDOW = 30.0  # sliding window for the restart cap
+
     def _seg_worker_loop(self) -> None:
         # Vocabulary prompt is composed once — the active profile group doesn't
         # change mid-dictation. With no profile for this language, fall back to a
@@ -607,16 +624,87 @@ class VoiceTyper:
         self._tray.set_title("🎧")
         self._tray.set_status(self._t("st.meetingOn"))
 
+        # Liveness watchdog: catches a silent SCK stall (mute/unmute) that fires no
+        # error and would otherwise leave the transcriber mute until a manual restart.
+        self._watchdog_stop.clear()
+        self._meeting_recover_count = 0
+        self._meeting_recover_window_start = time.monotonic()
+        self._watchdog_thread = threading.Thread(target=self._meeting_watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
+
     def _enqueue_meeting(self, seg_wav: bytes, source: str | None = None) -> None:
         if self._meeting_queue is not None:
             self._meeting_queue.put((seg_wav, source))
 
     def _on_meeting_error(self, msg: str) -> None:
+        """Capture reported an error or an unrequested stop. Before 23.07.2026 this
+        unconditionally killed the meeting — a mute/unmute cycle destroyed the whole
+        session. Now, while the meeting is still meant to be running, we restart only
+        the capture stream (session preserved); a burst of repeated failures falls
+        back to full teardown inside _recover_meeting_capture. Runs on the SCK
+        delegate thread, so hand recovery off to a worker thread and return fast."""
         print(f"⚠️ system capture: {msg}")
-        self._tray.notify(
-            "Pysar", self._t("notif.captureErrorTitle"), self._t("notif.captureErrorMsg")
-        )
-        threading.Thread(target=self._stop_meeting, daemon=True).start()
+        if self._meeting and not self._meeting_stopping:
+            threading.Thread(target=self._recover_meeting_capture, args=(msg,), daemon=True).start()
+
+    def _meeting_watchdog_loop(self) -> None:
+        """Detect a silent stream stall — SCK stops delivering buffers but never
+        fires didStop (the mute/unmute deadlock). While the meeting runs, if no
+        audio buffer has arrived for _MEETING_STALL_SEC, restart the capture."""
+        while not self._watchdog_stop.wait(self._MEETING_WATCHDOG_TICK):
+            if not self._meeting or self._meeting_stopping:
+                continue
+            sysrec = self._sysrec  # atomic snapshot
+            if sysrec is None:
+                continue
+            dt = sysrec.seconds_since_audio()
+            if dt is None:  # no buffers yet (warmup) or recorder stopped
+                continue
+            if dt > self._MEETING_STALL_SEC:
+                self._recover_meeting_capture(f"watchdog: no audio {dt:.0f}s")
+
+    def _recover_meeting_capture(self, reason: str) -> None:
+        """Restart only the SCK capture stream, keeping the live meeting session
+        (file, worker, queue, per-source tails) intact. Serialised by
+        _recover_lock so the watchdog and _on_meeting_error can't recover twice at
+        once; a no-op once the user has begun stopping. If more than
+        _MEETING_RECOVER_MAX restarts happen inside _MEETING_RECOVER_WINDOW the
+        stream is deemed unrecoverable (e.g. Screen Recording revoked) and we fall
+        back to a clean _stop_meeting — the transcript file is complete up to here."""
+        with self._recover_lock:
+            if not self._meeting or self._meeting_stopping:
+                return
+
+            now = time.monotonic()
+            if (
+                self._meeting_recover_count == 0
+                or now - self._meeting_recover_window_start > self._MEETING_RECOVER_WINDOW
+            ):
+                self._meeting_recover_count = 0
+                self._meeting_recover_window_start = now
+            self._meeting_recover_count += 1
+
+            if self._meeting_recover_count > self._MEETING_RECOVER_MAX:
+                print(f"⚠️ meeting capture unrecoverable ({reason}) — stopping")
+                self._tray.notify(
+                    "Pysar", self._t("notif.captureLostTitle"), self._t("notif.captureLostMsg")
+                )
+                self._stop_meeting()
+                return
+
+            print(f"🔁 meeting capture recover ({reason})")
+            # Tear down the dead recorder and start a FRESH one — reusing the dead
+            # object risks leftover stream refs holding the mic. Same callbacks keep
+            # the worker/queue/file/tails wired unchanged.
+            if self._sysrec is not None:
+                with contextlib.suppress(Exception):
+                    self._sysrec.stop()
+            capture_mic = self._settings.get("meeting_capture_mic", True)
+            source_mode = self._settings.get("meeting_source_mode", "off")
+            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
+            self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
+            # A single tray update, not a notification per restart — no spam.
+            self._tray.set_status(self._t("st.meetingRecovering"))
 
     def _meeting_worker_loop(self) -> None:
         # Meeting language is its own setting; None / unknown falls back to the live
@@ -699,6 +787,10 @@ class VoiceTyper:
         self._meeting = False
         self._meeting_mic = False
         self._meeting_stopping = True  # _start_meeting refuses until the drain ends
+        # Silence the watchdog before draining so it can't fire a spurious recover
+        # while the queue flushes; the guards above (_meeting / _meeting_stopping)
+        # also make _recover_meeting_capture a no-op from here on.
+        self._watchdog_stop.set()
         saved_path = None
         try:
             # Stop capture first (flushes the trailing segment into the queue), then
@@ -720,6 +812,12 @@ class VoiceTyper:
             # otherwise the menu keeps offering "stop transcription" for a
             # capture that no longer exists (stress test 08.07.2026, bug 1).
             self._meeting_stopping = False
+            # Join the watchdog (already signalled). Skip if we ARE the watchdog
+            # thread — a cap-triggered recover calls _stop_meeting on that thread,
+            # and joining self would raise; it exits on its own next tick.
+            wd = self._watchdog_thread
+            if wd is not None and wd is not threading.current_thread() and wd.is_alive():
+                wd.join(timeout=self._MEETING_WATCHDOG_TICK + 1.0)
             if self._transcript_window is not None:
                 self._transcript_window.hide()  # island shows only while transcribing
             self._tray.set_meeting_active(False)

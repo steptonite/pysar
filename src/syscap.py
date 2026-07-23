@@ -177,6 +177,19 @@ class SystemAudioRecorder:
         self._queue = None
         self._started_at = 0.0
         self._stopped = threading.Event()
+        # Liveness heartbeat: monotonic ts of the most recent valid audio buffer.
+        # A watchdog reads it to detect a silent SCK stall (mute/sleep/reconfigure
+        # that never fires didStop — regression 23.07.2026).
+        self._last_audio_monotonic = 0.0
+
+    def seconds_since_audio(self) -> float | None:
+        """Seconds since the last valid audio buffer, or None if the capture has
+        not delivered a buffer yet or has been stopped. A value above a sane
+        threshold (≈8 s) means the SCK stream is likely stalled while SCK still
+        believes it is running. Reads a primitive + Event under the GIL."""
+        if self._stopped.is_set() or self._last_audio_monotonic == 0.0:
+            return None
+        return time.monotonic() - self._last_audio_monotonic
 
     def set_capture_mic(self, on: bool) -> None:
         """Takes effect on the next start()."""
@@ -209,6 +222,10 @@ class SystemAudioRecorder:
         self._e_mic = 0.0
         self._started_at = time.time()
         self._stopped.clear()
+        # Reset heartbeat so a reused recorder reports None (not a stale gap) until
+        # its first fresh buffer — otherwise the watchdog could fire a spurious
+        # recover in the first seconds of the next meeting.
+        self._last_audio_monotonic = 0.0
 
         segmenter_kw = dict(
             sample_rate=SAMPLE_RATE,
@@ -367,6 +384,10 @@ class SystemAudioRecorder:
         mono, sr = _pcm_mono(sbuf)
         if mono.size == 0:
             return
+        # Heartbeat: a delivered buffer proves the stream is alive. Ambient mic
+        # data keeps flowing even in silence — only a dead stream yields zero
+        # buffers, so the watchdog can tell a stall from a legitimate pause.
+        self._last_audio_monotonic = time.monotonic()
         x = _to_16k(mono, int(sr))
         with self._lock:
             if self._source_mode == "smart":
