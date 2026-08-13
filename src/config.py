@@ -110,6 +110,16 @@ SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz
 CHANNELS = 1
 CHUNK_SIZE = 1024
 
+# The mic is opened at CAPTURE_RATE and decimated to SAMPLE_RATE in memory
+# (see resample.py) — whisper still gets its 16 kHz, but the TTS-dataset copy
+# keeps the full band. 48 kHz is the native rate of every Mac input we care
+# about and divides by exactly 3, so the decimation is a clean ÷3 with no
+# fractional resampling. Nothing downstream sees 48 kHz except the dataset
+# writer; if the device refuses it, capture falls back to SAMPLE_RATE.
+CAPTURE_RATE = 48000
+DECIMATION = CAPTURE_RATE // SAMPLE_RATE  # 3
+CAPTURE_CHUNK_SIZE = CHUNK_SIZE * DECIMATION  # 3072 → one 16 kHz block out
+
 # ── Streaming dictation ──────────────────────────────────────────────────────
 # Pause-based segmentation for the "streaming" dictation mode (see segmenter.py).
 # A segment is cut when trailing silence reaches PAUSE_SEC *and* it holds at

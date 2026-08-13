@@ -47,20 +47,26 @@ from .profiles import (
 from .recorder import AudioRecorder, list_input_devices
 from .recordings import (
     KEEP_LAST_OPTIONS,
+    dataset_dir,
     load_settings,
     recordings_dir,
+    save_dataset_clip,
     save_recording,
     save_settings,
 )
 from .syscap import SystemAudioRecorder
 from .transcriber import is_alive, transcribe, transcribe_meeting
-from .transcripts import TranscriptFile
+from .transcripts import TranscriptFile, set_transcripts_dir
 
 
 class VoiceTyper:
     def __init__(self):
         # Persisted settings (off by default — audio stays in memory).
         self._settings = load_settings()
+        # Transcript output folder, before anything can write one. Empty/missing
+        # keeps the built-in location; an unreachable folder falls back at write
+        # time rather than resetting the user's choice.
+        set_transcripts_dir(self._settings.get("transcripts_dir") or None)
 
         # Restore the last-used language; fall back if the stored code is unknown.
         saved_mode = self._settings.get("mode", DEFAULT_MODE)
@@ -94,11 +100,16 @@ class VoiceTyper:
         self._meeting_tails: dict[str | None, str] = {}  # per-source rolling context
         self._meeting_server_down = False
         # Watchdog & capture-recover guards (08.07 / 15.07 / 23.07 regressions).
-        self._recover_lock = threading.Lock()  # serialises watchdog + error recover
+        # Reentrant: the restart-cap path calls _stop_meeting from *inside* the
+        # lock, and _stop_meeting takes it too (so a recover can never start a
+        # fresh capture behind a stop that's already draining — orphan stream
+        # holding the mic, segments falling into a dead queue).
+        self._recover_lock = threading.RLock()  # serialises watchdog + error recover
         self._watchdog_stop = threading.Event()  # signals the watchdog to exit
         self._watchdog_thread: threading.Thread | None = None
         self._meeting_recover_count = 0  # restarts in the current window
         self._meeting_recover_window_start = 0.0  # monotonic start of that window
+        self._capture_started_at = 0.0  # monotonic start of the CURRENT capture stream
 
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
@@ -109,6 +120,9 @@ class VoiceTyper:
             keep_last_options=KEEP_LAST_OPTIONS,
             on_toggle_save=self._on_toggle_save,
             on_set_keep_last=self._on_set_keep_last,
+            tts_dataset=self._settings["tts_dataset"],
+            on_toggle_dataset=self._on_toggle_dataset,
+            dataset_dir=str(dataset_dir()),
             recordings_dir=str(recordings_dir()),
             profiles=self._settings["profiles"],
             active_profiles=self._settings["active_profiles"],
@@ -168,6 +182,7 @@ class VoiceTyper:
             on_set_enhance_model=self._on_set_enhance_model,
             on_set_enhance_style=self._on_set_enhance_style,
             enhance_status_provider=self._enhance_status,
+            on_set_transcripts_dir=self._on_set_transcripts_dir,
         )
 
         # Raise the Input Monitoring / Accessibility system prompts ourselves —
@@ -239,6 +254,9 @@ class VoiceTyper:
             self._warm_whisper()
             self._tray.set_title("🔴")
             self._tray.set_status(self._t("st.recording"))
+            # Read the dataset toggle at the top of every take, so flipping it in
+            # Settings takes effect on the next dictation and never mid-recording.
+            self._recorder.set_dataset(bool(self._settings.get("tts_dataset")))
             if self._streaming:
                 self._start_streaming()
             else:
@@ -292,6 +310,18 @@ class VoiceTyper:
         self._tray.notify("Pysar", self._t("notif.enhanceOkTitle"), self._t("notif.enhanceOkMsg"))
         return result or text
 
+    def _save_dataset_pair(self, text: str, lang: str) -> None:
+        """Archive the take's full-band audio with its raw transcript, when the
+        TTS-dataset toggle is on. Never let this break dictation."""
+        if not self._settings.get("tts_dataset"):
+            return
+        try:
+            raw = self._recorder.raw_wav()
+            if raw:
+                save_dataset_clip(raw, text, lang=lang, rate=self._recorder.raw_rate())
+        except Exception as e:
+            print(f"⚠️ save_dataset_clip failed: {e}")
+
     def _finish(self) -> None:
         try:
             wav = self._recorder.stop()
@@ -326,6 +356,11 @@ class VoiceTyper:
                 self._tray.set_status(self._t("st.silence"))
                 self._tray.set_title(self._idle_title())
                 return
+
+            # Archive the (audio, text) pair BEFORE enhancing: the dataset must
+            # hold what was actually spoken, not the LLM's rewrite of it — a
+            # voice model trained on mismatched text learns to mispronounce.
+            self._save_dataset_pair(text, lang)
 
             text = self._maybe_enhance(text, lang)
 
@@ -376,6 +411,9 @@ class VoiceTyper:
         # as context on the next segment so it keeps continuity across cuts (far
         # fewer reformulated/invented words on short fragments).
         self._ctx_tail = ""
+        # Everything recognized this take, untruncated — _ctx_tail is capped for
+        # the prompt and can't stand in as the dataset transcript.
+        self._take_text: list[str] = []
         self._seg_worker = threading.Thread(target=self._seg_worker_loop, daemon=True)
         self._seg_worker.start()
         self._recorder.start(on_segment=self._enqueue_segment, on_error=self._on_mic_error)
@@ -397,6 +435,14 @@ class VoiceTyper:
     # worker / queue / tails preserved) and a heartbeat watchdog catches silent
     # stalls where no error ever fires.
     _MEETING_STALL_SEC = 8.0  # no audio buffer for this long ⇒ suspect a stall
+    # A capture that never delivers its FIRST buffer is just as dead, and the
+    # heartbeat can't see it (seconds_since_audio() reads None until buffer #1).
+    # That blind spot is what left the menu offering "Stop transcription" for a
+    # capture that had silently died — the zombie was invisible to the watchdog
+    # after a recover started a stream that never came up (bug 07.08.2026).
+    # Generous vs _MEETING_STALL_SEC: SCK setup is async (shareable content →
+    # stream → start) and can take seconds on a loaded machine.
+    _MEETING_FIRST_BUFFER_SEC = 15.0
     _MEETING_WATCHDOG_TICK = 3.0  # heartbeat check interval
     _MEETING_RECOVER_MAX = 3  # max restarts within the window below
     _MEETING_RECOVER_WINDOW = 30.0  # sliding window for the restart cap
@@ -458,6 +504,7 @@ class VoiceTyper:
         # Extend the rolling context with what was just recognized (typed or
         # buffered alike — continuity is about the words, not where they landed).
         self._ctx_tail = f"{self._ctx_tail} {text}".strip()[-self._CTX_TAIL_CHARS :]
+        self._take_text.append(text)
 
         target = getattr(self, "_paste_target", None)
         if self._buffer_mode or not self._paster.has_editable_focus(target):
@@ -514,6 +561,11 @@ class VoiceTyper:
             if self._seg_worker is not None:
                 self._seg_worker.join(timeout=60)
 
+            # The take's full transcript only exists once the worker has drained,
+            # so the dataset pair is written here rather than per segment.
+            lang = MODES.get(self._mode, MODES[DEFAULT_MODE])["language"]
+            self._save_dataset_pair(" ".join(self._take_text), lang)
+
             self._tray.hide_hud()
 
             # Sentences captured while no field was focused stay on the clipboard;
@@ -549,6 +601,15 @@ class VoiceTyper:
     def _on_toggle_meeting(self) -> None:
         """Menu toggle. Start/stop a system-audio + mic capture into the live
         transcript window. Independent of the dictation hotkey."""
+        # A stop already in flight owns the toggle: without this the click fell
+        # through to the start branch (_meeting is False the moment stopping
+        # begins), _start_meeting bounced it into the menu-only status line, and
+        # the user saw a dead button (report 07.08.2026).
+        if self._meeting_stopping:
+            self._tray.set_status(self._t("st.meetingStopping"))
+            self._tray.show_hud(self._t("hud.meetingStopping"), "recognizing")
+            threading.Timer(2.0, self._tray.hide_hud).start()
+            return
         if self._meeting:
             threading.Thread(target=self._stop_meeting, daemon=True).start()
         else:
@@ -629,6 +690,7 @@ class VoiceTyper:
         self._watchdog_stop.clear()
         self._meeting_recover_count = 0
         self._meeting_recover_window_start = time.monotonic()
+        self._capture_started_at = time.monotonic()  # first-buffer deadline runs from here
         self._watchdog_thread = threading.Thread(target=self._meeting_watchdog_loop, daemon=True)
         self._watchdog_thread.start()
 
@@ -652,16 +714,31 @@ class VoiceTyper:
         fires didStop (the mute/unmute deadlock). While the meeting runs, if no
         audio buffer has arrived for _MEETING_STALL_SEC, restart the capture."""
         while not self._watchdog_stop.wait(self._MEETING_WATCHDOG_TICK):
-            if not self._meeting or self._meeting_stopping:
-                continue
-            sysrec = self._sysrec  # atomic snapshot
-            if sysrec is None:
-                continue
-            dt = sysrec.seconds_since_audio()
-            if dt is None:  # no buffers yet (warmup) or recorder stopped
-                continue
-            if dt > self._MEETING_STALL_SEC:
-                self._recover_meeting_capture(f"watchdog: no audio {dt:.0f}s")
+            self._watchdog_tick()
+
+    def _watchdog_tick(self) -> str | None:
+        """One liveness check. Returns the recover reason it acted on (None when
+        the capture looks alive), so the rule is testable without the thread."""
+        if not self._meeting or self._meeting_stopping:
+            return None
+        sysrec = self._sysrec  # atomic snapshot
+        if sysrec is None:
+            return None
+        dt = sysrec.seconds_since_audio()
+        if dt is None:
+            # No buffer has EVER arrived on this stream. Warmup for the first
+            # seconds, dead-on-arrival after that — treat it as a stall, or the
+            # watchdog stays blind forever and the meeting becomes a zombie.
+            waited = time.monotonic() - self._capture_started_at
+            if not self._capture_started_at or waited <= self._MEETING_FIRST_BUFFER_SEC:
+                return None
+            reason = f"watchdog: no first buffer in {waited:.0f}s"
+        elif dt > self._MEETING_STALL_SEC:
+            reason = f"watchdog: no audio {dt:.0f}s"
+        else:
+            return None
+        self._recover_meeting_capture(reason)
+        return reason
 
     def _recover_meeting_capture(self, reason: str) -> None:
         """Restart only the SCK capture stream, keeping the live meeting session
@@ -689,6 +766,8 @@ class VoiceTyper:
                 self._tray.notify(
                     "Pysar", self._t("notif.captureLostTitle"), self._t("notif.captureLostMsg")
                 )
+                self._tray.show_hud(self._t("hud.captureLost"), "error")
+                threading.Timer(3.0, self._tray.hide_hud).start()
                 self._stop_meeting()
                 return
 
@@ -703,8 +782,17 @@ class VoiceTyper:
             source_mode = self._settings.get("meeting_source_mode", "off")
             self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
             self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
+            # Re-arm the first-buffer deadline: if THIS stream never comes up the
+            # watchdog must notice (it reads None until buffer #1) instead of
+            # going quiet for the rest of the meeting.
+            self._capture_started_at = time.monotonic()
             # A single tray update, not a notification per restart — no spam.
             self._tray.set_status(self._t("st.meetingRecovering"))
+            # With the transcript island hidden the menu status line is the only
+            # channel, and it's invisible until the menu is opened — show the HUD
+            # so a recovering capture isn't silent.
+            self._tray.show_hud(self._t("hud.meetingRecovering"), "error")
+            threading.Timer(2.0, self._tray.hide_hud).start()
 
     def _meeting_worker_loop(self) -> None:
         # Meeting language is its own setting; None / unknown falls back to the live
@@ -782,22 +870,37 @@ class VoiceTyper:
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 
     def _stop_meeting(self) -> None:
-        if not self._meeting:
-            return
-        self._meeting = False
-        self._meeting_mic = False
-        self._meeting_stopping = True  # _start_meeting refuses until the drain ends
-        # Silence the watchdog before draining so it can't fire a spurious recover
-        # while the queue flushes; the guards above (_meeting / _meeting_stopping)
-        # also make _recover_meeting_capture a no-op from here on.
-        self._watchdog_stop.set()
-        saved_path = None
-        try:
-            # Stop capture first (flushes the trailing segment into the queue), then
-            # drain the worker so the final sentence lands before the file is closed.
+        # Flag flip + capture teardown under the recover lock: a recover that
+        # already passed its own guard would otherwise start a FRESH stream behind
+        # our back (orphan capture holding the mic, segments into a dead queue).
+        # The lock is reentrant — the restart-cap path calls us from inside it.
+        # Draining happens outside the lock: it can take up to a minute and must
+        # not block the watchdog thread that long.
+        with self._recover_lock:
+            if not self._meeting:
+                return
+            self._meeting = False
+            self._meeting_mic = False
+            self._meeting_stopping = True  # _start_meeting refuses until the drain ends
+            # Silence the watchdog before draining so it can't fire a spurious recover
+            # while the queue flushes; the guards above (_meeting / _meeting_stopping)
+            # also make _recover_meeting_capture a no-op from here on.
+            self._watchdog_stop.set()
+            # Say "stopping" in the MENU now, not after the drain. The label used to
+            # flip only in the finally below, up to a minute later, so the item still
+            # read "Stop transcription" and a click on it fell through to the start
+            # branch and was swallowed — the user read that as a frozen button
+            # (report 07.08.2026).
+            self._tray.set_meeting_stopping()
+            self._tray.set_status(self._t("st.meetingStopping"))
+            # Stop capture (flushes the trailing segment into the queue) while still
+            # holding the lock, so no recover can resurrect the stream after this.
             if self._sysrec is not None:
                 with contextlib.suppress(Exception):
                     self._sysrec.stop()
+        saved_path = None
+        try:
+            # Drain the worker so the final sentence lands before the file is closed.
             if self._meeting_queue is not None:
                 self._meeting_queue.put(None)
             if self._meeting_worker is not None:
@@ -848,6 +951,12 @@ class VoiceTyper:
         self._settings["save_recordings"] = enabled
         save_settings(self._settings)
         self._tray.set_status(self._t("st.saving") if enabled else self._t("st.memoryOnly"))
+
+    def _on_toggle_dataset(self, enabled: bool) -> None:
+        self._settings["tts_dataset"] = enabled
+        save_settings(self._settings)
+        self._recorder.set_dataset(enabled)
+        self._tray.set_status(self._t("st.datasetOn") if enabled else self._t("st.datasetOff"))
 
     def _on_set_keep_last(self, n: int) -> None:
         self._settings["keep_last"] = n
@@ -1033,6 +1142,12 @@ class VoiceTyper:
         self._settings["meeting_prompt_source"] = (
             source if source in ("custom", "profiles") else "custom"
         )
+        save_settings(self._settings)
+
+    def _on_set_transcripts_dir(self, path: str) -> None:
+        """Output folder for BOTH transcript writers (meeting + file). Empty
+        string means "back to the built-in folder"."""
+        self._settings["transcripts_dir"] = (path or "").strip()
         save_settings(self._settings)
 
     def _on_set_ft_prompt(self, text: str) -> None:

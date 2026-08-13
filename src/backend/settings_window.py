@@ -295,6 +295,21 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </section>
 
+    <div class="sec-title" data-i18n="sec.dataset">Voice dataset</div>
+    <section>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="dataset.label">Collect voice dataset</div>
+          <div class="help" data-i18n="dataset.help">Archive every dictation full-band with its transcript, to train your own voice</div></div>
+        <label class="toggle"><input type="checkbox" id="dataset">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row" id="dataset-row">
+        <div class="body"><div class="label" data-i18n="dataset.folder">Dataset folder</div>
+          <div class="help" id="ds-path"></div></div>
+        <button id="open-dataset" data-i18n="folder.open">Open</button>
+      </div>
+    </section>
+
     <div class="sec-title" data-i18n="sec.dictation">Dictation</div>
     <section>
       <div class="row">
@@ -503,7 +518,11 @@ _TEMPLATE = r"""<!doctype html>
       <div class="row">
         <div class="body"><div class="label" data-i18n="folder.label">Storage folder</div>
           <div class="help" id="mt-path"></div></div>
-        <button id="mt-open" data-i18n="meeting.openFolder">Open folder</button>
+        <div class="rrow">
+          <button id="mt-choose" data-i18n="ft.out.choose">Change…</button>
+          <button id="mt-reset" class="ghost" data-i18n="ft.out.reset">Use default</button>
+          <button id="mt-open" data-i18n="meeting.openFolder">Open folder</button>
+        </div>
       </div>
     </section>
     <section>
@@ -586,6 +605,15 @@ _TEMPLATE = r"""<!doctype html>
       <div class="help" id="ft-need" style="display:none; white-space:normal;
         color:var(--danger); margin:2px 2px 8px" data-i18n="ft.needPrompt">Type a context
         hint above or switch the source to “Auto” — file picking is blocked.</div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="ft.out.label">Storage folder</div>
+          <div class="help" id="ft-path"></div></div>
+        <div class="rrow">
+          <button id="ft-choose" data-i18n="ft.out.choose">Change…</button>
+          <button id="ft-reset" class="ghost" data-i18n="ft.out.reset">Use default</button>
+          <button id="ft-open" data-i18n="meeting.openFolder">Open folder</button>
+        </div>
+      </div>
     </section>
     <section id="ft-queue-sec" style="display:none">
       <div class="row" style="display:block">
@@ -783,6 +811,18 @@ $("back-enh").addEventListener("click", () => show("main"));
   $("rec-path").textContent = STATE.recordings_dir || "";
   $("open-folder").addEventListener("click", () => send("open_folder"));
 
+  const ds = $("dataset"), dsRow = $("dataset-row");
+  const dsSync = () => dsRow.classList.toggle("disabled", !ds.checked);
+  ds.checked = !!STATE.tts_dataset; dsSync();
+  ds.addEventListener("change", () => { dsSync(); send("set_dataset", ds.checked); });
+  // Show how much corpus is banked — collecting for a voice model runs for
+  // weeks, and a silent toggle is one you stop trusting.
+  const st = STATE.dataset_stats || {clips: 0, hours: 0};
+  $("ds-path").textContent = (STATE.dataset_dir || "") +
+    "  ·  " + st.clips + " " + T("dataset.clips", "clips") +
+    ", " + st.hours + " " + T("dataset.hours", "h");
+  $("open-dataset").addEventListener("click", () => send("open_dataset_folder"));
+
   // ── Enhance (post-dictation LLM styling) controls ─────────────────────────
   const enhEnabled = $("enh-enabled");
   enhEnabled.checked = !!STATE.enhance_enabled;
@@ -863,8 +903,13 @@ $("back-enh").addEventListener("click", () => show("main"));
     send("set_meeting_opacity", 1 - Number(mtOpacity.value) / 100);
   });
 
-  $("mt-path").textContent = STATE.transcripts_dir || "";
-  $("mt-open").addEventListener("click", () => send("open_transcripts_folder"));
+  // Transcript output folder — one setting, wired from both screens that write
+  // there ("transcribe everything" and file transcription).
+  for (const p of ["mt", "ft"]) {
+    $(p + "-open").addEventListener("click", () => send("open_transcripts_folder"));
+    $(p + "-choose").addEventListener("click", () => send("choose_transcripts_folder"));
+    $(p + "-reset").addEventListener("click", () => send("reset_transcripts_folder"));
+  }
 
   const mtLang = $("mt-lang");
   const inheritOpt = document.createElement("option");
@@ -1443,8 +1488,22 @@ function renderFt(){
   // the textarea only commits to Python on blur ("change").
   const ftPromptEl = $("ft-prompt");
   const needPrompt = $("ft-prompt-src").value === "custom" && !(ftPromptEl.value || "").trim();
-  $("ft-pick").disabled = active || STATE.ft_ffmpeg_ok === false || needPrompt;
+  // Picking stays available while the queue runs — it appends instead of
+  // replacing, which is the only way to add a file mid-run. Language and hint
+  // are frozen for the run, so an appended file is read the same way.
+  const pick = $("ft-pick");
+  pick.disabled = STATE.ft_ffmpeg_ok === false || needPrompt;
+  pick.textContent = active ? T("ft.pick.add", "Add to queue…")
+                            : T("ft.pick.btn", "Choose files…");
   $("ft-need").style.display = needPrompt ? "block" : "none";
+
+  // Output folder (shared with the meeting screen — same setting, two places).
+  for (const p of ["mt", "ft"]) {
+    const lbl = $(p + "-path");
+    if (lbl) lbl.textContent = STATE.transcripts_dir || "";
+    const reset = $(p + "-reset");
+    if (reset) reset.style.display = STATE.transcripts_dir_custom ? "" : "none";
+  }
   $("ft-lang").disabled = active;
   $("ft-prompt-src").disabled = active;
   if (active) ftPromptEl.disabled = true;

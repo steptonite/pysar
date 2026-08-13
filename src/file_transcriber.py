@@ -435,6 +435,9 @@ class QueueItem:
     progress: float = 0.0
     result_path: str = ""
     error: str = ""
+    # ffprobe has already screened this file. Items added to a running queue
+    # start unprobed and are screened at the next file boundary.
+    probed: bool = field(default=False, repr=False)
     # A running item was removed/cancelled: its job fires on_done with the
     # partial transcript (kept), but the item must not read as "done".
     _will_cancel: bool = field(default=False, repr=False)
@@ -444,9 +447,15 @@ class FileTranscriptionQueue:
     """Sequential batch of FileTranscriptionJobs on one daemon worker thread.
 
     Sequential because there is a single whisper.cpp server — parallel jobs
-    would fight over it. Phase 1 probes every candidate up front (each probe
-    has a 30 s timeout, so this happens on the worker, state "scanning") and
-    visibly skips the unusable ones; phase 2 runs the survivors one by one.
+    would fight over it. Every candidate is screened by ffprobe before it is
+    transcribed (each probe has a 30 s timeout, so this happens on the worker,
+    state "scanning") and the unusable ones are visibly skipped.
+
+    The queue stays open: add() appends files to a run already in progress, and
+    revives the worker if the previous run already finished. That is why the
+    worker claims the next file and declares itself finished inside the *same*
+    critical section add() uses — a file added at that exact instant is either
+    picked up by the live worker or starts a fresh one, never stranded.
 
     One callback: on_change(snapshot), fired from worker threads after every
     meaningful change — marshalling to the main thread is the caller's job.
@@ -470,24 +479,82 @@ class FileTranscriptionQueue:
         self._items: list[QueueItem] = []
         self._items_by_id: dict[int, QueueItem] = {}
         self._worker: threading.Thread | None = None
+        self._worker_running = False
+        # Bumped every time a worker is (re)started. The outgoing worker only
+        # writes the terminal state if it is still the current generation, so a
+        # revived queue can't be stamped "done" by the thread it replaced.
+        self._generation = 0
+        self._next_id = 0
         self._paused = False
         self._cancel_all_event = threading.Event()
         self._job_complete_event = threading.Event()
         self._current_job: FileTranscriptionJob | None = None
         self._current_item_id: int | None = None
 
-        for idx, path in enumerate(scan_media(paths), start=1):
-            item = QueueItem(id=idx, path=path, name=os.path.basename(path), status="pending")
-            self._items.append(item)
-            self._items_by_id[idx] = item
+        self._append_locked(paths)
 
     # ── public interface ─────────────────────────────────────────────────────
 
     def start(self) -> None:
-        if self._worker is not None and self._worker.is_alive():
-            return
-        self._worker = threading.Thread(target=self._worker_run, daemon=True)
+        with self._lock:
+            if self._worker_running:
+                return
+            self._worker_running = True
+            self._generation += 1
+            gen = self._generation
+        self._spawn_worker(gen)
+
+    def add(self, paths: list[str]) -> int:
+        """Queue more files/folders, whether or not the queue is still running.
+
+        Returns how many new items were appended. Paths already queued are
+        ignored (re-picking a folder must not re-transcribe what is done), and
+        a finished or cancelled queue is revived rather than replaced, so the
+        earlier results stay on screen."""
+        with self._lock:
+            added = self._append_locked(paths)
+            revive = bool(added) and not self._worker_running
+            if revive:
+                self._cancel_all_event.clear()
+                self._paused = False
+                self._state = "running"
+                self._worker_running = True
+                self._generation += 1
+                gen = self._generation
+            snap = self._make_snapshot()
+        self._on_change(snap)
+        if revive:
+            self._spawn_worker(gen)
+        elif added:
+            # A live worker may be parked on the condition variable (paused, or
+            # waiting between files) — wake it so the new work starts now.
+            with self._cond:
+                self._cond.notify_all()
+        return added
+
+    def _spawn_worker(self, gen: int) -> None:
+        self._worker = threading.Thread(target=self._worker_run, args=(gen,), daemon=True)
         self._worker.start()
+
+    def _append_locked(self, paths: list[str]) -> int:
+        """Caller holds the lock (or is __init__). Appends deduplicated media
+        files as pending items and returns how many were added. Items that
+        previously failed or were skipped do not block a re-add — the user may
+        be retrying after fixing the file."""
+        known = {i.path for i in self._items if i.status not in ("error", "skipped")}
+        added = 0
+        for path in scan_media(paths):
+            if path in known:
+                continue
+            known.add(path)
+            self._next_id += 1
+            item = QueueItem(
+                id=self._next_id, path=path, name=os.path.basename(path), status="pending"
+            )
+            self._items.append(item)
+            self._items_by_id[item.id] = item
+            added += 1
+        return added
 
     def pause(self) -> None:
         with self._lock:
@@ -578,38 +645,46 @@ class FileTranscriptionQueue:
         total = sum(1 for i in self._items if i.status != "skipped")
         return {"state": self._state, "items": items_data, "done_count": done_count, "total": total}
 
-    def _worker_run(self) -> None:
-        # Phase 1 — probe every candidate before any transcription.
+    def _claim_unprobed(self) -> QueueItem | None:
+        """Next pending item ffprobe hasn't screened yet, moving the queue into
+        "scanning" while such items exist. Only the initial batch shows as
+        "scanning" — once transcription has begun the state stays "running", so
+        a file added mid-run doesn't yank the UI back to a scanning banner."""
         with self._lock:
-            self._state = "scanning"
+            item = next((i for i in self._items if i.status == "pending" and not i.probed), None)
+            changed = False
+            if item is not None and self._state in ("idle", "scanning"):
+                changed, self._state = self._state != "scanning", "scanning"
+            elif item is None and self._state == "scanning":
+                changed, self._state = True, "running"
+            snap = self._make_snapshot() if changed else None
+        if snap is not None:
+            self._on_change(snap)
+        return item
+
+    def _probe_item(self, item: QueueItem) -> None:
+        _duration, err = probe(item.path)
+        with self._lock:
+            # remove() may have cancelled it while ffprobe ran — probing it
+            # anyway must not overwrite "cancelled" with "skipped".
+            if item.status == "pending":
+                item.probed = True
+                if err is not None:
+                    item.status = "skipped"
+                    item.error = err
             snap = self._make_snapshot()
         self._on_change(snap)
 
-        for item in self._items:
-            if self._cancel_all_event.is_set():
-                break
-            with self._lock:
-                # remove() may have cancelled it while we were probing others —
-                # probing it anyway could overwrite "cancelled" with "skipped".
-                if item.status != "pending":
-                    continue
-            _duration, err = probe(item.path)
-            with self._lock:
-                if err is not None and item.status == "pending":
-                    item.status = "skipped"
-                    item.error = err
-                snap = self._make_snapshot()
-            self._on_change(snap)
-
-        # Phase 2 — run the survivors one by one. pause() only applies from
-        # the "running" state, so the transition must happen before the loop.
-        with self._lock:
-            if not self._cancel_all_event.is_set():
-                self._state = "running"
-                snap = self._make_snapshot()
-        self._on_change(snap)
-
+    def _worker_run(self, gen: int) -> None:
         while not self._cancel_all_event.is_set():
+            # Screen candidates before transcribing them, so unusable files are
+            # visibly skipped instead of failing mid-queue. Files added while
+            # the queue runs join here and are screened exactly the same way.
+            unprobed = self._claim_unprobed()
+            if unprobed is not None:
+                self._probe_item(unprobed)
+                continue
+
             with self._cond:
                 # A removed last item must let the queue finish even while it
                 # is paused.  Otherwise the worker waits forever before it
@@ -626,6 +701,10 @@ class FileTranscriptionQueue:
             with self._lock:
                 item = next((i for i in self._items if i.status == "pending"), None)
                 if item is None:
+                    # Claiming work and going idle share this critical section
+                    # with add(), which is what makes a concurrent add safe.
+                    if self._generation == gen:
+                        self._worker_running = False
                     break
                 item.status = "running"
                 item.progress = 0.0
@@ -655,6 +734,9 @@ class FileTranscriptionQueue:
                 self._current_item_id = None
 
         with self._lock:
+            if self._generation != gen:
+                return  # replaced by a revived worker — its state is the live one
+            self._worker_running = False
             if self._cancel_all_event.is_set():
                 for item in self._items:
                     if item.status == "pending":

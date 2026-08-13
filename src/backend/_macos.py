@@ -655,6 +655,15 @@ class Paster:
         if overlay is not None:
             log(f"paste_text: {overlay} overlay grabbing keys → left on clipboard")
             return False  # leave `payload` on the clipboard; do NOT restore `saved`
+
+        # 🔴 07.08.2026 — DO NOT gate this Cmd+V on an AX "is the focused element
+        # editable" reading without first measuring what _is_editable() answers
+        # for the apps dictation actually lands in (Claude/Electron, browsers,
+        # native fields). Such a gate was added and reverted the same hour,
+        # unmeasured, alongside the no_speech_prob trim: a false "not editable"
+        # silently sends the WHOLE take to the clipboard and the user just sees
+        # an empty field. The "beeps with nowhere to paste" bug stays open; the
+        # fix must be proven against a real focus reading first.
         log("paste_text: pasting via Cmd+V")
 
         # Don't paste until our text is actually on the clipboard. Under memory
@@ -842,6 +851,9 @@ class Tray:
         keep_last_options: tuple[int, ...] = (5, 10, 20),
         on_toggle_save: Callable[[bool], None] | None = None,
         on_set_keep_last: Callable[[int], None] | None = None,
+        tts_dataset: bool = False,
+        on_toggle_dataset: Callable[[bool], None] | None = None,
+        dataset_dir: str | None = None,
         recordings_dir: str | None = None,
         profiles: list[dict] | None = None,
         active_profiles: dict[str, list[str]] | None = None,
@@ -901,6 +913,7 @@ class Tray:
         on_set_enhance_model: Callable[[str], None] | None = None,
         on_set_enhance_style: Callable[[str], None] | None = None,
         enhance_status_provider: Callable[[], dict] | None = None,
+        on_set_transcripts_dir: Callable[[str], None] | None = None,
     ):
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
@@ -912,6 +925,7 @@ class Tray:
         self._on_mode_select = on_mode_select
         self._on_toggle_save = on_toggle_save
         self._on_set_keep_last = on_set_keep_last
+        self._on_toggle_dataset = on_toggle_dataset
         self._recordings_dir = recordings_dir
         self._profiles = profiles or []
         # active_profiles: {lang: [names]} — one toggled-on group per language.
@@ -926,6 +940,8 @@ class Tray:
         # Plain mirrors of the settings state — the Settings window reads these
         # via _settings_state() each time it opens, so it's never stale.
         self._save_recordings = save_recordings
+        self._tts_dataset = tts_dataset
+        self._dataset_dir = dataset_dir
         self._keep_last = keep_last
         self._keep_last_options = keep_last_options
         self._mics = mics or []
@@ -973,6 +989,12 @@ class Tray:
         self._on_set_enhance_model = on_set_enhance_model
         self._on_set_enhance_style = on_set_enhance_style
         self._enhance_status_provider = enhance_status_provider
+        # Probing Ollama is a blocking HTTP round-trip, and _settings_state() is
+        # rebuilt on every UI push — including the 1 Hz progress ticks of a
+        # hours-long file transcription. Probe once per window open and serve
+        # the cached answer to every later push.
+        self._enhance_status_cache: dict | None = None
+        self._on_set_transcripts_dir = on_set_transcripts_dir
         self._settings_window = None  # built lazily on first open
         # File-transcription queue (Settings → "Transcribe a file"). Lives on
         # the app object so it keeps running with the settings window closed.
@@ -1066,6 +1088,14 @@ class Tray:
                 "tray.meetingStop" if active else "tray.meetingStart"
             )
 
+    def set_meeting_stopping(self) -> None:
+        """Third menu state, shown while a stop drains the queue (up to a minute).
+        Without it the item kept saying "Stop transcribing" for the whole drain and
+        clicking it did nothing visible — a frozen button, from the user's side."""
+        with contextlib.suppress(Exception):
+            self._meeting_item.state = -1  # mixed: neither on nor off
+            self._meeting_item.title = self._t("tray.meetingStopping")
+
     # ── Settings window ───────────────────────────────────────────────────────
     def _open_settings_to_profiles(self, _sender) -> None:
         """'Edit in Settings…' from the profile submenu — jump straight to the
@@ -1074,6 +1104,7 @@ class Tray:
 
     def _open_settings(self, _sender, screen: str | None = None) -> None:
         """Open the WKWebView settings panel (built lazily on first use)."""
+        self._enhance_status_cache = None  # re-probe Ollama once, for this open
         try:
             if self._settings_window is None:
                 from .settings_window import SettingsWindow
@@ -1084,6 +1115,8 @@ class Tray:
                         "set_mic": self._set_mic,
                         "set_keep": self._set_keep,
                         "set_save": self._set_save,
+                        "set_dataset": self._set_dataset,
+                        "open_dataset_folder": self._open_dataset_folder,
                         "set_login": self._set_login,
                         "open_folder": self._open_recordings_folder,
                         "toggle_profile": self._win_toggle_profile,
@@ -1109,6 +1142,8 @@ class Tray:
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
                         "open_transcripts_folder": self._open_transcripts_folder,
+                        "choose_transcripts_folder": self._choose_transcripts_folder,
+                        "reset_transcripts_folder": self._reset_transcripts_folder,
                         "ft_pick_files": self._ft_pick_files,
                         "set_ft_lang": self._set_ft_lang,
                         "set_ft_prompt": self._set_ft_prompt,
@@ -1134,6 +1169,9 @@ class Tray:
             "mics": self._mics,
             "current_mic": self._current_mic,
             "save_recordings": self._save_recordings,
+            "tts_dataset": self._tts_dataset,
+            "dataset_dir": self._dataset_dir or "",
+            "dataset_stats": self._dataset_stats(),
             "keep_last": self._keep_last,
             "keep_last_options": list(self._keep_last_options),
             "launch_at_login": self._launch_at_login,
@@ -1169,6 +1207,7 @@ class Tray:
             "meeting_island_opacity": self._meeting_island_opacity,
             "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
             "transcripts_dir": self._transcripts_dir(),
+            "transcripts_dir_custom": self._transcripts_dir_is_custom(),
             # File transcription: current queue snapshot for the drill-in screen.
             "ft_lang": self._ft_lang or self._lang(),
             "ft_prompt": self._ft_prompt,
@@ -1188,12 +1227,21 @@ class Tray:
                 {"key": p["key"], "name_uk": p["name_uk"], "name_en": p["name_en"]}
                 for p in STYLE_PRESETS
             ],
-            "enhance_status": (
+            "enhance_status": self._enhance_status(),
+        }
+
+    def _enhance_status(self) -> dict:
+        """Cached Ollama probe. Invalidated when the settings window opens, so
+        the Enhance screen still shows a fresh answer, while progress pushes
+        reuse it instead of hitting the network on the main thread every second
+        (list_models() alone has a 5 s timeout — that would freeze the UI)."""
+        if self._enhance_status_cache is None:
+            self._enhance_status_cache = (
                 self._enhance_status_provider()
                 if self._enhance_status_provider
                 else {"alive": False, "models": []}
-            ),
-        }
+            )
+        return self._enhance_status_cache
 
     @staticmethod
     def _transcripts_dir() -> str:
@@ -1202,6 +1250,17 @@ class Tray:
         with contextlib.suppress(Exception):
             return str(transcripts_dir())
         return ""
+
+    @staticmethod
+    def _transcripts_dir_is_custom() -> bool:
+        """True when the live folder is not the built-in one — the UI shows a
+        "use the default" reset only then. Compared by resolved path so a chosen
+        folder that happens to BE the default doesn't read as custom."""
+        from ..transcripts import default_transcripts_dir, transcripts_dir
+
+        with contextlib.suppress(Exception):
+            return transcripts_dir().resolve() != default_transcripts_dir().resolve()
+        return False
 
     def _profile_sets_state(self) -> list[dict]:
         active = {lng: list(v) for lng, v in self._active_by_lang.items()}
@@ -1232,6 +1291,22 @@ class Tray:
         self._save_recordings = bool(enabled)
         if self._on_toggle_save:
             self._on_toggle_save(bool(enabled))
+
+    def _set_dataset(self, enabled: bool) -> None:
+        self._tts_dataset = bool(enabled)
+        if self._on_toggle_dataset:
+            self._on_toggle_dataset(bool(enabled))
+
+    def _dataset_stats(self) -> dict:
+        """Corpus size for the Settings screen — collecting for a voice model is a
+        long game, and a toggle with no visible progress is a toggle you forget."""
+        try:
+            from ..recordings import dataset_stats
+
+            clips, hours = dataset_stats()
+            return {"clips": clips, "hours": round(hours, 2)}
+        except Exception:
+            return {"clips": 0, "hours": 0.0}
 
     def _set_login(self, enabled: bool) -> None:
         ok = set_login_item(bool(enabled))
@@ -1269,6 +1344,10 @@ class Tray:
     def _open_recordings_folder(self) -> None:
         if self._recordings_dir:
             subprocess.run(["open", self._recordings_dir], check=False)
+
+    def _open_dataset_folder(self) -> None:
+        if self._dataset_dir:
+            subprocess.run(["open", self._dataset_dir], check=False)
 
     # Enhance handlers — same mirror+callback shape as the meeting ones ─────────
     def _set_enhance_enabled(self, on: bool) -> None:
@@ -1342,6 +1421,40 @@ class Tray:
         if path:
             subprocess.run(["open", path], check=False)
 
+    def _choose_transcripts_folder(self) -> None:
+        """Folder picker for transcript output — shared by "transcribe
+        everything" and file transcription, which write to the same place.
+        Runs on the main thread (JS bridge messages arrive there)."""
+        try:
+            from AppKit import NSOpenPanel
+
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(False)
+            panel.setCanChooseDirectories_(True)
+            panel.setCanCreateDirectories_(True)
+            panel.setAllowsMultipleSelection_(False)
+            if panel.runModal() != 1:  # NSModalResponseOK
+                return
+            urls = panel.URLs()
+            path = str(urls[0].path()) if urls else ""
+        except Exception as e:
+            rumps.notification("Pysar", "Transcripts folder", str(e)[:120])
+            return
+        if not path:
+            return
+        self._apply_transcripts_dir(path)
+
+    def _reset_transcripts_folder(self) -> None:
+        self._apply_transcripts_dir("")
+
+    def _apply_transcripts_dir(self, path: str) -> None:
+        from ..transcripts import set_transcripts_dir
+
+        set_transcripts_dir(path or None)
+        if self._on_set_transcripts_dir:
+            self._on_set_transcripts_dir(path)
+        self._refresh_settings_window()
+
     # ── File transcription (Settings → "Transcribe a file") ──────────────────
 
     @staticmethod
@@ -1404,10 +1517,12 @@ class Tray:
 
     def _ft_pick_files(self) -> None:
         """NSOpenPanel (multi-select, folders allowed) → start a background
-        FileTranscriptionQueue. Runs on the main thread (JS bridge messages
-        arrive there), so the panel is safe."""
-        if self._ft_queue_active():
-            return
+        FileTranscriptionQueue, or append to the existing one. Runs on the main
+        thread (JS bridge messages arrive there), so the panel is safe.
+
+        Appending is the point: picking files no longer has to be a single
+        up-front decision, so a file can be added while the queue is chewing
+        through the previous one."""
         # The UI disables the button in this state; the guard covers a stale page.
         if self._ft_prompt_source == "custom" and not self._ft_prompt.strip():
             return
@@ -1438,14 +1553,21 @@ class Tray:
 
         from ..file_transcriber import FileTranscriptionQueue
 
-        self._ft_last_state = "idle"
-        self._ft_queue = FileTranscriptionQueue(
-            paths,
-            self._ft_lang or self._lang(),
-            prompt=self._ft_resolve_prompt(),
-            on_change=self._ft_on_change,
-        )
-        self._ft_queue.start()
+        if self._ft_queue is not None and self._ft_queue_active():
+            # Language and context hint stay those of the run in progress —
+            # changing them mid-queue would silently reinterpret the files
+            # already waiting in it. A finished queue is replaced instead, so a
+            # language switched between runs takes effect.
+            self._ft_queue.add(paths)
+        else:
+            self._ft_last_state = "idle"
+            self._ft_queue = FileTranscriptionQueue(
+                paths,
+                self._ft_lang or self._lang(),
+                prompt=self._ft_resolve_prompt(),
+                on_change=self._ft_on_change,
+            )
+            self._ft_queue.start()
         self._refresh_settings_window()
 
     def _ft_on_change(self, snap: dict) -> None:

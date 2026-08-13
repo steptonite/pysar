@@ -599,3 +599,116 @@ def test_queue_transcribe_error_marks_item_and_continues(monkeypatch, tmp_path):
     items = q.snapshot()["items"]
     assert items[0]["status"] == "error" and items[0]["error"] == "server down"
     assert items[1]["status"] == "done"
+
+
+# ── Adding files to a queue that is already going ────────────────────────────
+
+
+def test_queue_add_while_running_is_picked_up(monkeypatch, tmp_path):
+    """The point of add(): a file chosen mid-run joins the same queue instead of
+    being refused until the current batch finishes."""
+    first, late = tmp_path / "first.mp3", tmp_path / "late.mp3"
+    first.touch()
+    late.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    started, release = _gated_transcribe(monkeypatch)
+
+    q = FileTranscriptionQueue([str(first)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert started.wait(timeout=5)  # first file is mid-Whisper
+
+    assert q.add([str(late)]) == 1
+    assert q.snapshot()["total"] == 2
+    release.set()
+
+    assert _wait_for_state(q, "done")
+    assert [i["status"] for i in q.snapshot()["items"]] == ["done", "done"]
+
+
+def test_queue_add_probes_late_arrivals(monkeypatch, tmp_path):
+    """A file added mid-run is screened by ffprobe exactly like an initial one —
+    an unusable late arrival is skipped, not failed halfway through."""
+    good, late_bad = tmp_path / "good.mp3", tmp_path / "broken.mp4"
+    good.touch()
+    late_bad.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    monkeypatch.setattr(
+        "src.file_transcriber.probe",
+        lambda p: (None, "no audio track") if p.endswith("broken.mp4") else (2.5, None),
+    )
+    started, release = _gated_transcribe(monkeypatch)
+
+    q = FileTranscriptionQueue([str(good)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert started.wait(timeout=5)
+    q.add([str(late_bad)])
+    release.set()
+
+    assert _wait_for_state(q, "done")
+    items = {i["name"]: i for i in q.snapshot()["items"]}
+    assert items["good.mp3"]["status"] == "done"
+    assert items["broken.mp4"]["status"] == "skipped"
+    assert items["broken.mp4"]["error"] == "no audio track"
+
+
+def test_queue_add_revives_a_finished_queue(monkeypatch, tmp_path):
+    """Adding after the run ended restarts the worker and keeps earlier results
+    on screen, rather than needing a whole new queue."""
+    first, second = tmp_path / "a.mp3", tmp_path / "b.mp3"
+    first.touch()
+    second.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    monkeypatch.setattr("src.file_transcriber.transcribe", lambda w, m, p="": ("text", None))
+
+    q = FileTranscriptionQueue([str(first)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert _wait_for_state(q, "done")
+
+    assert q.add([str(second)]) == 1
+    assert _wait_for_state(q, "running") or q.snapshot()["state"] == "done"
+    assert _wait_for_state(q, "done")
+    snap = q.snapshot()
+    assert [i["name"] for i in snap["items"]] == ["a.mp3", "b.mp3"]
+    assert snap["done_count"] == 2
+
+
+def test_queue_add_ignores_paths_already_queued(monkeypatch, tmp_path):
+    """Re-picking a folder must not re-transcribe what the queue already holds."""
+    f = tmp_path / "dup.mp3"
+    f.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    started, release = _gated_transcribe(monkeypatch)
+
+    q = FileTranscriptionQueue([str(f)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert started.wait(timeout=5)
+
+    assert q.add([str(f)]) == 0
+    assert q.snapshot()["total"] == 1
+    release.set()
+    assert _wait_for_state(q, "done")
+
+
+def test_queue_add_while_paused_stays_paused(monkeypatch, tmp_path):
+    """A pause is the user's decision — appending work must not silently
+    resume the queue."""
+    first, late = tmp_path / "first.mp3", tmp_path / "late.mp3"
+    first.touch()
+    late.touch()
+    _queue_env(monkeypatch, tmp_path, duration=2.5)
+    started, release = _gated_transcribe(monkeypatch)
+
+    q = FileTranscriptionQueue([str(first)], "uk", "", on_change=lambda s: None)
+    q.start()
+    assert started.wait(timeout=5)
+    q.pause()
+    release.set()
+    assert _wait_for_state(q, "paused")
+
+    q.add([str(late)])
+    time.sleep(0.15)
+    assert q.snapshot()["state"] == "paused"
+
+    q.resume()
+    assert _wait_for_state(q, "done")
+    assert q.snapshot()["done_count"] == 2

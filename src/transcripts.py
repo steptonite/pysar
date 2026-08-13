@@ -13,9 +13,33 @@ from pathlib import Path
 from .paths import data_dir
 
 _TRANSCRIPTS = data_dir() / "transcripts"
+_override: Path | None = None  # user-chosen output folder, set from settings
+
+
+def default_transcripts_dir() -> Path:
+    """The built-in location — used when the user has not chosen one."""
+    return _TRANSCRIPTS
+
+
+def set_transcripts_dir(path: str | Path | None) -> None:
+    """Point every transcript write at ``path`` (both the meeting recorder and
+    file transcription). ``None``/empty restores the built-in folder. The path
+    is remembered even if it is currently unwritable — ``transcripts_dir()``
+    falls back at write time instead, so a temporarily missing external disk
+    doesn't silently reset the user's choice."""
+    global _override
+    _override = Path(path).expanduser() if path else None
 
 
 def transcripts_dir() -> Path:
+    """The live output folder, created on demand. Falls back to the built-in
+    location if the chosen one cannot be created (disk unplugged, permissions)."""
+    if _override is not None:
+        try:
+            _override.mkdir(parents=True, exist_ok=True)
+            return _override
+        except OSError:
+            pass
     _TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
     return _TRANSCRIPTS
 

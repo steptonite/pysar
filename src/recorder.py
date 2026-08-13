@@ -11,6 +11,8 @@ import numpy as np
 import sounddevice as sd
 
 from .config import (
+    CAPTURE_CHUNK_SIZE,
+    CAPTURE_RATE,
     CHANNELS,
     CHUNK_SIZE,
     MAX_SEG_SEC,
@@ -22,6 +24,7 @@ from .config import (
     SILENCE_MARGIN,
     SOFT_SEG_SEC,
 )
+from .resample import Downsampler
 from .segmenter import Segmenter
 
 
@@ -57,25 +60,34 @@ def _resolve_device(name: str | None):
     return None  # not found → default device
 
 
-def pcm_to_wav(float32_bytes: bytes) -> bytes | None:
-    """Wrap raw mono float32 PCM as a 16 kHz / 16-bit WAV (in memory).
+def pcm_to_wav(
+    float32_bytes: bytes, rate: int = SAMPLE_RATE, normalize: bool = True
+) -> bytes | None:
+    """Wrap raw mono float32 PCM as a 16-bit WAV (in memory) at `rate`.
 
     Shared by the batch path (whole clip) and the streaming path (one segment):
     peak-normalizes quiet input — the built-in Air mic runs hot-and-low; a faint
     signal makes turbo guess — then scales the loudest sample toward full scale,
     capping the gain so a near-silent noise floor isn't amplified into garbage
-    (VAD upstream already discards true silence)."""
+    (VAD upstream already discards true silence).
+
+    `normalize=False` is for the TTS-dataset copy: per-clip peak gain is exactly
+    what a voice model must NOT learn from — it makes loudness drift clip to clip
+    and bakes that drift into the synthesized voice. The dataset keeps the level
+    the mic actually delivered; level matching, if any, happens once over the
+    whole corpus at training-prep time."""
     data = np.frombuffer(float32_bytes, dtype=np.float32)
     if data.size == 0:
         return None
 
-    peak = float(np.max(np.abs(data)))
-    if peak > 1e-3:
-        # ≤ +12 dB. Higher gain (was +18) over-amplifies a quiet/short segment's
-        # room tone until turbo hallucinates words out of the noise; +12 lifts the
-        # hot-and-low Air mic enough without blowing up the noise bed.
-        gain = min(0.95 / peak, 4.0)
-        data = data * gain
+    if normalize:
+        peak = float(np.max(np.abs(data)))
+        if peak > 1e-3:
+            # ≤ +12 dB. Higher gain (was +18) over-amplifies a quiet/short segment's
+            # room tone until turbo hallucinates words out of the noise; +12 lifts the
+            # hot-and-low Air mic enough without blowing up the noise bed.
+            gain = min(0.95 / peak, 4.0)
+            data = data * gain
 
     data_i16 = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
 
@@ -83,13 +95,13 @@ def pcm_to_wav(float32_bytes: bytes) -> bytes | None:
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
+        wf.setframerate(rate)
         wf.writeframes(data_i16.tobytes())
     return buf.getvalue()
 
 
 class AudioRecorder:
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, dataset: bool = False):
         self._frames: list[bytes] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -98,10 +110,33 @@ class AudioRecorder:
         self._on_segment: Callable[[bytes], None] | None = None
         self._on_error: Callable[[str], None] | None = None
         self._segmenter: Segmenter | None = None
+        # TTS-dataset capture: keep the untouched full-band audio of the take
+        # alongside the 16 kHz stream that whisper eats. Off ⇒ not one extra byte
+        # is retained, so the privacy default ("audio lives in RAM") is unchanged.
+        self._dataset = bool(dataset)
+        self._raw_frames: list[bytes] = []
+        self._downsampler = Downsampler()
+        # The rate the mic actually opened at — 48 kHz normally, SAMPLE_RATE if
+        # the device refused it (then there is nothing to decimate).
+        self._rate = CAPTURE_RATE
 
     def set_device(self, name: str | None) -> None:
         """Change the input device. Takes effect on the next recording."""
         self._device = name
+
+    def set_dataset(self, enabled: bool) -> None:
+        """Turn the TTS-dataset copy on/off. Takes effect on the next recording."""
+        self._dataset = bool(enabled)
+
+    def raw_wav(self) -> bytes | None:
+        """The finished take as an un-normalized WAV at the capture rate, for the
+        TTS dataset. None unless dataset capture was on for this take."""
+        if not self._raw_frames:
+            return None
+        return pcm_to_wav(b"".join(self._raw_frames), rate=self._rate, normalize=False)
+
+    def raw_rate(self) -> int:
+        return self._rate
 
     def start(
         self,
@@ -114,6 +149,8 @@ class AudioRecorder:
         returns it for recoverability. `on_error(msg)` reports a mic-open failure
         that couldn't be recovered, so the app can surface a visible status."""
         self._frames = []
+        self._raw_frames = []
+        self._downsampler.reset()
         self._stop_event.clear()
         self._started_at = time.time()
         self._on_segment = on_segment
@@ -160,7 +197,7 @@ class AudioRecorder:
         return self._to_wav()
 
     def _open_stream(self):
-        """Open the input stream, retrying on failure. Two failure modes are handled:
+        """Open the input stream, retrying on failure. Three failure modes are handled:
 
         1. A transient CoreAudio glitch (PaErrorCode -9986 / AUHAL) on a
            freshly-(re)opened device that clears on a second attempt.
@@ -171,22 +208,31 @@ class AudioRecorder:
            open keeps failing in *this* process even after the device is free —
            a freshly-spawned process opens fine. Tearing down and rebuilding the
            PortAudio context (`_terminate`/`_initialize`) re-enumerates devices
-           and lets us recover without an app restart."""
+           and lets us recover without an app restart.
+        3. The device won't run at CAPTURE_RATE. Every Mac input we've seen does
+           48 kHz natively, but a USB/Bluetooth oddity might not — rather than
+           fail the dictation we fall back to SAMPLE_RATE (whisper is unaffected;
+           only the dataset copy loses its extra band)."""
         last: Exception | None = None
         for attempt in range(3):
+            rate = CAPTURE_RATE if attempt == 0 else SAMPLE_RATE
+            blocksize = CAPTURE_CHUNK_SIZE if rate == CAPTURE_RATE else CHUNK_SIZE
             try:
                 stream = sd.InputStream(
                     channels=CHANNELS,
-                    samplerate=SAMPLE_RATE,
-                    blocksize=CHUNK_SIZE,
+                    samplerate=rate,
+                    blocksize=blocksize,
                     dtype=np.float32,
                     device=_resolve_device(self._device),
                 )
                 stream.start()
+                self._rate = rate
+                if rate != CAPTURE_RATE:
+                    print(f"⚠️ mic would not open at {CAPTURE_RATE} Hz — capturing at {rate} Hz")
                 return stream
             except Exception as e:
                 last = e
-                print(f"⚠️ mic open failed (attempt {attempt + 1}): {e}")
+                print(f"⚠️ mic open failed (attempt {attempt + 1}, {rate} Hz): {e}")
                 # Rebuild the PortAudio context in case it went stale (mode 2
                 # above). Safe here: no stream is open at this point in the
                 # recorder.
@@ -206,12 +252,21 @@ class AudioRecorder:
                     self._on_error(str(e))
             return
 
+        read_size = CAPTURE_CHUNK_SIZE if self._rate == CAPTURE_RATE else CHUNK_SIZE
         try:
             while not self._stop_event.is_set():
-                chunk, _ = stream.read(CHUNK_SIZE)
+                chunk, _ = stream.read(read_size)
                 if chunk is None or chunk.size == 0:
                     continue
                 mono = np.mean(chunk, axis=1)  # (frames, channels) → (frames,), stays float32
+                # The dataset copy is taken here, before anything touches the
+                # audio: full band, original level, exactly what the mic gave us.
+                if self._dataset:
+                    self._raw_frames.append(mono.tobytes())
+                if self._rate != SAMPLE_RATE:
+                    mono = self._downsampler.process(mono)
+                    if mono.size == 0:
+                        continue
                 self._frames.append(mono.tobytes())
                 if self._segmenter is not None:
                     seg = self._segmenter.feed(mono)

@@ -26,6 +26,13 @@ from .profiles import DEFAULT_PROFILES, LEGACY_SURZHYK_STYLES
 _BASE = data_dir()
 _SETTINGS = _BASE / "settings.json"
 _RECORDINGS = _BASE / "recordings"
+# TTS voice-dataset archive. Deliberately NOT the recordings folder: recordings
+# are a rolling recovery buffer (pruned to keep_last, normalized, 16 kHz), the
+# dataset is a corpus that only grows (full-band, untouched level, paired with
+# the transcript). Mixing them would either prune away training data or fill the
+# disk with recovery copies.
+_DATASET = _BASE / "dataset"
+_DATASET_INDEX = "metadata.jsonl"
 
 DEFAULTS = {
     "save_recordings": False,
@@ -102,14 +109,78 @@ DEFAULTS = {
     "enhance_enabled": False,
     "enhance_model": "gemma3:4b",
     "enhance_style": "custom",
+    # Voice-dataset capture: every dictation is also archived full-band with its
+    # transcript, building a paired corpus for training a personal TTS voice.
+    # Independent of save_recordings — that one is a recovery buffer, this is a
+    # corpus that never prunes.
+    "tts_dataset": False,
 }
 UI_THEMES = ("auto", "light", "dark")
-KEEP_LAST_OPTIONS = (5, 10, 20)
+KEEP_LAST_OPTIONS = (5, 10, 20, 50, 100, 500)
 
 
 def recordings_dir() -> Path:
     _RECORDINGS.mkdir(parents=True, exist_ok=True)
     return _RECORDINGS
+
+
+def dataset_dir() -> Path:
+    _DATASET.mkdir(parents=True, exist_ok=True)
+    return _DATASET
+
+
+def dataset_stats() -> tuple[int, float]:
+    """(clip count, total hours) of the collected corpus — what the Settings
+    screen shows so the progress toward a trainable dataset is visible."""
+    try:
+        import wave
+
+        clips = list(_DATASET.glob("*.wav"))
+        secs = 0.0
+        for p in clips:
+            with contextlib.suppress(Exception), wave.open(str(p), "rb") as wf:
+                secs += wf.getnframes() / float(wf.getframerate() or 1)
+        return len(clips), secs / 3600.0
+    except Exception:
+        return 0, 0.0
+
+
+def save_dataset_clip(wav_bytes: bytes, text: str, lang: str = "", rate: int = 0) -> Path | None:
+    """Archive one dictation as a TTS training pair: the WAV plus its transcript.
+
+    Audio alone is not a dataset — a voice model is trained on (audio, text)
+    pairs, and Pysar already produces both, which is the whole reason to collect
+    here rather than re-recording read prompts later. The transcript must be the
+    RAW whisper output (what was actually said), never the LLM-enhanced rewrite.
+
+    A clip with no text is skipped: it would be dead weight in the corpus.
+    """
+    if not wav_bytes or not (text or "").strip():
+        return None
+    try:
+        d = dataset_dir()
+        base = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+        path = d / f"{base}.wav"
+        i = 1
+        while path.exists():
+            path = d / f"{base}_{i}.wav"
+            i += 1
+        path.write_bytes(wav_bytes)
+        # One JSON object per line, appended — a corpus index that survives a
+        # crash mid-write and is trivially converted to whatever a trainer wants.
+        entry = {
+            "file": path.name,
+            "text": text.strip(),
+            "lang": lang,
+            "rate": rate,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+        }
+        with (d / _DATASET_INDEX).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return path
+    except Exception as e:
+        print(f"⚠️ could not save dataset clip: {e}")
+        return None
 
 
 _VALID_MODS = ("control", "option", "command", "shift")

@@ -58,6 +58,7 @@ def _vt(paster):
     vt._buffer_mode = False
     vt._server_down = False
     vt._ctx_tail = ""
+    vt._take_text = []  # full transcript of the take (dataset pairing)
     vt._paste_target = None
     vt._t = lambda key, **kw: key
     return vt

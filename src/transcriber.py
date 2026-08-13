@@ -27,6 +27,16 @@ def _clean(text: str) -> str:
     return _WS.sub(" ", text).strip()
 
 
+# 🔴 07.08.2026 — DO NOT re-add a no_speech_prob tail trim here without first
+# measuring the scores this server actually returns on a real recording.
+# A trim at no_speech_prob > 0.7 was added and reverted the same hour: live it
+# ate most of the dictation ("one word in ten reached the field"). With VAD on,
+# whisper.cpp's per-segment no_speech_prob is NOT the "this segment is silence"
+# signal it looks like — and streaming feeds every short segment through here,
+# so the trim compounded per segment. The subtitle-credit hallucination stays
+# an open bug; the fix must be proven on saved recordings first.
+
+
 def transcribe(
     wav_bytes: bytes, mode: str = "ru", prompt: str = ""
 ) -> tuple[str | None, str | None]:
