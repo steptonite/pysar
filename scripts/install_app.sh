@@ -9,7 +9,6 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="/Applications/Pysar.app"
-OLD_APP="/Applications/Pysar.app"   # pre-rebrand bundle, removed below
 ICNS="$ROOT/assets/Pysar.icns"
 VENV_PY="$ROOT/venv/bin/python"
 
@@ -26,14 +25,13 @@ fi
 PY_SRC="$("$VENV_PY" -c 'import sys,os;print(os.path.join(sys.base_prefix,"Resources/Python.app/Contents/MacOS/Python"))')"
 SITE_DIR="$("$VENV_PY" -c 'import site;print(site.getsitepackages()[0])')"
 
-rm -rf "$APP" "$OLD_APP"
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # ── Info.plist (LSUIElement = menu-bar agent, no Dock icon) ───────────────────
-# NOTE: CFBundleIdentifier is com.steptonite.pysar (own namespace, not the
-# upstream steptonite one). macOS keys TCC permissions by bundle id, so the FIRST
-# launch after this change needs Input Monitoring + Accessibility re-granted to
-# Pysar in System Settings → Privacy & Security. See docs/rebrand-pysar.md.
+# NOTE: macOS keys TCC permissions by bundle id, so a change to
+# CFBundleIdentifier needs Input Monitoring + Accessibility re-granted to Pysar
+# in System Settings → Privacy & Security.
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

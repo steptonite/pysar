@@ -4,15 +4,15 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?logo=apple)](https://www.apple.com/mac/)
 
-**Pysar** (Ukrainian for *scribe*) is my personal macOS build, grown out of [**pysar**](https://github.com/steptonite/pysar) by Pysar (MIT — see [Attribution](#attribution--license)).
+**Pysar** (Ukrainian for *scribe*) is a macOS menu-bar dictation app for Apple Silicon.
 
 Offline voice dictation: tap **Caps Lock**, speak, tap again — text is transcribed locally by whisper.cpp (Metal GPU) and pasted at your cursor in any app. No cloud, no telemetry, audio never leaves the Mac. Tuned for an **Apple M2 / 8 GB**.
 
 ---
 
-## What I changed on top of upstream
+## What it does
 
-This fork is packaged to be reproducible — it survives a clean macOS reinstall via `make setup && make app`.
+Pysar is packaged to be reproducible — it survives a clean macOS reinstall via `make setup && make app`.
 
 - **Streaming dictation (opt-in)** — a second mode that types each sentence into the field *as you speak* instead of one transcription at the end. Audio is cut on natural pauses (never mid-word), transcribed sentence-by-sentence by a serialized worker (so word order is preserved and whisper is never hit concurrently on 8 GB), and typed via synthetic Unicode key events — **no clipboard involved**, so your clipboard is never clobbered mid-dictation. Pick **Batch** (default) or **Streaming** in **Settings → Dictation**. See [Streaming dictation](#streaming-dictation).
 - **Focus-aware buffering + status HUD** — streaming watches where the keyboard focus is. If you switch away to somewhere with no text field (Spotlight, the desktop, a window with no input), it *stops typing blind* and latches into **buffer mode**: the rest of the dictation is collected and dropped onto the clipboard in one piece at Stop, so nothing lands in the wrong place. A small floating **status pill** near the menu-bar icon shows the live state (listening / recognizing / buffering) — visible even when your dictation hotkey is a silent key with no Caps-Lock LED.
@@ -220,8 +220,6 @@ Config lives in [src/config.py](src/config.py); server flags in [scripts/whisper
 
 ## Attribution & License
 
-Based on [**pysar**](https://github.com/steptonite/pysar) by **Pysar** ([github.com/steptonite/pysar](https://github.com/steptonite/pysar)), used under the MIT License. The original copyright notice is retained in [LICENSE](LICENSE). This repository is an independently modified build and is **not affiliated with or endorsed by** Pysar.
-
-Also built on [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (ggerganov), [OpenAI Whisper](https://github.com/openai/whisper), [rumps](https://github.com/jaredks/rumps), and [Silero VAD](https://github.com/snakers4/silero-vad).
+Built on [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (ggerganov), [OpenAI Whisper](https://github.com/openai/whisper), [rumps](https://github.com/jaredks/rumps), and [Silero VAD](https://github.com/snakers4/silero-vad).
 
 Licensed under MIT.

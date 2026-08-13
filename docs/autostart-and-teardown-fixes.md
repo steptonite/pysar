@@ -16,7 +16,7 @@ not `Enabled`. The old `login_item_enabled()` treated *only* `Enabled` as on, so
 the next launch `_initial_launch_at_login` saw "not enabled" and reset the
 checkmark/settings to off — the item also never actually launched because it was
 never approved. The bundle-id change (`com.steptonite.pysar`) + repeated `.app`
-rebuilds during the rebrand had orphaned any earlier registration too.
+earlier rebuilds had orphaned any previous registration too.
 
 **Done (`_macos.py`):**
 - New `login_item_status()` → `"enabled" | "requires_approval" | "not_registered"

@@ -918,7 +918,7 @@ class Tray:
         # Name the app *before* rumps builds NSApplication below — AppKit reads
         # the bundle/process name once, when the main menu is first created, so a
         # later override (e.g. in run()) is ignored. "Custom" makes clear this is
-        # our fork of the upstream Pysar, not the original.
+        # our own bundle id, not a system-provided one.
         _set_app_name("Pysar")
 
         self._current = current_mode
