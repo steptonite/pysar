@@ -1055,7 +1055,7 @@ class Tray:
         # "Transcribe everything" — a separate on/off capture of system audio + mic
         # into a live transcript window (meetings, calls), independent of dictation.
         self._meeting_item = rumps.MenuItem(
-            self._t("tray.meetingStart"),
+            self._meeting_start_title(),
             callback=self._toggle_meeting if self._on_toggle_meeting else None,
         )
 
@@ -1080,12 +1080,29 @@ class Tray:
             with contextlib.suppress(Exception):
                 self._on_toggle_meeting()
 
+    def _meeting_start_title(self) -> str:
+        """The idle label, naming what a start would actually capture. With the
+        mic switch off, "(audio + mic)" is simply false — and a menu that lies
+        about the setting you just changed is worse than no label at all
+        (report, 18.08.2026)."""
+        key = "tray.meetingStart" if self._meeting_capture_mic else "tray.meetingStartSys"
+        return self._t(key)
+
+    def set_meeting_capture_mic(self, on: bool) -> None:
+        """Called on launch and whenever the settings switch flips."""
+        self._meeting_capture_mic = bool(on)
+        with contextlib.suppress(Exception):
+            # Only the idle label depends on it; while a capture runs (or drains)
+            # the item says Stop/Stopping and must not be overwritten.
+            if self._meeting_item is not None and self._meeting_item.state == 0:
+                self._meeting_item.title = self._meeting_start_title()
+
     def set_meeting_active(self, active: bool) -> None:
         """Reflect capture on/off in the menu — checkmark + Start/Stop label."""
         with contextlib.suppress(Exception):
             self._meeting_item.state = 1 if active else 0
-            self._meeting_item.title = self._t(
-                "tray.meetingStop" if active else "tray.meetingStart"
+            self._meeting_item.title = (
+                self._t("tray.meetingStop") if active else self._meeting_start_title()
             )
 
     def set_meeting_stopping(self) -> None:
@@ -1367,7 +1384,9 @@ class Tray:
 
     # Transcribe-everything (meeting) handlers — same mirror+callback shape ─────
     def _set_meeting_mic(self, on: bool) -> None:
-        self._meeting_capture_mic = bool(on)
+        # set_meeting_capture_mic also re-labels the menu item, so the switch and
+        # the menu can never disagree about what a recording will contain.
+        self.set_meeting_capture_mic(on)
         if self._on_set_meeting_mic:
             self._on_set_meeting_mic(self._meeting_capture_mic)
 
@@ -1724,8 +1743,10 @@ class Tray:
         self._lang_submenu.title = self._t("tray.languages")
         self._profiles_submenu.title = self._t("tray.profiles")
         self._settings_item.title = self._t("tray.settings")
-        self._meeting_item.title = self._t(
-            "tray.meetingStop" if self._meeting_item.state else "tray.meetingStart"
+        self._meeting_item.title = (
+            self._t("tray.meetingStop")
+            if self._meeting_item.state
+            else self._meeting_start_title()
         )
         with contextlib.suppress(Exception):
             if self._app.quit_button is not None:

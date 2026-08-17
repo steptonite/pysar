@@ -278,14 +278,22 @@ _UK = {
     # що є"), а не як увімкнення живого запису зустрічі — тестувальниця не
     # зрозуміла, що саме натискає (17.08.2026). Назва тепер каже, ЩО почнеться.
     "tray.meetingStart": "🎧 Записувати зустріч (звук + мікрофон)",
+    # Той самий пункт, коли захоплення мікрофона вимкнено в налаштуваннях. Підпис
+    # мусить називати те, що станеться НАСПРАВДІ: з вимкненим мікрофоном рядок
+    # «(звук + мікрофон)» — просто неправда (репорт 18.08.2026).
+    "tray.meetingStartSys": "🎧 Записувати зустріч (лише звук системи)",
     "tray.meetingStop": "⏹ Зупинити запис зустрічі",
     "tray.meetingStopping": "⏳ Зупиняю запис…",
     "transcript.title": "Pysar — Транскрипт",
     "transcript.stop": "Зупинити",
     "transcript.stopping": "Зупиняю…",
     "st.meetingOn": "🎧 Транскрибую звук системи + мікрофон…",
+    "st.meetingOnSys": "🎧 Транскрибую звук системи…",
     "st.meetingOff": "🎧 Транскрипцію збережено",
     "st.meetingStopping": "⏳ Завершую попередню транскрипцію…",
+    # Дренаж черги після «Зупинити»: без лічильника довга зупинка (хвилина на
+    # CPU-режимі) читається як зависання — саме так її й прочитали 18.08.2026.
+    "st.meetingDraining": "⏳ Дописую сказане… лишилось {n}",
     "st.meetingLine": "🎧 {preview}",
     "st.micBusyMeeting": "🎙 Мікрофон зайнятий транскрипцією — вимкни його в налаштуваннях транскрипції, щоб диктувати паралельно",
     "hud.micBusyMeeting": "Мікрофон у транскрипції 🎧",
@@ -588,14 +596,19 @@ _EN = {
     # "Transcribe everything" read as a batch action over files rather than an
     # on/off live capture — see the note on the Ukrainian strings.
     "tray.meetingStart": "🎧 Record a meeting (audio + mic)",
+    # Same item with mic capture switched off — the label has to name what will
+    # actually be recorded (see the Ukrainian note).
+    "tray.meetingStartSys": "🎧 Record a meeting (system audio only)",
     "tray.meetingStop": "⏹ Stop recording the meeting",
     "tray.meetingStopping": "⏳ Stopping…",
     "transcript.title": "Pysar — Transcript",
     "transcript.stop": "Stop",
     "transcript.stopping": "Stopping…",
     "st.meetingOn": "🎧 Transcribing system audio + mic…",
+    "st.meetingOnSys": "🎧 Transcribing system audio…",
     "st.meetingOff": "🎧 Transcript saved",
     "st.meetingStopping": "⏳ Finishing the previous transcription…",
+    "st.meetingDraining": "⏳ Writing up what was said… {n} left",
     "st.meetingLine": "🎧 {preview}",
     "st.micBusyMeeting": "🎙 The mic is held by the running transcription — turn its mic off to dictate in parallel",
     "hud.micBusyMeeting": "Mic is in the transcription 🎧",
