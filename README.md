@@ -68,6 +68,21 @@ make all            # setup + app, if cmake/git/python/ffmpeg are already presen
 
 `make setup` (venv + whisper.cpp + ~550 MB speech model + Silero VAD) and `make app` (build `Pysar.app` + the `pysar` alias) can be run separately.
 
+### Updating
+
+There is no update checker — the app never talks to the network on its own. To
+take the latest version, run the same one-liner again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/steptonite/pysar/main/install.sh | bash
+```
+
+It is idempotent: it fast-forwards the clone, rebuilds only what changed and
+reinstalls the app. Local edits in the clone are parked in `git stash` (never
+discarded) so the update can land — `git stash pop` brings them back. Relaunch
+Pysar afterwards; if the rebuild changed the app's signature, macOS will ask for
+Input Monitoring and Accessibility again.
+
 Then launch **Pysar** from Spotlight and grant **Input Monitoring** and **Accessibility** in System Settings → Privacy & Security. macOS prompts for Microphone on its own; it never prompts for the other two — see [macOS permissions](#macos-permissions).
 
 ---
