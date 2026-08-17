@@ -697,7 +697,9 @@ class VoiceTyper:
 
         self._tray.set_meeting_active(True)
         self._tray.set_title("🎧")
-        self._tray.set_status(self._t("st.meetingOn"))
+        # Name what is actually being captured — with the mic off, "system audio
+        # + mic" is a lie the user reads right after flipping the switch.
+        self._tray.set_status(self._t("st.meetingOn" if capture_mic else "st.meetingOnSys"))
 
         # Liveness watchdog: catches a silent SCK stall (mute/unmute) that fires no
         # error and would otherwise leave the transcriber mute until a manual restart.
@@ -883,6 +885,40 @@ class VoiceTyper:
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 
+    _MEETING_DRAIN_TIMEOUT = 60.0  # hard ceiling on how long a stop may block
+
+    def _await_drain(self) -> None:
+        """Wait for the worker to transcribe what was already said, counting down
+        out loud.
+
+        A stop is never instant — the audio captured before the click still has to
+        go through whisper, and on the CPU fallback that runs close to a minute.
+        The old code joined for 60 s in complete silence, so the menu sat on
+        "⏳ Stopping…" with nothing moving and read as a hang (18.08.2026). Now the
+        status line names how much is left, so a slow stop looks slow rather than
+        broken."""
+        worker = self._meeting_worker
+        if worker is None:
+            return
+        deadline = time.monotonic() + self._MEETING_DRAIN_TIMEOUT
+        shown = None
+        while worker.is_alive() and time.monotonic() < deadline:
+            worker.join(timeout=0.4)
+            q = self._meeting_queue
+            # −1 for the sentinel that is sitting in the queue behind the audio.
+            left = max((q.qsize() if q is not None else 0) - 1, 0)
+            if left != shown:
+                shown = left
+                with contextlib.suppress(Exception):
+                    self._tray.set_status(self._t("st.meetingDraining", n=left))
+        if worker.is_alive():
+            # Leave it running (it owns the transcript file writes) but stop
+            # holding the UI hostage: the menu goes back to a usable state.
+            print(
+                f"⚠️ meeting worker still busy after {self._MEETING_DRAIN_TIMEOUT:.0f}s "
+                "— letting it finish in the background"
+            )
+
     def _stop_meeting(self) -> None:
         # Flag flip + capture teardown under the recover lock: a recover that
         # already passed its own guard would otherwise start a FRESH stream behind
@@ -905,18 +941,25 @@ class VoiceTyper:
             # read "Stop transcription" and a click on it fell through to the start
             # branch and was swallowed — the user read that as a frozen button
             # (report 07.08.2026).
-            self._tray.set_meeting_stopping()
-            self._tray.set_status(self._t("st.meetingStopping"))
+            with contextlib.suppress(Exception):
+                self._tray.set_meeting_stopping()
+                self._tray.set_status(self._t("st.meetingStopping"))
             # …and say it OUTSIDE the menu too. The menu closes the instant you
             # click, so a label that only changes inside it is feedback nobody
             # sees: the tester clicked stop, watched an unchanged island for the
             # length of the drain, and read it as "nothing happened"
             # (17.08.2026). The glyph, the HUD and the island caption all flip now.
-            self._tray.set_title("⏳")
             with contextlib.suppress(Exception):
+                self._tray.set_title("⏳")
                 self._tray.show_hud(self._t("hud.meetingStopping"), "recognizing")
+            # Suppressed on purpose: this whole block runs BEFORE the try/finally
+            # below, so anything that throws here escapes _stop_meeting with the
+            # menu already switched to "⏳ Stopping…" and _meeting_stopping stuck
+            # at True — a capture that can never be stopped OR restarted again.
+            # Cosmetics must never be able to do that (18.08.2026).
             if self._transcript_window is not None:
-                self._transcript_window.set_stopping(True)
+                with contextlib.suppress(Exception):
+                    self._transcript_window.set_stopping(True)
             # Stop capture (flushes the trailing segment into the queue) while still
             # holding the lock, so no recover can resurrect the stream after this.
             if self._sysrec is not None:
@@ -927,8 +970,7 @@ class VoiceTyper:
             # Drain the worker so the final sentence lands before the file is closed.
             if self._meeting_queue is not None:
                 self._meeting_queue.put(None)
-            if self._meeting_worker is not None:
-                self._meeting_worker.join(timeout=60)
+            self._await_drain()
 
             if self._transcript_file is not None:
                 saved_path = str(self._transcript_file.path or "")
@@ -945,14 +987,23 @@ class VoiceTyper:
             wd = self._watchdog_thread
             if wd is not None and wd is not threading.current_thread() and wd.is_alive():
                 wd.join(timeout=self._MEETING_WATCHDOG_TICK + 1.0)
+            # Every reset step is isolated: these used to run unguarded, so one
+            # throw (a window torn down mid-stop, say) skipped everything after
+            # it — including the menu reset, which then read "⏳ Stopping…"
+            # forever while nothing was running (18.08.2026).
             with contextlib.suppress(Exception):
                 self._tray.hide_hud()
             if self._transcript_window is not None:
-                self._transcript_window.set_stopping(False)
-                self._transcript_window.hide()  # island shows only while transcribing
-            self._tray.set_meeting_active(False)
-            self._tray.set_status(self._t("st.meetingOff"))
-            self._tray.set_title(self._idle_title())
+                with contextlib.suppress(Exception):
+                    self._transcript_window.set_stopping(False)
+                with contextlib.suppress(Exception):
+                    self._transcript_window.hide()  # island shows only while transcribing
+            with contextlib.suppress(Exception):
+                self._tray.set_meeting_active(False)
+            with contextlib.suppress(Exception):
+                self._tray.set_status(self._t("st.meetingOff"))
+            with contextlib.suppress(Exception):
+                self._tray.set_title(self._idle_title())
             if saved_path:
                 self._tray.notify(
                     "Pysar",

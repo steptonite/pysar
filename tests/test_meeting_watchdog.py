@@ -175,3 +175,63 @@ def test_toggle_during_stop_does_not_start_a_new_capture():
     vt._on_toggle_meeting()
     # The user gets a visible HUD, not just a menu-only status line.
     assert vt._tray.huds and "meetingStopping" in vt._tray.huds[-1]
+
+
+# ── the stop that looked like a hang (18.08.2026) ─────────────────────────────
+class _ThrowingIsland:
+    """An island whose teardown blows up — a window torn down mid-stop, a dead
+    dispatch queue. The UI reset behind it must still land."""
+
+    def set_stopping(self, on: bool) -> None:
+        raise RuntimeError("island is gone")
+
+    def hide(self) -> None:
+        raise RuntimeError("island is gone")
+
+
+def test_menu_resets_even_if_the_island_throws():
+    """Reported 18.08.2026: the menu item sometimes stayed on "⏳ Stopping…" with
+    nothing running. Every reset step is isolated now, so one throw cannot eat
+    the ones after it."""
+    vt = _vt(since=1.0, started_ago=10.0)
+    vt._transcript_window = _ThrowingIsland()
+    vt._stop_meeting()
+    assert vt._tray.meeting_states[-1] == "off"
+    assert vt._meeting_stopping is False
+
+
+def test_drain_counts_down_out_loud():
+    """A stop is not instant — the audio already captured still has to go through
+    whisper. Silence during that read as a freeze, so the remaining count is
+    named in the status line."""
+    import queue
+    import threading as th
+
+    vt = _vt(since=1.0, started_ago=10.0)
+    vt._meeting_queue = queue.Queue()
+    for _ in range(3):
+        vt._meeting_queue.put((b"", None))
+    done = th.Event()
+
+    def worker():
+        while not done.is_set():
+            done.wait(0.05)
+
+    vt._meeting_worker = th.Thread(target=worker, daemon=True)
+    vt._meeting_worker.start()
+    th.Timer(0.6, done.set).start()
+    vt._await_drain()
+    assert any("meetingDraining" in s for s in vt._tray.statuses)
+
+
+def test_drain_gives_up_at_the_ceiling_instead_of_blocking_forever():
+    import threading as th
+    import time
+
+    vt = _vt(since=1.0, started_ago=10.0)
+    vt._MEETING_DRAIN_TIMEOUT = 0.5
+    vt._meeting_worker = th.Thread(target=lambda: time.sleep(30), daemon=True)
+    vt._meeting_worker.start()
+    t0 = time.monotonic()
+    vt._await_drain()
+    assert time.monotonic() - t0 < 3.0  # returned; the worker finishes on its own
