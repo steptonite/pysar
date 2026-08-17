@@ -615,6 +615,14 @@ class VoiceTyper:
         else:
             self._start_meeting()
 
+    def _on_island_stop(self) -> None:
+        """The island's own Stop button. Same path as the menu item — the button
+        exists because the menu item can be invisible on a crowded menu bar (it
+        gets pushed under the notch), which left a running capture with no
+        reachable off switch (17.08.2026)."""
+        if self._meeting and not self._meeting_stopping:
+            threading.Thread(target=self._stop_meeting, daemon=True).start()
+
     def _start_meeting(self) -> None:
         # Starting a capture mid-dictation stays blocked (finish the sentence
         # first); the reverse — dictating while a capture runs — is allowed when
@@ -637,9 +645,15 @@ class VoiceTyper:
         spk_labels = {"sys": self._t("transcript.spk.sys"), "mic": self._t("transcript.spk.mic")}
         if self._transcript_window is None:
             self._transcript_window = TranscriptWindow(
-                self._t("transcript.title"), on_frame_change=self._on_island_frame_change
+                self._t("transcript.title"),
+                on_frame_change=self._on_island_frame_change,
+                on_stop=self._on_island_stop,
             )
         self._transcript_window.set_source_labels(spk_labels)
+        # Re-pushed each start: the window outlives a language switch.
+        self._transcript_window.set_stop_labels(
+            self._t("transcript.stop"), self._t("transcript.stopping")
+        )
         self._transcript_window.clear()
         self._transcript_window.apply_theme(self._settings.get("ui_theme", "auto"))
         self._transcript_window.set_on_top(self._settings.get("meeting_on_top", False))
@@ -893,6 +907,16 @@ class VoiceTyper:
             # (report 07.08.2026).
             self._tray.set_meeting_stopping()
             self._tray.set_status(self._t("st.meetingStopping"))
+            # …and say it OUTSIDE the menu too. The menu closes the instant you
+            # click, so a label that only changes inside it is feedback nobody
+            # sees: the tester clicked stop, watched an unchanged island for the
+            # length of the drain, and read it as "nothing happened"
+            # (17.08.2026). The glyph, the HUD and the island caption all flip now.
+            self._tray.set_title("⏳")
+            with contextlib.suppress(Exception):
+                self._tray.show_hud(self._t("hud.meetingStopping"), "recognizing")
+            if self._transcript_window is not None:
+                self._transcript_window.set_stopping(True)
             # Stop capture (flushes the trailing segment into the queue) while still
             # holding the lock, so no recover can resurrect the stream after this.
             if self._sysrec is not None:
@@ -921,7 +945,10 @@ class VoiceTyper:
             wd = self._watchdog_thread
             if wd is not None and wd is not threading.current_thread() and wd.is_alive():
                 wd.join(timeout=self._MEETING_WATCHDOG_TICK + 1.0)
+            with contextlib.suppress(Exception):
+                self._tray.hide_hud()
             if self._transcript_window is not None:
+                self._transcript_window.set_stopping(False)
                 self._transcript_window.hide()  # island shows only while transcribing
             self._tray.set_meeting_active(False)
             self._tray.set_status(self._t("st.meetingOff"))

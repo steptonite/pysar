@@ -35,11 +35,20 @@ class TranscriptWindow:
     """NSPanel + NSTextView. ``show()`` / ``hide()`` / ``append()`` / ``clear()`` —
     all are safe to call from any thread (UI work is marshalled to the main queue)."""
 
-    def __init__(self, title: str = "Pysar — Transcript", on_frame_change=None):
+    def __init__(self, title: str = "Pysar — Transcript", on_frame_change=None, on_stop=None):
         self._title = title
         self._window = None
         self._textview = None
         self._delegate = None
+        # Stop control. The island used to have no way out at all: the only stop
+        # lived in the menu-bar item, which on a crowded menu bar can sit hidden
+        # behind the notch — a tester could start a capture and then not reach the
+        # control that ends it (17.08.2026). The button is that missing exit.
+        self._on_stop = on_stop  # callable() or None
+        self._stop_button = None
+        self._stop_target = None
+        self._stopping = False
+        self._stop_labels = {"stop": "Stop", "stopping": "Stopping…"}
         self._on_top = False  # kept for API compat (island always floats high)
         self._labels: dict[str, str] = {"sys": "System", "mic": "You"}
         self._last_source: str | None = None
@@ -53,6 +62,7 @@ class TranscriptWindow:
         self._appearance_obs = None  # system dark/light change observer token
         self._theme = "auto"  # "auto" | "light" | "dark" — applied on every (re)build too
         self._grip_lines = []  # CAShapeLayers of the corner grip (re-stroked per theme)
+        self._content = None  # the view we add subviews to (inside the glass, not the window)
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, title: str | None = None) -> None:
@@ -62,6 +72,10 @@ class TranscriptWindow:
         def _go():
             if self._window is None:
                 self._build()
+            # A fresh capture always opens on the live (not draining) caption —
+            # the window object is reused across sessions.
+            self._stopping = False
+            self._apply_stop_state()
             # Position: saved frame if we have one, else the default top-right.
             frame = None
             if self._saved_frame:
@@ -102,6 +116,83 @@ class TranscriptWindow:
                     self._window.orderOut_(None)
 
         _main_async(_go)
+
+    # ── stop control ──────────────────────────────────────────────────────────
+    def set_stop_labels(self, stop: str, stopping: str) -> None:
+        """Localized button captions (the window outlives a language switch)."""
+        self._stop_labels = {"stop": stop, "stopping": stopping}
+        _main_async(self._apply_stop_state)
+
+    def set_stopping(self, on: bool) -> None:
+        """Switch the button into its draining state. The stop itself can take up
+        to a minute (the queue has to finish transcribing what was already said);
+        until this existed, the island just sat there unchanged and the click read
+        as ignored."""
+        self._stopping = bool(on)
+        _main_async(self._apply_stop_state)
+
+    def _apply_stop_state(self) -> None:
+        btn = self._stop_button
+        if btn is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import (
+                NSCenterTextAlignment,
+                NSColor,
+                NSFont,
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSMutableParagraphStyle,
+                NSParagraphStyleAttributeName,
+            )
+            from Foundation import NSAttributedString
+
+            stopping = self._stopping
+            text = self._stop_labels.get("stopping" if stopping else "stop", "")
+            para = NSMutableParagraphStyle.alloc().init()
+            para.setAlignment_(NSCenterTextAlignment)
+            # An ATTRIBUTED title, not setTitle_: a borderless NSButton draws its
+            # plain title in a fixed control colour that disappears against the
+            # light theme. labelColor / secondaryLabelColor are dynamic — they
+            # re-resolve per appearance, so the caption survives a theme flip.
+            attrs = {
+                NSFontAttributeName: NSFont.systemFontOfSize_(11.5),
+                NSForegroundColorAttributeName: (
+                    NSColor.secondaryLabelColor() if stopping else NSColor.labelColor()
+                ),
+                NSParagraphStyleAttributeName: para,
+            }
+            btn.setAttributedTitle_(
+                NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+            )
+            btn.setEnabled_(not stopping)
+            btn.setToolTip_(text)
+            self._layout_stop_button()
+
+    def _layout_stop_button(self) -> None:
+        """Pin the button to the top-right corner of the strip (it is re-laid out
+        after every title change, since the two captions differ in width)."""
+        btn = self._stop_button
+        if btn is None or self._content is None:
+            return
+        with contextlib.suppress(Exception):
+            from AppKit import NSMakeRect
+
+            # self._content, NOT window.contentView(): under Liquid Glass the
+            # window's content view is the NSGlassEffectView, and the views we
+            # actually add live one level deeper, inside its own content holder.
+            content = self._content
+            title = btn.attributedTitle()
+            w = max(float(title.size().width) + 20.0 if title else 0.0, 84.0)
+            h = 20.0
+            btn.setFrame_(
+                NSMakeRect(
+                    content.bounds().size.width - w - 10.0,
+                    content.bounds().size.height - (_STRIP_H + h) / 2.0 - 1.0,
+                    w,
+                    h,
+                )
+            )
 
     def set_on_top(self, on: bool) -> None:
         """Kept for caller compatibility; the island always floats above everything."""
@@ -544,7 +635,6 @@ class TranscriptWindow:
             NSImage,
             NSMakeRect,
             NSMakeSize,
-            NSPanel,
             NSScrollView,
             NSTextView,
             NSViewHeightSizable,
@@ -569,7 +659,10 @@ class TranscriptWindow:
             | NSWindowStyleMaskResizable
             | NSWindowStyleMaskNonactivatingPanel
         )
-        win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        # _IslandPanel, not a bare NSPanel: a borderless window answers NO to
+        # canBecomeKeyWindow, which silently made the transcript unselectable
+        # (see the class comment below).
+        win = _IslandPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False
         )
         win.setTitle_(self._title)
@@ -733,6 +826,33 @@ class TranscriptWindow:
             ds.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)  # pinned to top
             content.addSubview_(ds)
 
+        # ── stop button (top-right of the strip) ──
+        # Added after the strip, so it sits on top of it and gets the clicks.
+        if self._on_stop is not None:
+            with contextlib.suppress(Exception):
+                from AppKit import NSButton, NSCenterTextAlignment
+
+                self._stop_target = _StopTarget.alloc().init()
+                self._stop_target._owner = self
+                btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 84, 20))
+                btn.setBordered_(False)
+                btn.setAlignment_(NSCenterTextAlignment)
+                btn.setTarget_(self._stop_target)
+                btn.setAction_("stopClicked:")
+                # Flexible left + bottom margins = pinned to the top-right corner
+                # while the island is resized.
+                btn.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
+                btn.setWantsLayer_(True)
+                with contextlib.suppress(Exception):
+                    btn.layer().setCornerRadius_(10.0)
+                    btn.layer().setCornerCurve_("continuous")
+                    btn.layer().setBackgroundColor_(
+                        NSColor.colorWithCalibratedWhite_alpha_(0.5, 0.22).CGColor()
+                    )
+                self._stop_button = btn
+                content.addSubview_(btn)
+                self._apply_stop_state()
+
         # ── corner resize affordance (subtle native grow-box hint) ──
         # Inset well inside the 16px corner radius so masksToBounds doesn't clip the
         # lines along the curve (the previous grip sat ON the arc → looked broken).
@@ -774,11 +894,83 @@ class TranscriptWindow:
         self._delegate._owner = self
         win.setDelegate_(self._delegate)
         self._window = win
+        self._content = content
         self._install_wake_observer()
         self._install_appearance_observer()
         with contextlib.suppress(Exception):
             win.invalidateShadow()  # match the shadow to the masked rounded shape from the start
         self._apply_theme_now()  # start on the stored theme, not whatever AppKit inherits by default
+
+
+# ── Island panel class (lazy, same pattern as the drag strip / delegate) ───────
+def _make_island_class():
+    import objc
+    from AppKit import NSPanel
+
+    class _IslandPanelImpl(NSPanel):
+        # A BORDERLESS window answers NO to canBecomeKeyWindow — AppKit grants key
+        # status only to windows with a title/resize bar. That single default made
+        # the whole island read-only-to-the-eye: no key window → the NSTextView
+        # never becomes first responder → a mouse drag never starts a selection and
+        # ⌘C is delivered to whatever app is frontmost. `setSelectable_(True)` in
+        # _build was therefore dead code — permission granted, access denied.
+        #
+        # Overriding it here (rather than switching to a titled window) keeps the
+        # island's whole look. Focus stays polite because of the two flags already
+        # set in _build: NSWindowStyleMaskNonactivatingPanel means taking key never
+        # activates the app (no Dock switch, no menu-bar flip), and
+        # becomesKeyOnlyIfNeeded=YES means the panel only takes key when the click
+        # lands on a view that says it needs it — the text view (its
+        # needsPanelToBecomeKey is YES) — while clicks on the drag strip, the
+        # padding or the grip move/resize the island without stealing focus at all.
+        def canBecomeKeyWindow(self):
+            return True
+
+        def canBecomeMainWindow(self):
+            # Key (to select/copy) but never main: this is an accessory island, and
+            # main-window status is what makes AppKit treat it as the app's document
+            # window (menu-bar ownership, window-menu entry).
+            return False
+
+        def performKeyEquivalent_(self, event):
+            """Serve ⌘C / ⌘A ourselves instead of relying on the menu bar.
+
+            Pysar runs as a menu-bar agent, and its Edit menu (with the standard
+            copy:/selectAll: key equivalents) is installed only while the Settings
+            window is open — see settings_window._install_main_menu. With just the
+            island on screen there is no Edit menu, so a key window alone would give
+            mouse selection but STILL no ⌘C. Routing the action through the responder
+            chain (target=None) is exactly what a menu item does, so the text view
+            handles it with its native implementation — including the case where the
+            user never clicked into the text and nothing is selected (the action
+            simply finds no responder and we fall through)."""
+            handled = False
+            with contextlib.suppress(Exception):
+                from AppKit import NSApp, NSEventModifierFlagCommand
+
+                mods = event.modifierFlags()
+                if mods & NSEventModifierFlagCommand:
+                    key = (event.charactersIgnoringModifiers() or "").lower()
+                    sel = {"c": "copy:", "a": "selectAll:"}.get(key)
+                    if sel is not None:
+                        handled = bool(NSApp().sendAction_to_from_(sel, None, self))
+            if handled:
+                return True
+            return objc.super(_IslandPanelImpl, self).performKeyEquivalent_(event)
+
+    return _IslandPanelImpl
+
+
+class _IslandPanelMeta:
+    _cls = None
+
+    def alloc(self):
+        if _IslandPanelMeta._cls is None:
+            _IslandPanelMeta._cls = _make_island_class()
+        return _IslandPanelMeta._cls.alloc()
+
+
+_IslandPanel = _IslandPanelMeta()
 
 
 # ── Drag-strip view class (lazy, same pattern as the delegate) ─────────────────
@@ -811,6 +1003,41 @@ class _DragStripMeta:
 
 
 _DragStrip = _DragStripMeta()
+
+
+# ── Stop-button target (lazy, same pattern as the drag strip) ─────────────────
+def _make_stop_target_class():
+    from AppKit import NSObject
+
+    class _StopTargetImpl(NSObject):
+        def stopClicked_(self, _sender):
+            owner = getattr(self, "_owner", None)
+            if owner is None or owner._on_stop is None or owner._stopping:
+                return
+            # Paint the draining state before the callback: stopping drains the
+            # transcription queue and can take a while, and the click must be
+            # acknowledged in the same frame it happened. Set + repaint directly
+            # rather than via set_stopping(), which defers to the main queue —
+            # a button action already runs there, so deferring would only push
+            # the acknowledgement into the next loop turn.
+            owner._stopping = True
+            owner._apply_stop_state()
+            with contextlib.suppress(Exception):
+                owner._on_stop()
+
+    return _StopTargetImpl
+
+
+class _StopTargetMeta:
+    _cls = None
+
+    def alloc(self):
+        if _StopTargetMeta._cls is None:
+            _StopTargetMeta._cls = _make_stop_target_class()
+        return _StopTargetMeta._cls.alloc()
+
+
+_StopTarget = _StopTargetMeta()
 
 
 # ── NSWindowDelegate (frame-persistence only) ──────────────────────────────────
