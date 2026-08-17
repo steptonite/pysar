@@ -182,3 +182,45 @@ def test_no_button_without_a_callback():
         assert w._stop_button is None
     finally:
         w._window.orderOut_(None)
+
+
+# ── how the button looks (18.08.2026: "працює, але по дизайну не дуже") ───────
+def test_button_is_a_capsule_with_an_edge_and_a_glyph(island_with_stop):
+    """A flat grey slab read as a placeholder. It is a capsule now: radius = half
+    the height, a hairline refraction edge, and a stop glyph before the caption."""
+    from pysar.backend.transcript_window import _STOP_H
+
+    btn = island_with_stop._stop_button
+    layer = btn.layer()
+    assert btn.frame().size.height == _STOP_H
+    assert layer.cornerRadius() == _STOP_H / 2.0
+    assert layer.borderWidth() == 1.0
+    assert btn.image() is not None  # SF Symbol "stop.fill"
+
+
+def test_hover_lifts_the_fill_and_leaving_puts_it_back(island_with_stop):
+    """Nothing happened under the cursor before — the chip looked inert."""
+    from Quartz import CGColorGetAlpha
+
+    btn = island_with_stop._stop_button
+    idle = CGColorGetAlpha(btn.layer().backgroundColor())
+    btn.mouseEntered_(None)
+    hovered = CGColorGetAlpha(btn.layer().backgroundColor())
+    btn.mouseExited_(None)
+    assert hovered > idle
+    assert CGColorGetAlpha(btn.layer().backgroundColor()) == idle
+
+
+def test_draining_button_does_not_light_up_under_the_cursor(island_with_stop):
+    """While the stop drains, the button is disabled — hovering it must not
+    suggest a second click will do something."""
+    from Quartz import CGColorGetAlpha
+
+    win = island_with_stop
+    win.set_stopping(True)
+    win._apply_stop_state()
+    btn = win._stop_button
+    dim = CGColorGetAlpha(btn.layer().backgroundColor())
+    btn.mouseEntered_(None)
+    assert CGColorGetAlpha(btn.layer().backgroundColor()) == dim
+    btn.mouseExited_(None)

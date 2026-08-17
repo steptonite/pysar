@@ -17,6 +17,8 @@ _MIN_W = 360
 _MIN_H = 140
 _RADIUS = 16.0
 _STRIP_H = 30  # draggable top strip height
+_STOP_H = 20  # stop-button height (its corner radius is half of this — a capsule)
+_STOP_INSET = 16  # gap to the island's right edge — must clear the 16pt corner arc
 
 
 def _main_async(fn) -> None:
@@ -155,11 +157,10 @@ class TranscriptWindow:
             # plain title in a fixed control colour that disappears against the
             # light theme. labelColor / secondaryLabelColor are dynamic — they
             # re-resolve per appearance, so the caption survives a theme flip.
+            colour = NSColor.secondaryLabelColor() if stopping else NSColor.labelColor()
             attrs = {
-                NSFontAttributeName: NSFont.systemFontOfSize_(11.5),
-                NSForegroundColorAttributeName: (
-                    NSColor.secondaryLabelColor() if stopping else NSColor.labelColor()
-                ),
+                NSFontAttributeName: NSFont.systemFontOfSize_weight_(11.0, 0.23),  # medium
+                NSForegroundColorAttributeName: colour,
                 NSParagraphStyleAttributeName: para,
             }
             btn.setAttributedTitle_(
@@ -167,7 +168,14 @@ class TranscriptWindow:
             )
             btn.setEnabled_(not stopping)
             btn.setToolTip_(text)
+            # The glyph is a template image, so it takes the tint directly — it has
+            # to fade with the caption, otherwise the draining state looks half-lit.
+            with contextlib.suppress(Exception):
+                btn.setContentTintColor_(colour)
             self._layout_stop_button()
+            # After the frame: the corner radius is derived from the button height.
+            with contextlib.suppress(Exception):
+                btn._paint()  # enabled/disabled changes the capsule fill too
 
     def _layout_stop_button(self) -> None:
         """Pin the button to the top-right corner of the strip (it is re-laid out
@@ -183,12 +191,16 @@ class TranscriptWindow:
             # actually add live one level deeper, inside its own content holder.
             content = self._content
             title = btn.attributedTitle()
-            w = max(float(title.size().width) + 20.0 if title else 0.0, 84.0)
-            h = 20.0
+            # 11pt of padding on each side, plus room for the glyph and its gap.
+            w = max(float(title.size().width) + 36.0 if title else 0.0, 76.0)
+            h = float(_STOP_H)
+            # Sits low in the strip, not centred in it: the island's corners are
+            # rounded by 16pt, and a button pinned any higher had its right end
+            # clipped by the arc (seen in an offscreen render, 18.08.2026).
             btn.setFrame_(
                 NSMakeRect(
-                    content.bounds().size.width - w - 10.0,
-                    content.bounds().size.height - (_STRIP_H + h) / 2.0 - 1.0,
+                    content.bounds().size.width - w - _STOP_INSET,
+                    content.bounds().size.height - _STRIP_H + 3.0,
                     w,
                     h,
                 )
@@ -830,11 +842,11 @@ class TranscriptWindow:
         # Added after the strip, so it sits on top of it and gets the clicks.
         if self._on_stop is not None:
             with contextlib.suppress(Exception):
-                from AppKit import NSButton, NSCenterTextAlignment
+                from AppKit import NSCenterTextAlignment, NSImageLeft
 
                 self._stop_target = _StopTarget.alloc().init()
                 self._stop_target._owner = self
-                btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 84, 20))
+                btn = _StopButton.alloc().initWithFrame_(NSMakeRect(0, 0, 84, _STOP_H))
                 btn.setBordered_(False)
                 btn.setAlignment_(NSCenterTextAlignment)
                 btn.setTarget_(self._stop_target)
@@ -843,12 +855,28 @@ class TranscriptWindow:
                 # while the island is resized.
                 btn.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
                 btn.setWantsLayer_(True)
+                # A small filled square left of the caption. The glyph is what the
+                # eye lands on first — "this is a control", before any word is read
+                # — and it survives a language switch unchanged.
                 with contextlib.suppress(Exception):
-                    btn.layer().setCornerRadius_(10.0)
-                    btn.layer().setCornerCurve_("continuous")
-                    btn.layer().setBackgroundColor_(
-                        NSColor.colorWithCalibratedWhite_alpha_(0.5, 0.22).CGColor()
+                    from AppKit import NSImage, NSImageSymbolConfiguration
+
+                    img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                        "stop.fill", None
                     )
+                    if img is not None:
+                        cfg = NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
+                            9.0, 6, 1
+                        )
+                        with contextlib.suppress(Exception):
+                            img = img.imageWithSymbolConfiguration_(cfg)
+                        btn.setImage_(img)
+                        btn.setImagePosition_(NSImageLeft)
+                        btn.setImageScaling_(0)  # NSImageScaleProportionallyDown
+                        # Keep the glyph next to the caption instead of parked at
+                        # the far edge of the button (which read as two loose bits).
+                        with contextlib.suppress(Exception):
+                            btn.setImageHugsTitle_(True)
                 self._stop_button = btn
                 content.addSubview_(btn)
                 self._apply_stop_state()
@@ -1003,6 +1031,111 @@ class _DragStripMeta:
 
 
 _DragStrip = _DragStripMeta()
+
+
+# ── Stop button view class (lazy, same pattern as the drag strip) ─────────────
+# A plain borderless NSButton on glass reads as a flat grey slab: no edge, no
+# reaction to the cursor, square-ish corners at 20px with a 10px radius. This
+# subclass paints a proper capsule — a hairline refraction edge and a fill that
+# answers hover and press — and repaints itself when the system flips theme,
+# which a CGColor baked once at build time cannot do.
+def _make_stop_button_class():
+    import objc
+    from AppKit import (
+        NSButton,
+        NSColor,
+        NSTrackingActiveAlways,
+        NSTrackingArea,
+        NSTrackingInVisibleRect,
+        NSTrackingMouseEnteredAndExited,
+    )
+
+    class _StopButtonImpl(NSButton):
+        def _paint(self):
+            """Repaint the capsule for the current appearance + mouse state."""
+            with contextlib.suppress(Exception):
+                layer = self.layer()
+                if layer is None:
+                    return
+                dark = "Dark" in str(self.effectiveAppearance().name())
+                # Milk on dark glass, ink on light glass — a single neutral, never
+                # an accent colour: the island sits over someone else's window and
+                # a coloured chip would fight whatever is underneath.
+                base = 1.0 if dark else 0.0
+                alpha = 0.10 if dark else 0.055
+                if not self.isEnabled():
+                    alpha *= 0.55  # draining: present, but clearly not clickable
+                elif getattr(self, "_pressed", False):
+                    alpha += 0.11
+                elif getattr(self, "_hover", False):
+                    alpha += 0.06
+                layer.setBackgroundColor_(
+                    NSColor.colorWithCalibratedWhite_alpha_(base, alpha).CGColor()
+                )
+                layer.setBorderWidth_(1.0)
+                layer.setBorderColor_(
+                    NSColor.colorWithCalibratedWhite_alpha_(
+                        1.0 if dark else 0.0, 0.16 if dark else 0.09
+                    ).CGColor()
+                )
+                # Radius follows the height, so it stays a capsule if the size changes.
+                layer.setCornerRadius_(self.bounds().size.height / 2.0)
+                with contextlib.suppress(Exception):
+                    layer.setCornerCurve_("continuous")
+
+        def viewDidChangeEffectiveAppearance(self):
+            self._paint()
+
+        def updateTrackingAreas(self):
+            objc.super(_StopButtonImpl, self).updateTrackingAreas()
+            with contextlib.suppress(Exception):
+                for area in list(self.trackingAreas()):
+                    self.removeTrackingArea_(area)
+                # ActiveAlways, not ActiveInKeyWindow: the island is a
+                # non-activating panel and never becomes key, so the key-window
+                # variant would never fire.
+                opts = (
+                    NSTrackingMouseEnteredAndExited
+                    | NSTrackingActiveAlways
+                    | NSTrackingInVisibleRect
+                )
+                self.addTrackingArea_(
+                    NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                        self.bounds(), opts, self, None
+                    )
+                )
+
+        def mouseEntered_(self, _event):
+            self._hover = True
+            self._paint()
+
+        def mouseExited_(self, _event):
+            self._hover = False
+            self._pressed = False
+            self._paint()
+
+        def mouseDown_(self, event):
+            self._pressed = True
+            self._paint()
+            # super's mouseDown_ runs the whole tracking loop and fires the action
+            # on mouse-up, so the release repaint below lands after the click.
+            objc.super(_StopButtonImpl, self).mouseDown_(event)
+            self._pressed = False
+            self._paint()
+
+    return _StopButtonImpl
+
+
+class _StopButtonMeta:
+    _cls = None
+
+    def alloc(self):
+        if _StopButtonMeta._cls is None:
+            _StopButtonMeta._cls = _make_stop_button_class()
+        return _StopButtonMeta._cls.alloc()
+
+
+_StopButton = _StopButtonMeta()
 
 
 # ── Stop-button target (lazy, same pattern as the drag strip) ─────────────────
