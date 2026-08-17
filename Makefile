@@ -33,8 +33,23 @@ check-ffmpeg:
 	@command -v ffmpeg >/dev/null 2>&1 || \
 		echo "⚠️  ffmpeg not found — 'transcribe a file' will be disabled. Install: brew install ffmpeg"
 
+# The venv is built on PYTHON. install.sh passes the interpreter it already
+# verified; a bare `make setup` resolves one here. Never plain "python3" —
+# macOS's is 3.9 and pysar needs ≥3.10 (see scripts/find_python.sh).
+PYTHON ?= $(shell bash scripts/find_python.sh)
+
 venv:
-	@test -d venv || python3 -m venv venv
+	@if [ -x venv/bin/python ] && ! venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'; then \
+		echo "♻️  venv/ was built on Python $$(venv/bin/python -c 'import platform;print(platform.python_version())') — rebuilding it on a supported one."; \
+		rm -rf venv; \
+	fi
+	@test -d venv || { \
+		if [ -z "$(PYTHON)" ]; then \
+			echo "❌ No Python ≥3.10 found (macOS ships 3.9). Install one:  brew install python@3.12"; exit 1; \
+		fi; \
+		echo "🐍 venv on $(PYTHON)"; \
+		"$(PYTHON)" -m venv venv; \
+	}
 
 # Editable install with macOS- and dev-extras.
 install: venv

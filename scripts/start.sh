@@ -29,10 +29,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if health; then
-    echo "✅ whisper server already running on :$PORT"
-else
-    echo "🚀 starting whisper server (log: $LOG)…"
+# Launch the server and wait for it to answer. Returns 1 if it died or never
+# came up; the caller decides whether that's fatal or worth a CPU retry.
+launch_server() {
+    # A previous attempt that timed out (rather than died) still holds the port —
+    # clear it before we bind again.
+    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill -9 "$SERVER_PID" 2>/dev/null || true
+        sleep 1
+    fi
     # nohup so an incidental SIGHUP (terminal/login session going away on sleep or
     # logout) doesn't reach the server and tear it down mid-dictation. We still
     # stop it deliberately via the saved PID in cleanup().
@@ -42,13 +47,40 @@ else
 
     printf "⏳ loading model"
     for _ in $(seq 1 60); do
-        if health; then echo " — ready."; break; fi
+        if health; then echo " — ready."; return 0; fi
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-            echo ""; echo "❌ server died on startup. Last lines of $LOG:"; tail -20 "$LOG"; exit 1
+            echo ""; return 1
         fi
         printf "."; sleep 1
     done
-    if ! health; then echo ""; echo "❌ server didn't come up in time. See $LOG"; exit 1; fi
+    echo ""
+    return 1
+}
+
+if health; then
+    echo "✅ whisper server already running on :$PORT"
+else
+    echo "🚀 starting whisper server (log: $LOG)…"
+    if ! launch_server; then
+        # Metal can fail at model load on some Macs ("failed to allocate buffer",
+        # then SIGSEGV). Before this retry the app just disappeared at launch with
+        # nothing on screen — the user had no way to know why (tester, 17.08.2026).
+        # CPU decoding is slower but always works, so try it once and remember.
+        if grep -qiE "failed to allocate|ggml_metal|Segmentation fault|SIGSEGV|ggml_abort" "$LOG"; then
+            echo "⚠️  the GPU (Metal) backend crashed on this Mac — retrying on the CPU…"
+            MARKER="$HOME/Library/Application Support/Pysar/no-gpu"
+            if PYSAR_NO_GPU=1 launch_server; then
+                mkdir -p "$(dirname "$MARKER")"
+                printf 'Metal crashed at model load on %s — CPU decoding.\nDelete this file to try the GPU again.\n' \
+                    "$(date '+%Y-%m-%d %H:%M')" > "$MARKER"
+                echo "ℹ️  saved the CPU-only choice ($MARKER). Delete that file to retry the GPU."
+            else
+                echo "❌ server died on startup even on the CPU. Last lines of $LOG:"; tail -20 "$LOG"; exit 1
+            fi
+        else
+            echo "❌ server didn't come up. Last lines of $LOG:"; tail -20 "$LOG"; exit 1
+        fi
+    fi
 fi
 
 echo "🎙  launching Pysar — Caps Lock to dictate, Ctrl+Option+U/R/E to switch language."

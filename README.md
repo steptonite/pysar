@@ -105,6 +105,7 @@ To change the language line-up, edit `MODES`, `MODE_LABELS`, `MENU_MODES` and th
 An independent capture mode for meetings, calls and streams: both **system audio and your mic** are transcribed live, side by side.
 
 - **Floating island.** A borderless **Liquid Glass** panel (macOS 26 `NSGlassEffectView`, with an `NSVisualEffectView` fallback on older macOS) shows the transcript as it's recognized, each line stamped `Source · HH:MM`. It floats above everything — including fullscreen video — is freely draggable and resizable down to a compact strip, and remembers its geometry across launches.
+- **Stop from the island.** The panel carries its own **Stop** button, so a capture can always be ended without the menu-bar item — which a crowded menu bar can hide behind the notch. It says *Stopping…* while the queue drains (the last sentences are still being transcribed), so the click is never mistaken for a dead button.
 - **Adjustable glassiness.** From a solid themed panel to near-full glass. The tint underlay sits on a separate layer *below* the text, so turning transparency up never fades the words themselves.
 - **Speaker separation.** Off (one mixed stream) · Fast (dominant source by loudness) · Smart (system and mic decoded separately through the same whisper.cpp instance — more accurate, a little slower).
 - **Context hint.** A custom priming sentence for the session, with the same token-budget meter as Speech profiles, or inherit the active dictation profiles for that language.
@@ -167,6 +168,9 @@ Grant these to **Pysar**, not to Python or Terminal. macOS attributes permission
 | Subtitle-credit junk on silence | Whisper silence hallucination | VAD handles it — confirm the server restarted |
 | Wrong output language | wrong mode armed | `Ctrl+Option+U/R/E`; check the menu-bar flag |
 | 10–20 s waits with Resolve or Photoshop open | 8 GB under memory pressure (swap) | dictate in shorter takes, or close the heavy app |
+| Install ends after the dependencies, Pysar never builds | a child process ate the piped script | fixed 18.08.2026 — re-run the one-liner; it now buffers itself before running |
+| Install fails inside pip / venv | the venv was built on macOS's Python 3.9 | fixed 18.08.2026 — `rm -rf venv` and re-run; the installer now requires ≥3.10 |
+| App launches and vanishes, no window | the Metal backend crashed at model load (seen on an M4) | it now retries on the CPU by itself; the choice is kept in `~/Library/Application Support/Pysar/no-gpu` — delete that file to try the GPU again |
 
 ---
 

@@ -25,6 +25,9 @@ fi
 PY_SRC="$("$VENV_PY" -c 'import sys,os;print(os.path.join(sys.base_prefix,"Resources/Python.app/Contents/MacOS/Python"))')"
 SITE_DIR="$("$VENV_PY" -c 'import site;print(site.getsitepackages()[0])')"
 
+# Remember the identity of the copy we're replacing (see the TCC block at the end).
+OLD_CDHASH="$(codesign -dvvv "$APP" 2>&1 | awk -F= '/^CDHash/{print $2}' || true)"
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -85,6 +88,25 @@ fi
 # rebuild, so re-running this script means re-granting permissions once — same
 # cost as before, but grants now stick between launches.
 codesign --force --deep --sign - "$APP"
+
+# ── Drop the previous copy's dead TCC grants ─────────────────────────────────
+# Without a Developer ID the ad-hoc cdhash changes whenever the bundle is
+# rebuilt, and macOS then ignores every permission granted to the old identity —
+# but keeps SHOWING it as granted. The user sees Accessibility and Input
+# Monitoring switched on while nothing works, and no amount of toggling helps
+# (a tester lost an evening to exactly this on 17.08.2026; only a manual reset
+# fixed it). Clearing the stale rows here means macOS asks again, honestly.
+# Only fires when the identity actually changed — a rebuild that produces the
+# same cdhash keeps its grants, and a first install has nothing to clear.
+NEW_CDHASH="$(codesign -dvvv "$APP" 2>&1 | awk -F= '/^CDHash/{print $2}' || true)"
+BUNDLE_ID="com.steptonite.pysar"
+if [ -n "$OLD_CDHASH" ] && [ "$OLD_CDHASH" != "$NEW_CDHASH" ]; then
+    echo "🔐 the app's signature changed — clearing the old copy's stale permissions…"
+    for svc in Accessibility ListenEvent Microphone ScreenCapture; do
+        tccutil reset "$svc" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    done
+    echo "   → grant Input Monitoring + Accessibility to Pysar again on first launch."
+fi
 
 # ── Register + refresh icon cache ─────────────────────────────────────────────
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
