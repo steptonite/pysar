@@ -104,6 +104,32 @@ if [ -z "$PYSAR_PY" ]; then
 fi
 say "🐍 Python: $PYSAR_PY ($("$PYSAR_PY" -c 'import platform;print(platform.python_version())'))"
 
+# Bring an existing clone up to date. Not a bare `git pull --ff-only`: when
+# someone debugs a broken install they patch files in place (a helper disabled
+# Metal in the tester's clone on 17.08.2026), and a dirty tree makes the pull
+# fail. The old code warned once and then quietly built the STALE checkout —
+# so "re-run the installer to update" silently did nothing. Local work is parked
+# in the stash (never discarded) and the failure modes are spelled out.
+update_clone() {
+    local root="$1" dirty=""
+    dirty="$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null || true)"
+    if [ -n "$dirty" ]; then
+        warn "this clone has local edits — parking them in the stash so the update can land:"
+        printf '%s\n' "$dirty" | sed 's/^/      /' >&2
+        if git -C "$root" stash push -m "pysar-install $(date '+%Y-%m-%d %H:%M')" </dev/null >/dev/null 2>&1; then
+            say "   ↩︎ get them back any time with:  git -C $root stash pop"
+        else
+            warn "couldn't stash them — building whatever is checked out."
+            return 0
+        fi
+    fi
+    if ! git -C "$root" pull --ff-only </dev/null; then
+        warn "this clone has diverged from origin/main, so it can't fast-forward."
+        warn "Building the checked-out version. To take the latest instead, run:"
+        warn "    git -C $root fetch origin && git -C $root reset --hard origin/main"
+    fi
+}
+
 # ── 3. Locate or clone the repo ─────────────────────────────────────────────
 # If this script lives inside a clone (has a Makefile next to it), use that.
 # Piped into bash, BASH_SOURCE is empty and $0 is "bash" — SCRIPT_DIR then
@@ -111,11 +137,20 @@ say "🐍 Python: $PYSAR_PY ($("$PYSAR_PY" -c 'import platform;print(platform.py
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 if [ -f "$SCRIPT_DIR/Makefile" ] && grep -q "pysar" "$SCRIPT_DIR/Makefile" 2>/dev/null; then
     ROOT="$SCRIPT_DIR"
-    say "📂 Using existing clone at $ROOT"
+    if [ -z "${BASH_SOURCE[0]:-}" ]; then
+        # Piped in (the curl one-liner) while standing in a clone: the user asked
+        # for the published version, so fetch it. Running ./install.sh from the
+        # file is the opposite intent — a developer building their working tree —
+        # and must never move it under them.
+        say "📂 In a clone at $ROOT — updating to the published version…"
+        update_clone "$ROOT"
+    else
+        say "📂 Using this clone at $ROOT (your working tree, left as it is)"
+    fi
 elif [ -d "$CLONE_DIR/.git" ]; then
     ROOT="$CLONE_DIR"
     say "📂 Found existing clone at $ROOT — updating…"
-    git -C "$ROOT" pull --ff-only </dev/null || warn "couldn't fast-forward — continuing with the checked-out version."
+    update_clone "$ROOT"
 else
     say "📥 Cloning $REPO_URL → $CLONE_DIR"
     mkdir -p "$(dirname "$CLONE_DIR")"
