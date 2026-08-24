@@ -184,3 +184,53 @@ def test_dispatch_ft_prompt_actions_route():
     dispatch({"action": "set_ft_prompt", "value": "Claude, MCP"}, handlers)
     dispatch({"action": "set_ft_prompt_source", "value": "custom"}, handlers)
     assert seen == [("prompt", "Claude, MCP"), ("src", "custom")]
+
+
+# ── Meeting-recording rotation (24.08.2026) ───────────────────────────────────
+
+
+def test_build_html_has_the_meeting_keep_picker():
+    html = build_html(_state())
+    assert 'id="mt-keep"' in html
+
+
+def test_build_html_embeds_the_meeting_keep_state():
+    html = build_html(_state(meeting_keep_last=0, meeting_keep_options=[5, 10, 0]))
+    m = re.search(r"let STATE = (\{.*?\});", html, re.DOTALL)
+    parsed = json.loads(m.group(1))
+    # 0 = "keep everything"; it must reach the window as an option, not be
+    # filtered out as falsy on the way.
+    assert parsed["meeting_keep_last"] == 0
+    assert 0 in parsed["meeting_keep_options"]
+
+
+def test_dispatch_routes_the_meeting_keep_choice():
+    seen = []
+    dispatch({"action": "set_meeting_keep", "value": 50}, {"set_meeting_keep": seen.append})
+    assert seen == [50]
+
+
+# ── Meeting AUDIO folder button (24.08.2026) ───────────────────────────────────
+# Distinct from the transcripts folder: "Save transcript to file" writes
+# Markdown text, this opens the raw mic/system-audio WAV buffer (meetings/)
+# that "Keep meeting recordings" actually rotates. Without it, the only way to
+# find the audio was to know the path by heart.
+
+
+def test_build_html_has_the_meeting_audio_folder_button():
+    html = build_html(_state())
+    assert 'id="mt-audio-open"' in html
+    assert 'id="mt-audio-path"' in html
+
+
+def test_build_html_embeds_the_meetings_dir_state():
+    html = build_html(_state(meetings_dir="/tmp/meetings"))
+    m = re.search(r"let STATE = (\{.*?\});", html, re.DOTALL)
+    parsed = json.loads(m.group(1))
+    assert parsed["meetings_dir"] == "/tmp/meetings"
+
+
+def test_dispatch_routes_open_meetings_folder():
+    calls = []
+    dispatch({"action": "open_meetings_folder"}, {"open_meetings_folder": lambda: calls.append(1)})
+    assert calls == [1]

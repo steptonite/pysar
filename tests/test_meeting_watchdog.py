@@ -12,6 +12,7 @@ VoiceTyper is built without __init__ (no tray, no AppKit), as in test_streaming.
 
 import threading
 
+from pysar import app as app_mod
 from pysar.app import VoiceTyper
 
 
@@ -20,6 +21,9 @@ class _FakeTray:
         self.statuses: list[str] = []
         self.huds: list[str] = []
         self.meeting_states: list[str] = []
+        # Notifications are the only channel that outlives the moment (they stay
+        # in Notification Centre), so the failure tests below read them.
+        self.notes: list[tuple] = []
 
     def set_status(self, text: str) -> None:
         self.statuses.append(text)
@@ -31,7 +35,7 @@ class _FakeTray:
         pass
 
     def notify(self, *a) -> None:
-        pass
+        self.notes.append(a)
 
     def set_title(self, *a) -> None:
         pass
@@ -44,17 +48,30 @@ class _FakeTray:
 
 
 class _FakeRecorder:
-    """Stands in for SystemAudioRecorder: `since` is what the heartbeat reports."""
+    """Stands in for SystemAudioRecorder: `since` is what the heartbeat reports,
+    `secs`/`paths` what its raw recovery buffer ended up holding."""
 
-    def __init__(self, since: float | None):
+    def __init__(self, since: float | None, secs: float = 0.0, paths: list | None = None):
         self.since = since
         self.stopped = False
+        self.started = False
+        self.secs = secs
+        self.paths = paths or []
 
     def seconds_since_audio(self) -> float | None:
         return self.since
 
+    def start(self, on_segment=None, on_error=None) -> None:
+        self.started = True
+
     def stop(self) -> None:
         self.stopped = True
+
+    def dump_seconds(self) -> float:
+        return self.secs
+
+    def dump_paths(self) -> list:
+        return self.paths
 
 
 def _vt(since: float | None, started_ago: float) -> VoiceTyper:
@@ -235,3 +252,175 @@ def test_drain_gives_up_at_the_ceiling_instead_of_blocking_forever():
     t0 = time.monotonic()
     vt._await_drain()
     assert time.monotonic() - t0 < 3.0  # returned; the worker finishes on its own
+
+
+# ── a capture that dies MID-call has to leave a trace (24.08.2026) ────────────
+class _NoTimer:
+    """threading.Timer stand-in — the HUD auto-hide is irrelevant here, and a real
+    two-second timer would only make the suite wait for it at exit."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def start(self) -> None:
+        pass
+
+
+class _FakeTranscript:
+    """TranscriptFile as far as the recover path is concerned."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+        self.path = "/tmp/transcript.md"
+
+    def append(self, text: str, source: str | None = None, ts=None) -> None:
+        self.lines.append(text)
+
+    def close(self) -> None:
+        pass
+
+
+def _recoverable(monkeypatch, tmp_path):
+    """A VoiceTyper whose REAL _recover_meeting_capture can be run: no SCK, no
+    real meetings folder, no live HUD timer."""
+    vt = _vt(since=None, started_ago=999.0)
+    vt._transcript_file = _FakeTranscript()
+    monkeypatch.setattr(app_mod, "SystemAudioRecorder", lambda **kw: _FakeRecorder(since=None))
+    monkeypatch.setattr(app_mod, "meetings_dir", lambda: tmp_path)
+    monkeypatch.setattr(app_mod.threading, "Timer", _NoTimer)
+    return vt
+
+
+def _restart_notes(vt) -> list[tuple]:
+    return [n for n in vt._tray.notes if "notif.captureRestart" in str(n)]
+
+
+def test_a_mid_session_drop_is_announced_out_loud(monkeypatch, tmp_path):
+    """The HUD lives for two seconds. Someone who is on the phone right then sees
+    nothing, so the event has to survive the moment: a notification plus a mark in
+    the transcript that says where the recording has a hole."""
+    vt = _recoverable(monkeypatch, tmp_path)
+    vt._recover_meeting_capture("watchdog: no audio 12s")
+
+    assert len(_restart_notes(vt)) == 1
+    assert vt._transcript_file.lines == ["transcript.captureRestart"]
+
+
+def test_a_flapping_stream_notifies_once_not_per_restart(monkeypatch, tmp_path):
+    # Restart storms are exactly when the capture is worst — and exactly when a
+    # notification per attempt would bury the screen instead of informing.
+    vt = _recoverable(monkeypatch, tmp_path)
+    for _ in range(VoiceTyper._MEETING_RECOVER_MAX):
+        vt._recover_meeting_capture("watchdog: no audio 12s")
+
+    assert len(_restart_notes(vt)) == 1
+    assert vt._transcript_file.lines == ["transcript.captureRestart"]
+
+
+def test_a_new_incident_later_speaks_up_again(monkeypatch, tmp_path):
+    """One message per recover WINDOW, not per meeting: a drop half an hour after
+    the first one is news again, not the same event still repeating."""
+    import time
+
+    vt = _recoverable(monkeypatch, tmp_path)
+    vt._recover_meeting_capture("watchdog: no audio 12s")
+    # Age the window out — the counter resets and the next drop is a fresh event.
+    vt._meeting_recover_window_start = time.monotonic() - VoiceTyper._MEETING_RECOVER_WINDOW - 1
+    vt._recover_meeting_capture("watchdog: no audio 12s")
+
+    assert len(_restart_notes(vt)) == 2
+    assert len(vt._transcript_file.lines) == 2
+
+
+def test_the_restart_notice_never_blocks_the_restart(monkeypatch, tmp_path):
+    # Reporting is a courtesy; restarting the capture is the job. A transcript
+    # file that throws must not cost the rest of the meeting.
+    vt = _recoverable(monkeypatch, tmp_path)
+
+    class _Throwing:
+        def append(self, *a, **kw):
+            raise RuntimeError("file is gone")
+
+    vt._transcript_file = _Throwing()
+    vt._recover_meeting_capture("watchdog: no audio 12s")
+    assert vt._sysrec.started is True
+
+
+def test_no_transcript_file_still_notifies(monkeypatch, tmp_path):
+    # "Record without the window" + no file: the notification is then the ONLY
+    # trace the user will ever get.
+    vt = _recoverable(monkeypatch, tmp_path)
+    vt._transcript_file = None
+    vt._recover_meeting_capture("watchdog: no audio 12s")
+    assert len(_restart_notes(vt)) == 1
+
+
+# ── what the user is told when the meeting ends ───────────────────────────────
+def test_stop_shouts_when_no_audio_ever_reached_the_disk():
+    """The 24.08.2026 failure: a ten-minute call ended with "transcript saved"
+    and an empty file. A mute capture must be named as such, before anything
+    reassuring is shown."""
+    vt = _vt(since=1.0, started_ago=600.0)
+    vt._sysrec = _FakeRecorder(since=1.0, secs=0.0)
+    vt._stop_meeting()
+    assert any("notif.noAudioTitle" in str(n) for n in vt._tray.notes)
+
+
+def test_stop_points_at_the_saved_raw_audio():
+    vt = _vt(since=1.0, started_ago=600.0)
+    vt._sysrec = _FakeRecorder(since=1.0, secs=600.0, paths=["/tmp/meet-mic.wav"])
+    vt._stop_meeting()
+    assert any("notif.rawAudioTitle" in str(n) for n in vt._tray.notes)
+    assert not any("notif.noAudioTitle" in str(n) for n in vt._tray.notes)
+
+
+def test_stop_reports_the_outcome_after_the_capture_is_torn_down():
+    # The tally is read from a recorder that is already stopped — the reason
+    # SystemAudioRecorder keeps its summary past stop().
+    vt = _vt(since=1.0, started_ago=600.0)
+    vt._sysrec = _FakeRecorder(since=1.0, secs=120.0, paths=["/tmp/meet-sys.wav"])
+    vt._stop_meeting()
+    assert vt._sysrec.stopped is True
+    assert any("notif.rawAudioTitle" in str(n) for n in vt._tray.notes)
+
+
+# ── the mic the user picked must be the mic that records (24.08.2026) ─────────
+def _mic_vt(mic_name, *, pinning: bool, monkeypatch):
+    vt = _vt(since=1.0, started_ago=10.0)
+    vt._settings["mic"] = mic_name
+    monkeypatch.setattr(app_mod, "mic_pinning_supported", lambda: pinning)
+    return vt
+
+
+def test_an_unresolvable_mic_is_announced(monkeypatch):
+    """Device renamed or unplugged: the capture falls back to the system default,
+    which on this Mac is the AirPods link rather than the built-in mic. The user
+    has to hear that BEFORE the call, not from the finished recording."""
+    vt = _mic_vt("MacBook Air Microphone", pinning=True, monkeypatch=monkeypatch)
+    assert vt._warn_if_mic_not_pinned(capture_mic=True, mic_uid=None) is True
+    assert any("notif.micPinFailedTitle" in str(n) for n in vt._tray.notes)
+
+
+def test_an_old_macos_that_cannot_pin_is_announced(monkeypatch):
+    # macOS 14 and older have no setMicrophoneCaptureDeviceID_ at all: the menu
+    # choice is silently ignored by SCK.
+    vt = _mic_vt("MacBook Air Microphone", pinning=False, monkeypatch=monkeypatch)
+    assert vt._warn_if_mic_not_pinned(capture_mic=True, mic_uid="uid-built-in") is True
+
+
+def test_a_pinned_mic_says_nothing(monkeypatch):
+    vt = _mic_vt("MacBook Air Microphone", pinning=True, monkeypatch=monkeypatch)
+    assert vt._warn_if_mic_not_pinned(capture_mic=True, mic_uid="uid-built-in") is False
+    assert vt._tray.notes == []
+
+
+def test_the_system_default_choice_is_not_a_failure(monkeypatch):
+    # No device chosen = "whatever the system uses" — there is nothing to warn about.
+    vt = _mic_vt(None, pinning=False, monkeypatch=monkeypatch)
+    assert vt._warn_if_mic_not_pinned(capture_mic=True, mic_uid=None) is False
+    assert vt._tray.notes == []
+
+
+def test_a_system_only_capture_is_not_warned_about(monkeypatch):
+    vt = _mic_vt("MacBook Air Microphone", pinning=False, monkeypatch=monkeypatch)
+    assert vt._warn_if_mic_not_pinned(capture_mic=False, mic_uid=None) is False

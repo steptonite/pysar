@@ -28,7 +28,9 @@ autosaved to the transcript file instead.
 import contextlib
 import threading
 import time
+import wave
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 
@@ -139,6 +141,75 @@ if AVAILABLE:
                 self._owner._on_stream_stop(error)
 
 
+def mic_pinning_supported() -> bool:
+    """Whether SCK can be told WHICH microphone to capture (macOS 15+).
+
+    Without the selector the stream silently uses the system default input, so
+    the device picked in the menu is a promise the capture cannot keep — worth
+    saying out loud rather than discovering it in the finished recording.
+    """
+    if not AVAILABLE:
+        return False
+    with contextlib.suppress(Exception):
+        cfg = SC.SCStreamConfiguration.alloc().init()
+        return hasattr(cfg, "setMicrophoneCaptureDeviceID_")
+    return False
+
+
+class _RawDump:
+    """Append-only 16 kHz WAV written straight off the capture thread.
+
+    The point is recovery, not quality: a meeting or a phone call happens ONCE.
+    Before 24.08.2026 audio lived only in memory ("WAV is kept in memory, never
+    written to disk") — so when transcription produced nothing, nothing at all
+    remained. Now the raw stream hits the disk from the first buffer, and stays
+    there whatever the rest of the pipeline does.
+
+    One file per source (sys / mic): they arrive at different rates and a lost
+    sync would make a recovered file useless. Opened lazily — a source that never
+    delivers a buffer leaves no file, and that absence is itself the diagnosis.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._wav: wave.Wave_write | None = None
+        self._frames = 0
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def frames(self) -> int:
+        return self._frames
+
+    def write(self, x: np.ndarray) -> None:
+        if x.size == 0:
+            return
+        try:
+            if self._wav is None:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                # Held open for the whole capture on purpose: a context manager
+                # would close it after one buffer, and the point is a continuous file.
+                w = wave.open(str(self._path), "wb")  # noqa: SIM115
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                self._wav = w
+            pcm = np.clip(x, -1.0, 1.0)
+            self._wav.writeframes((pcm * 32767.0).astype("<i2").tobytes())
+            self._frames += int(x.size)
+        except Exception as e:  # never let the dump kill the capture
+            print(f"⚠️ raw dump write failed ({self._path.name}): {e}")
+            self._wav = None
+
+    def close(self) -> None:
+        w, self._wav = self._wav, None
+        if w is not None:
+            with contextlib.suppress(Exception):
+                w.close()
+
+
 class SystemAudioRecorder:
     """Drop-in capture source for the streaming pipeline, sourcing system audio
     (+ mic) instead of the microphone alone."""
@@ -147,8 +218,23 @@ class SystemAudioRecorder:
     # laggard to resync — guards against drift or a momentarily starved source.
     _MAX_DRIFT = SAMPLE_RATE  # 1 second
 
-    def __init__(self, capture_mic: bool = True, source_mode: str = "off"):
+    def __init__(
+        self,
+        capture_mic: bool = True,
+        source_mode: str = "off",
+        raw_dump_dir: "Path | str | None" = None,
+        raw_dump_stem: str = "",
+        mic_device_uid: str | None = None,
+    ):
         self._capture_mic = capture_mic
+        # Raw recovery buffer (see _RawDump) and the mic SCK must capture from.
+        self._raw_dump_dir = Path(raw_dump_dir) if raw_dump_dir else None
+        self._raw_dump_stem = raw_dump_stem
+        self._mic_device_uid = mic_device_uid
+        self._dump_sys: _RawDump | None = None
+        self._dump_mic: _RawDump | None = None
+        # (paths, seconds) of the last finished capture — survives _close_dumps.
+        self._dump_final: tuple[list[Path], float] = ([], 0.0)
         self._source_mode = source_mode if source_mode in ("off", "fast", "smart") else "off"
         self._on_segment: Callable[[bytes, str | None], None] | None = None
         self._on_error: Callable[[str], None] | None = None
@@ -191,6 +277,35 @@ class SystemAudioRecorder:
             return None
         return time.monotonic() - self._last_audio_monotonic
 
+    def dump_paths(self) -> "list[Path]":
+        """Recovery files this capture actually wrote to (non-empty ones only).
+
+        Readable after stop() as well: the caller that reports the outcome runs
+        once the capture is already torn down, so the tally outlives the dumps."""
+        if self._dump_sys is None and self._dump_mic is None:
+            return list(self._dump_final[0])
+        return [d.path for d in (self._dump_mic, self._dump_sys) if d and d.frames > 0]
+
+    def dump_seconds(self) -> float:
+        """Longest recovery file, in seconds — 0.0 when nothing was ever captured.
+        A meeting that ends with 0.0 here had no audio at all, and that is a
+        failure the app must say out loud, not a quiet empty transcript."""
+        if self._dump_sys is None and self._dump_mic is None:
+            return self._dump_final[1]
+        best = max((d.frames for d in (self._dump_mic, self._dump_sys) if d), default=0)
+        return best / float(SAMPLE_RATE)
+
+    def _close_dumps(self) -> None:
+        paths = [d.path for d in (self._dump_mic, self._dump_sys) if d and d.frames > 0]
+        best = max((d.frames for d in (self._dump_mic, self._dump_sys) if d), default=0)
+        if paths or best:
+            # Keep the tally: stop() closes the dumps, and the caller asks after.
+            self._dump_final = (paths, best / float(SAMPLE_RATE))
+        for d in (self._dump_sys, self._dump_mic):
+            if d is not None:
+                d.close()
+        self._dump_sys = self._dump_mic = None
+
     def set_capture_mic(self, on: bool) -> None:
         """Takes effect on the next start()."""
         self._capture_mic = on
@@ -226,6 +341,21 @@ class SystemAudioRecorder:
         # its first fresh buffer — otherwise the watchdog could fire a spurious
         # recover in the first seconds of the next meeting.
         self._last_audio_monotonic = 0.0
+
+        # Arm the recovery buffer. A recover-restart mid-meeting gets its own
+        # suffixed pair rather than truncating what the dead stream already saved.
+        self._close_dumps()
+        self._dump_final = ([], 0.0)
+        if self._raw_dump_dir is not None:
+            stem = self._raw_dump_stem or time.strftime("%Y-%m-%d_%H-%M-%S")
+            n, base = 1, self._raw_dump_dir / stem
+            while (base.with_name(f"{base.name}-mic.wav")).exists() or (
+                base.with_name(f"{base.name}-sys.wav")
+            ).exists():
+                n += 1
+                base = self._raw_dump_dir / f"{stem}-{n}"
+            self._dump_sys = _RawDump(base.with_name(f"{base.name}-sys.wav"))
+            self._dump_mic = _RawDump(base.with_name(f"{base.name}-mic.wav"))
 
         segmenter_kw = dict(
             sample_rate=SAMPLE_RATE,
@@ -274,6 +404,7 @@ class SystemAudioRecorder:
             done.wait(timeout=3)
         self._output = None
         self._queue = None
+        self._close_dumps()
 
         # Flush the trailing segment(s) so the meeting's final sentence isn't lost.
         if self._on_segment is not None:
@@ -324,6 +455,16 @@ class SystemAudioRecorder:
             cfg.setCapturesAudio_(True)
             cfg.setExcludesCurrentProcessAudio_(True)  # never capture Pysar's own output
             cfg.setCaptureMicrophone_(bool(self._capture_mic))
+            # 24.08.2026 — the mic chosen in the menu never reached this stream:
+            # SCK silently used the system default, so picking "MacBook Air mic"
+            # to dodge a dead AirPods link changed nothing. macOS 15 exposes the
+            # device explicitly; older systems keep the old (default) behaviour.
+            if self._capture_mic and self._mic_device_uid:
+                if hasattr(cfg, "setMicrophoneCaptureDeviceID_"):
+                    with contextlib.suppress(Exception):
+                        cfg.setMicrophoneCaptureDeviceID_(self._mic_device_uid)
+                else:
+                    print("⚠️ mic device pinning unsupported (needs macOS 15+)")
             cfg.setWidth_(2)  # minimal video config; we attach no screen output
             cfg.setHeight_(2)
 
@@ -389,6 +530,11 @@ class SystemAudioRecorder:
         # buffers, so the watchdog can tell a stall from a legitimate pause.
         self._last_audio_monotonic = time.monotonic()
         x = _to_16k(mono, int(sr))
+        # Recovery buffer first: it must survive even if everything downstream
+        # (segmenter, whisper, transcript file) fails.
+        dump = self._dump_sys if source == 0 else self._dump_mic
+        if dump is not None:
+            dump.write(x)
         with self._lock:
             if self._source_mode == "smart":
                 if source == 0:

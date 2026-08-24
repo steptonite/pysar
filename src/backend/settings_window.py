@@ -502,6 +502,16 @@ _TEMPLATE = r"""<!doctype html>
           <span class="track"></span><span class="knob"></span></label>
       </div>
       <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.keep.label">Keep meeting recordings</div>
+          <div class="help" style="white-space:normal" data-i18n="meeting.keep.help">Meeting audio in the meetings folder; older sessions are deleted automatically</div></div>
+        <select id="mt-keep"></select>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.audioFolder.label">Audio recordings folder</div>
+          <div class="help" id="mt-audio-path"></div></div>
+        <button id="mt-audio-open" data-i18n="folder.open">Open</button>
+      </div>
+      <div class="row">
         <div class="body"><div class="label" data-i18n="meeting.hidden.label">Record without the window</div>
           <div class="help" data-i18n="meeting.hidden.help">Transcript is written to the file; the island stays hidden</div></div>
         <label class="toggle"><input type="checkbox" id="mt-hidden">
@@ -885,6 +895,19 @@ $("back-enh").addEventListener("click", () => show("main"));
   mtSave.checked = STATE.meeting_save_file !== false;
   mtSave.addEventListener("change", () => send("set_meeting_save", mtSave.checked));
 
+  // Meeting-recording rotation. Same shape as the dictation "Keep last" picker,
+  // with one extra option: 0 = keep everything, because a phone call happens once.
+  const mtKeep = $("mt-keep");
+  (STATE.meeting_keep_options || []).forEach(n => {
+    const o = document.createElement("option");
+    o.value = String(n);
+    o.textContent = n > 0 ? n + " " + T("meeting.keep.unit", "meetings")
+                          : T("meeting.keep.all", "All (never delete)");
+    if (n === STATE.meeting_keep_last) o.selected = true;
+    mtKeep.appendChild(o);
+  });
+  mtKeep.addEventListener("change", () => send("set_meeting_keep", parseInt(mtKeep.value, 10)));
+
   const mtHidden = $("mt-hidden");
   mtHidden.checked = STATE.meeting_hidden === true;
   mtHidden.addEventListener("change", () => send("set_meeting_hidden", mtHidden.checked));
@@ -910,6 +933,13 @@ $("back-enh").addEventListener("click", () => show("main"));
     $(p + "-choose").addEventListener("click", () => send("choose_transcripts_folder"));
     $(p + "-reset").addEventListener("click", () => send("reset_transcripts_folder"));
   }
+
+  // Meeting AUDIO folder (the WAV recordings) — deliberately separate from the
+  // transcripts folder above: "Save transcript to file" writes Markdown text,
+  // this opens the raw mic/system-audio recovery buffer (meetings/), which is
+  // what the "Keep meeting recordings" rotation above actually prunes.
+  $("mt-audio-path").textContent = STATE.meetings_dir || "";
+  $("mt-audio-open").addEventListener("click", () => send("open_meetings_folder"));
 
   const mtLang = $("mt-lang");
   const inheritOpt = document.createElement("option");

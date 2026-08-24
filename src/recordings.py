@@ -9,6 +9,7 @@ ones are deleted automatically, so disk use stays bounded.
 
 import contextlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,11 @@ _RECORDINGS = _BASE / "recordings"
 # the transcript). Mixing them would either prune away training data or fill the
 # disk with recovery copies.
 _DATASET = _BASE / "dataset"
+# Meeting/call recovery buffers. Rotated on their OWN setting (meeting_keep_last),
+# never on keep_last: a meeting is far heavier than a dictation and far more
+# valuable, so ordinary chatter must not be able to push the one recording that
+# mattered out of the window. "Keep everything" is one of the offered options.
+_MEETINGS = _BASE / "meetings"
 _DATASET_INDEX = "metadata.jsonl"
 
 DEFAULTS = {
@@ -114,9 +120,25 @@ DEFAULTS = {
     # Independent of save_recordings — that one is a recovery buffer, this is a
     # corpus that never prunes.
     "tts_dataset": False,
+    #   meeting_keep_last — how many meeting/call recordings to keep on disk
+    #                       (0 = keep everything). Separate from keep_last: the
+    #                       default is deliberately generous because one call
+    #                       cannot be re-recorded, and 500 MB of chatter must not
+    #                       evict it.
+    "meeting_keep_last": 50,
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20, 50, 100, 500)
+# Meeting rotation offers the same counts plus an explicit "never delete" — the
+# whole reason the recovery buffer exists is the one-off phone call, and a user
+# who fears losing it must be able to switch rotation off entirely.
+MEETING_KEEP_ALL = 0
+MEETING_KEEP_OPTIONS = (*KEEP_LAST_OPTIONS, MEETING_KEEP_ALL)
+# One meeting on disk = "<stem>-mic.wav" + "<stem>-sys.wav", where <stem> is the
+# capture's start timestamp; a recover-restart mid-meeting adds "-2", "-3" pairs.
+# The timestamp is what identifies the SESSION, so rotation can drop a whole
+# conversation at once instead of half of one.
+_MEETING_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?:-\d+)?-(?:mic|sys)\.wav$")
 
 
 def recordings_dir() -> Path:
@@ -127,6 +149,11 @@ def recordings_dir() -> Path:
 def dataset_dir() -> Path:
     _DATASET.mkdir(parents=True, exist_ok=True)
     return _DATASET
+
+
+def meetings_dir() -> Path:
+    _MEETINGS.mkdir(parents=True, exist_ok=True)
+    return _MEETINGS
 
 
 def dataset_stats() -> tuple[int, float]:
@@ -268,6 +295,8 @@ def load_settings() -> dict:
                 merged[k] = data[k]
         if merged["keep_last"] not in KEEP_LAST_OPTIONS:
             merged["keep_last"] = DEFAULTS["keep_last"]
+        if merged["meeting_keep_last"] not in MEETING_KEEP_OPTIONS:
+            merged["meeting_keep_last"] = DEFAULTS["meeting_keep_last"]
         if merged["ui_theme"] not in UI_THEMES:
             merged["ui_theme"] = DEFAULTS["ui_theme"]
         if merged["ui_lang"] not in UI_LANGS:
@@ -343,3 +372,46 @@ def _prune(d: Path, keep_last: int) -> None:
     for old in files[max(keep_last, 1) :]:
         with contextlib.suppress(Exception):
             old.unlink()
+
+
+def meeting_sessions() -> dict[str, list[Path]]:
+    """Meeting recordings grouped into sessions: {start timestamp: [files]}.
+
+    Files that don't match the capture's own naming are ignored on purpose —
+    whatever else the user put in that folder is not ours to delete.
+    """
+    out: dict[str, list[Path]] = {}
+    with contextlib.suppress(Exception):
+        for p in _MEETINGS.glob("*.wav"):
+            m = _MEETING_FILE.match(p.name)
+            if m is not None:
+                out.setdefault(m.group(1), []).append(p)
+    return out
+
+
+def _session_mtime(files: list[Path]) -> float:
+    stamps = []
+    for f in files:
+        with contextlib.suppress(Exception):
+            stamps.append(f.stat().st_mtime)
+    return max(stamps, default=0.0)
+
+
+def prune_meetings(keep_last: int) -> None:
+    """Keep the newest *keep_last* meeting SESSIONS; 0 (MEETING_KEEP_ALL) keeps all.
+
+    Whole sessions, never single files: a meeting is a mic/sys pair (plus the
+    suffixed pairs a recover-restart added), so deleting file-by-file would make
+    "last 5" mean two and a half meetings and leave halves of conversations
+    behind. Called when a meeting ends, after its outcome has been reported.
+    """
+    if keep_last <= MEETING_KEEP_ALL:
+        return
+    try:
+        sessions = sorted(meeting_sessions().values(), key=_session_mtime, reverse=True)
+        for files in sessions[keep_last:]:
+            for f in files:
+                with contextlib.suppress(Exception):
+                    f.unlink()
+    except Exception as e:
+        print(f"⚠️ could not prune meeting recordings: {e}")

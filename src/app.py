@@ -47,16 +47,44 @@ from .profiles import (
 from .recorder import AudioRecorder, list_input_devices
 from .recordings import (
     KEEP_LAST_OPTIONS,
+    MEETING_KEEP_ALL,
+    MEETING_KEEP_OPTIONS,
     dataset_dir,
     load_settings,
+    meetings_dir,
+    prune_meetings,
     recordings_dir,
     save_dataset_clip,
     save_recording,
     save_settings,
 )
-from .syscap import SystemAudioRecorder
+from .syscap import SystemAudioRecorder, mic_pinning_supported
 from .transcriber import is_alive, transcribe, transcribe_meeting
 from .transcripts import TranscriptFile, set_transcripts_dir
+
+
+def _mic_uid_for_name(name: str | None) -> str | None:
+    """CoreAudio unique ID of the input device shown as *name* in the menu.
+
+    ScreenCaptureKit pins its microphone by UID, not by the human-readable name
+    sounddevice reports, so the menu choice has to be translated before it can
+    reach the capture. Unknown name (device unplugged, renamed) → None, which
+    means "system default" — the old behaviour, not a crash.
+    """
+    if not name:
+        return None
+    try:
+        import AVFoundation
+
+        devices = (
+            AVFoundation.AVCaptureDevice.devicesWithMediaType_(AVFoundation.AVMediaTypeAudio) or []
+        )
+        for dev in devices:
+            if str(dev.localizedName()) == name:
+                return str(dev.uniqueID())
+    except Exception as e:
+        print(f"⚠️ could not resolve mic UID for {name!r}: {e}")
+    return None
 
 
 class VoiceTyper:
@@ -124,6 +152,7 @@ class VoiceTyper:
             on_toggle_dataset=self._on_toggle_dataset,
             dataset_dir=str(dataset_dir()),
             recordings_dir=str(recordings_dir()),
+            meetings_dir=str(meetings_dir()),
             profiles=self._settings["profiles"],
             active_profiles=self._settings["active_profiles"],
             on_toggle_profile=self._on_toggle_profile,
@@ -159,6 +188,9 @@ class VoiceTyper:
             meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
+            meeting_keep_last=self._settings.get("meeting_keep_last", MEETING_KEEP_ALL),
+            meeting_keep_options=MEETING_KEEP_OPTIONS,
+            on_set_meeting_keep=self._on_set_meeting_keep,
             on_set_meeting_mic=self._on_set_meeting_mic,
             on_set_meeting_save=self._on_set_meeting_save,
             on_set_meeting_on_top=self._on_set_meeting_on_top,
@@ -688,11 +720,20 @@ class VoiceTyper:
         capture_mic = self._settings.get("meeting_capture_mic", True)
         self._meeting_mic = bool(capture_mic)
         source_mode = self._settings.get("meeting_source_mode", "off")
-        if self._sysrec is None:
-            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
-        else:
-            self._sysrec.set_capture_mic(capture_mic)
-            self._sysrec.set_source_mode(source_mode)
+        # One recovery stem per meeting; the recorder suffixes it if a recover
+        # restarts capture mid-session, so nothing already saved gets truncated.
+        self._meeting_stem = time.strftime("%Y-%m-%d_%H-%M-%S")
+        mic_uid = _mic_uid_for_name(self._settings.get("mic"))
+        self._warn_if_mic_not_pinned(capture_mic, mic_uid)
+        # 🔴 Before 24.08.2026 the recorder was built without either of these:
+        # the chosen mic never reached SCK, and audio never reached the disk.
+        self._sysrec = SystemAudioRecorder(
+            capture_mic=capture_mic,
+            source_mode=source_mode,
+            raw_dump_dir=meetings_dir(),
+            raw_dump_stem=self._meeting_stem,
+            mic_device_uid=mic_uid,
+        )
         self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
 
         self._tray.set_meeting_active(True)
@@ -709,6 +750,27 @@ class VoiceTyper:
         self._capture_started_at = time.monotonic()  # first-buffer deadline runs from here
         self._watchdog_thread = threading.Thread(target=self._meeting_watchdog_loop, daemon=True)
         self._watchdog_thread.start()
+
+    def _warn_if_mic_not_pinned(self, capture_mic: bool, mic_uid: str | None) -> bool:
+        """Say out loud when the meeting will NOT record the mic that was chosen.
+
+        A capture that cannot pin the device falls back to the system default —
+        on this Mac that means the AirPods link (the phone call itself) instead
+        of the built-in mic, which is exactly how the 24.08.2026 recording turned
+        out useless. Silence here is the expensive option: the user finds out
+        only once the conversation is over. Returns True when it warned."""
+        name = self._settings.get("mic")
+        if not capture_mic or not name:
+            return False  # system default was the explicit choice — nothing to pin
+        if mic_uid and mic_pinning_supported():
+            return False
+        with contextlib.suppress(Exception):
+            self._tray.notify(
+                "Pysar",
+                self._t("notif.micPinFailedTitle"),
+                self._t("notif.micPinFailedMsg", name=name),
+            )
+        return True
 
     def _enqueue_meeting(self, seg_wav: bytes, source: str | None = None) -> None:
         if self._meeting_queue is not None:
@@ -788,6 +850,25 @@ class VoiceTyper:
                 return
 
             print(f"🔁 meeting capture recover ({reason})")
+            # A capture that dies MID-call has to leave a trace that outlives the
+            # 2-second HUD below: the user is on the phone, not watching the menu
+            # bar, and would otherwise learn about the gap only from a transcript
+            # that simply stops. So: a system notification (stays in Notification
+            # Centre) plus a line in the transcript itself, marking the spot.
+            # Once per recover window, not per restart — a flapping stream must
+            # not turn into a stack of notifications (the counter is reset above
+            # when _MEETING_RECOVER_WINDOW has elapsed, so a genuinely new
+            # incident later does speak up again).
+            if self._meeting_recover_count == 1:
+                with contextlib.suppress(Exception):
+                    self._tray.notify(
+                        "Pysar",
+                        self._t("notif.captureRestartTitle"),
+                        self._t("notif.captureRestartMsg"),
+                    )
+                if self._transcript_file is not None:
+                    with contextlib.suppress(Exception):
+                        self._transcript_file.append(self._t("transcript.captureRestart"))
             # Tear down the dead recorder and start a FRESH one — reusing the dead
             # object risks leftover stream refs holding the mic. Same callbacks keep
             # the worker/queue/file/tails wired unchanged.
@@ -796,7 +877,13 @@ class VoiceTyper:
                     self._sysrec.stop()
             capture_mic = self._settings.get("meeting_capture_mic", True)
             source_mode = self._settings.get("meeting_source_mode", "off")
-            self._sysrec = SystemAudioRecorder(capture_mic=capture_mic, source_mode=source_mode)
+            self._sysrec = SystemAudioRecorder(
+                capture_mic=capture_mic,
+                source_mode=source_mode,
+                raw_dump_dir=meetings_dir(),
+                raw_dump_stem=getattr(self, "_meeting_stem", "") or "",
+                mic_device_uid=_mic_uid_for_name(self._settings.get("mic")),
+            )
             self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
             # Re-arm the first-buffer deadline: if THIS stream never comes up the
             # watchdog must notice (it reads None until buffer #1) instead of
@@ -965,6 +1052,14 @@ class VoiceTyper:
             if self._sysrec is not None:
                 with contextlib.suppress(Exception):
                     self._sysrec.stop()
+        # How much audio actually reached the disk. 0.0 means the capture was mute
+        # for the whole session — the failure that cost a one-off phone call on
+        # 24.08.2026 and passed silently as an empty transcript.
+        dump_secs, dump_paths = 0.0, []
+        if self._sysrec is not None:
+            with contextlib.suppress(Exception):
+                dump_secs = self._sysrec.dump_seconds()
+                dump_paths = self._sysrec.dump_paths()
         saved_path = None
         try:
             # Drain the worker so the final sentence lands before the file is closed.
@@ -1004,6 +1099,32 @@ class VoiceTyper:
                 self._tray.set_status(self._t("st.meetingOff"))
             with contextlib.suppress(Exception):
                 self._tray.set_title(self._idle_title())
+            # Report the recovery buffer BEFORE the ordinary "saved" notice: when
+            # the capture was mute, "transcript saved" is the misleading half of
+            # the truth and must not be the last thing the user reads.
+            if dump_secs <= 0.0:
+                print("‼️ meeting captured NO audio at all — nothing was recorded")
+                with contextlib.suppress(Exception):
+                    self._tray.notify(
+                        "Pysar", self._t("notif.noAudioTitle"), self._t("notif.noAudioMsg")
+                    )
+            elif dump_paths:
+                print(f"💾 raw audio kept ({dump_secs:.0f}s): {dump_paths[0]}")
+                with contextlib.suppress(Exception):
+                    self._tray.notify(
+                        "Pysar",
+                        self._t("notif.rawAudioTitle"),
+                        self._t(
+                            "notif.rawAudioMsg",
+                            minutes=f"{dump_secs / 60.0:.0f}",
+                            path=dump_paths[0],
+                        ),
+                    )
+            # Rotate the meeting archive only now — the tally above is the whole
+            # point of the recovery buffer and must be counted before anything on
+            # disk is touched. A settings dict without the key deletes nothing.
+            with contextlib.suppress(Exception):
+                prune_meetings(self._settings.get("meeting_keep_last", MEETING_KEEP_ALL))
             if saved_path:
                 self._tray.notify(
                     "Pysar",
@@ -1251,6 +1372,21 @@ class VoiceTyper:
             p for p in self._settings.get("saved_prompts", []) if p.get("name") != name
         ]
         save_settings(self._settings)
+
+    def _on_set_meeting_keep(self, n: int) -> None:
+        """How many meeting recordings survive on disk. Its own setting, never
+        keep_last: a call is heavier and less repeatable than a dictation, and
+        MEETING_KEEP_ALL (0) switches rotation off entirely for exactly that."""
+        n = int(n)
+        if n not in MEETING_KEEP_OPTIONS:
+            return
+        self._settings["meeting_keep_last"] = n
+        save_settings(self._settings)
+        self._tray.set_status(
+            self._t("st.meetingKeepAll")
+            if n == MEETING_KEEP_ALL
+            else self._t("st.meetingKeep", n=n)
+        )
 
     def _on_set_meeting_hidden(self, on: bool) -> None:
         self._settings["meeting_hidden"] = bool(on)

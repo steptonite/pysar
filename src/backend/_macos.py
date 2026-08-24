@@ -855,6 +855,7 @@ class Tray:
         on_toggle_dataset: Callable[[bool], None] | None = None,
         dataset_dir: str | None = None,
         recordings_dir: str | None = None,
+        meetings_dir: str | None = None,
         profiles: list[dict] | None = None,
         active_profiles: dict[str, list[str]] | None = None,
         on_toggle_profile: Callable[[str, str, bool], None] | None = None,
@@ -890,6 +891,9 @@ class Tray:
         meeting_source_mode: str = "off",
         meeting_hidden: bool = False,
         meeting_island_opacity: float = 0.92,
+        meeting_keep_last: int = 0,
+        meeting_keep_options: tuple[int, ...] = (),
+        on_set_meeting_keep: Callable[[int], None] | None = None,
         on_set_meeting_mic: Callable[[bool], None] | None = None,
         on_set_meeting_save: Callable[[bool], None] | None = None,
         on_set_meeting_on_top: Callable[[bool], None] | None = None,
@@ -927,6 +931,7 @@ class Tray:
         self._on_set_keep_last = on_set_keep_last
         self._on_toggle_dataset = on_toggle_dataset
         self._recordings_dir = recordings_dir
+        self._meetings_dir = meetings_dir
         self._profiles = profiles or []
         # active_profiles: {lang: [names]} — one toggled-on group per language.
         self._active_by_lang = {lng: set(v) for lng, v in (active_profiles or {}).items()}
@@ -975,6 +980,11 @@ class Tray:
         self._meeting_island_opacity = meeting_island_opacity
         self._on_set_meeting_mic = on_set_meeting_mic
         self._on_set_meeting_save = on_set_meeting_save
+        # Meeting recordings rotate on their own count (0 = keep everything) —
+        # see recordings.prune_meetings.
+        self._meeting_keep_last = meeting_keep_last
+        self._meeting_keep_options = meeting_keep_options
+        self._on_set_meeting_keep = on_set_meeting_keep
         self._on_set_meeting_on_top = on_set_meeting_on_top
         self._on_set_meeting_lang = on_set_meeting_lang
         self._on_set_meeting_prompt = on_set_meeting_prompt
@@ -1151,6 +1161,7 @@ class Tray:
                         "activate_set": self._win_activate_set,
                         "set_meeting_mic": self._set_meeting_mic,
                         "set_meeting_save": self._set_meeting_save,
+                        "set_meeting_keep": self._set_meeting_keep,
                         "set_meeting_on_top": self._set_meeting_on_top,
                         "set_meeting_lang": self._set_meeting_lang,
                         "set_meeting_prompt": self._set_meeting_prompt,
@@ -1161,6 +1172,7 @@ class Tray:
                         "open_transcripts_folder": self._open_transcripts_folder,
                         "choose_transcripts_folder": self._choose_transcripts_folder,
                         "reset_transcripts_folder": self._reset_transcripts_folder,
+                        "open_meetings_folder": self._open_meetings_folder,
                         "ft_pick_files": self._ft_pick_files,
                         "set_ft_lang": self._set_ft_lang,
                         "set_ft_prompt": self._set_ft_prompt,
@@ -1222,7 +1234,13 @@ class Tray:
             "meeting_source_mode": self._meeting_source_mode,
             "meeting_hidden": self._meeting_hidden,
             "meeting_island_opacity": self._meeting_island_opacity,
+            "meeting_keep_last": self._meeting_keep_last,
+            "meeting_keep_options": list(self._meeting_keep_options),
             "meeting_modes": [{"value": code, "label": label} for code, label in self._modes],
+            # Audio (WAV) folder — separate from transcripts_dir below: that one
+            # holds the Markdown transcript, this is the mic/system-audio buffer
+            # the "Keep meeting recordings" rotation prunes.
+            "meetings_dir": self._meetings_dir or "",
             "transcripts_dir": self._transcripts_dir(),
             "transcripts_dir_custom": self._transcripts_dir_is_custom(),
             # File transcription: current queue snapshot for the drill-in screen.
@@ -1366,6 +1384,19 @@ class Tray:
         if self._dataset_dir:
             subprocess.run(["open", self._dataset_dir], check=False)
 
+    def _open_meetings_folder(self) -> None:
+        """Reveal the meeting AUDIO folder (WAV recordings) — distinct from
+        _open_transcripts_folder, which opens the Markdown transcript folder.
+        The folder is created on demand so the button can never fail just
+        because no meeting has been recorded yet."""
+        if not self._meetings_dir:
+            return
+        from pathlib import Path
+
+        with contextlib.suppress(Exception):
+            Path(self._meetings_dir).mkdir(parents=True, exist_ok=True)
+        subprocess.run(["open", self._meetings_dir], check=False)
+
     # Enhance handlers — same mirror+callback shape as the meeting ones ─────────
     def _set_enhance_enabled(self, on: bool) -> None:
         self._enhance_enabled = bool(on)
@@ -1394,6 +1425,11 @@ class Tray:
         self._meeting_save_file = bool(on)
         if self._on_set_meeting_save:
             self._on_set_meeting_save(self._meeting_save_file)
+
+    def _set_meeting_keep(self, n: int) -> None:
+        self._meeting_keep_last = int(n)
+        if self._on_set_meeting_keep:
+            self._on_set_meeting_keep(int(n))
 
     def _set_meeting_on_top(self, on: bool) -> None:
         self._meeting_on_top = bool(on)
@@ -1744,9 +1780,7 @@ class Tray:
         self._profiles_submenu.title = self._t("tray.profiles")
         self._settings_item.title = self._t("tray.settings")
         self._meeting_item.title = (
-            self._t("tray.meetingStop")
-            if self._meeting_item.state
-            else self._meeting_start_title()
+            self._t("tray.meetingStop") if self._meeting_item.state else self._meeting_start_title()
         )
         with contextlib.suppress(Exception):
             if self._app.quit_button is not None:
