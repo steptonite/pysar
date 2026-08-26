@@ -12,8 +12,24 @@ VoiceTyper is built without __init__ (no tray, no AppKit), as in test_streaming.
 
 import threading
 
+import pytest
+
 from pysar import app as app_mod
 from pysar.app import VoiceTyper
+
+# The watchdog asks CoreAudio about the real machine (output device, whether its
+# IO is open). Tests must never do that: the answer differs per Mac and changes
+# if anything happens to be playing while the suite runs. Everything below runs
+# against this stub instead.
+_probe = {"device": 1, "running": False}
+
+
+@pytest.fixture(autouse=True)
+def _stub_audio_probes(monkeypatch):
+    _probe["device"] = 1
+    _probe["running"] = False
+    monkeypatch.setattr(app_mod, "default_output_device", lambda: _probe["device"])
+    monkeypatch.setattr(app_mod, "output_is_running", lambda dev=None: _probe["running"])
 
 
 class _FakeTray:
@@ -51,8 +67,19 @@ class _FakeRecorder:
     """Stands in for SystemAudioRecorder: `since` is what the heartbeat reports,
     `secs`/`paths` what its raw recovery buffer ended up holding."""
 
-    def __init__(self, since: float | None, secs: float = 0.0, paths: list | None = None):
+    def __init__(
+        self,
+        since: float | None,
+        secs: float = 0.0,
+        paths: list | None = None,
+        mute: float | None = 0.0,
+        sound_seen: bool = True,
+    ):
         self.since = since
+        # 26.08.2026: `mute` is how long the SYSTEM tap has carried nothing but
+        # exact zeros. Healthy by default so the older cases keep their meaning.
+        self.mute = mute
+        self.sound_seen = sound_seen
         self.stopped = False
         self.started = False
         self.secs = secs
@@ -60,6 +87,12 @@ class _FakeRecorder:
 
     def seconds_since_audio(self) -> float | None:
         return self.since
+
+    def seconds_since_sound(self) -> float | None:
+        return self.mute
+
+    def heard_sound(self) -> bool:
+        return self.sound_seen
 
     def start(self, on_segment=None, on_error=None) -> None:
         self.started = True
@@ -74,7 +107,12 @@ class _FakeRecorder:
         return self.paths
 
 
-def _vt(since: float | None, started_ago: float) -> VoiceTyper:
+def _vt(
+    since: float | None,
+    started_ago: float,
+    mute: float | None = 0.0,
+    sound_seen: bool = True,
+) -> VoiceTyper:
     import time
 
     vt = object.__new__(VoiceTyper)
@@ -84,13 +122,15 @@ def _vt(since: float | None, started_ago: float) -> VoiceTyper:
     vt._meeting = True
     vt._meeting_stopping = False
     vt._meeting_mic = False
-    vt._sysrec = _FakeRecorder(since)
+    vt._sysrec = _FakeRecorder(since, mute=mute, sound_seen=sound_seen)
     vt._capture_started_at = time.monotonic() - started_ago
     vt._recover_lock = threading.RLock()
     vt._watchdog_stop = threading.Event()
     vt._watchdog_thread = None
     vt._meeting_recover_count = 0
     vt._meeting_recover_window_start = 0.0
+    vt._mute_recover_streak = 0
+    vt._capture_output_device = _probe["device"]
     vt._meeting_queue = None
     vt._meeting_worker = None
     vt._transcript_file = None
@@ -424,3 +464,108 @@ def test_the_system_default_choice_is_not_a_failure(monkeypatch):
 def test_a_system_only_capture_is_not_warned_about(monkeypatch):
     vt = _mic_vt("MacBook Air Microphone", pinning=False, monkeypatch=monkeypatch)
     assert vt._warn_if_mic_not_pinned(capture_mic=False, mic_uid=None) is False
+
+
+# ── the deaf tap (GoIT webinar, 26.08.2026) ───────────────────────────────────
+# Buffers arrived on schedule for 50 minutes while every one of them was exact
+# digital zeros. Arrival-only liveness saw a healthy stream, so nothing fired and
+# the raw dump saved the silence. These cases pin the sound heartbeat.
+def test_silent_tap_with_live_buffers_triggers_recover():
+    vt = _vt(since=0.5, started_ago=600.0, mute=VoiceTyper._MEETING_MUTE_SEC + 30)
+    _no_real_recover(vt)
+    reason = vt._watchdog_tick()
+    assert reason is not None and "silent" in reason
+    assert len(vt.recovered) == 1
+
+
+def test_short_pause_in_speech_is_not_a_stall():
+    """A pause between sentences must never restart the stream."""
+    vt = _vt(since=0.2, started_ago=600.0, mute=4.0)
+    _no_real_recover(vt)
+    assert vt._watchdog_tick() is None
+    assert vt.recovered == []
+
+
+def test_quiet_meeting_backs_off_instead_of_restarting_every_90s():
+    """Real silence looks the same from here, so the threshold has to grow."""
+    vt = _vt(since=0.5, started_ago=600.0, mute=VoiceTyper._MEETING_MUTE_SEC + 5)
+    _no_real_recover(vt)
+    assert vt._watchdog_tick() is not None
+    assert vt._mute_recover_streak == 1
+    # Same silence, one tick later: the doubled threshold is not met yet.
+    assert vt._watchdog_tick() is None
+    assert len(vt.recovered) == 1
+    # Twice the wait does clear it.
+    vt._sysrec.mute = VoiceTyper._MEETING_MUTE_SEC * 2 + 5
+    assert vt._watchdog_tick() is not None
+    assert len(vt.recovered) == 2
+
+
+def test_sound_returning_clears_the_backoff():
+    vt = _vt(since=0.5, started_ago=600.0, mute=VoiceTyper._MEETING_MUTE_SEC + 5)
+    _no_real_recover(vt)
+    vt._watchdog_tick()
+    assert vt._mute_recover_streak == 1
+    vt._sysrec.mute = 1.0
+    assert vt._watchdog_tick() is None
+    assert vt._mute_recover_streak == 0
+
+
+def test_fresh_stream_without_sound_yet_is_left_alone():
+    """A recovered stream that has not heard anything must not reset the backoff
+    just because its baseline is young — otherwise the cap never engages."""
+    vt = _vt(since=0.5, started_ago=600.0, mute=1.0, sound_seen=False)
+    _no_real_recover(vt)
+    vt._mute_recover_streak = 2
+    assert vt._watchdog_tick() is None
+    assert vt._mute_recover_streak == 2
+
+
+# ── output switched mid-meeting (AirPods → speakers) ──────────────────────────
+# Льоша, 26.08.2026: "система має відпрацьовувати, навіть якщо я вимикаю
+# еірподси і переходжу на динаміки — це інструмент, який не має бекапу".
+def test_output_device_change_recovers_immediately():
+    """Not after 45 s of proving it by silence — at the next tick, ~3 s."""
+    vt = _vt(since=0.2, started_ago=600.0, mute=0.5)
+    _no_real_recover(vt)
+    _probe["device"] = 2  # AirPods out, sound back on the speakers
+    reason = vt._watchdog_tick()
+    assert reason is not None and "output device" in reason
+    assert len(vt.recovered) == 1
+
+
+def test_output_device_change_rebases_and_does_not_repeat():
+    vt = _vt(since=0.2, started_ago=600.0, mute=0.5)
+    _no_real_recover(vt)
+    _probe["device"] = 2
+    assert vt._watchdog_tick() is not None
+    assert vt._watchdog_tick() is None  # same new device — nothing left to react to
+    assert len(vt.recovered) == 1
+
+
+def test_unreadable_device_probe_is_not_evidence_of_anything():
+    """A probe that cannot answer must never be read as 'the device changed'."""
+    vt = _vt(since=0.2, started_ago=600.0, mute=0.5)
+    _no_real_recover(vt)
+    _probe["device"] = None
+    assert vt._watchdog_tick() is None
+    assert vt.recovered == []
+
+
+def test_deaf_tap_while_output_is_open_recovers_sooner():
+    """Speakers held open + nothing but zeros reaching us ⇒ 45 s, not 90 s."""
+    vt = _vt(since=0.2, started_ago=600.0, mute=VoiceTyper._MEETING_DEAF_SEC + 2)
+    _no_real_recover(vt)
+    _probe["running"] = True
+    reason = vt._watchdog_tick()
+    assert reason is not None and "silent" in reason
+
+
+def test_same_silence_with_idle_output_waits_for_the_long_threshold():
+    """Nothing holding the speakers: this looks exactly like a quiet meeting, so
+    the short rung must not apply."""
+    vt = _vt(since=0.2, started_ago=600.0, mute=VoiceTyper._MEETING_DEAF_SEC + 2)
+    _no_real_recover(vt)
+    _probe["running"] = False
+    assert vt._watchdog_tick() is None
+    assert vt.recovered == []

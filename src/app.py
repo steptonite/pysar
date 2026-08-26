@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from . import postprocessor, server
+from .audiodev import default_output_device, output_is_running
 from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
 from .config import (
     DEFAULT_MODE,
@@ -137,6 +138,8 @@ class VoiceTyper:
         self._watchdog_thread: threading.Thread | None = None
         self._meeting_recover_count = 0  # restarts in the current window
         self._meeting_recover_window_start = 0.0  # monotonic start of that window
+        self._mute_recover_streak = 0  # consecutive digital-silence recoveries
+        self._capture_output_device = None  # CoreAudio output device at capture start
         self._capture_started_at = 0.0  # monotonic start of the CURRENT capture stream
 
         self._tray = Tray(
@@ -475,6 +478,29 @@ class VoiceTyper:
     # Generous vs _MEETING_STALL_SEC: SCK setup is async (shareable content →
     # stream → start) and can take seconds on a loaded machine.
     _MEETING_FIRST_BUFFER_SEC = 15.0
+    # Arrival is not sound (GoIT webinar, 26.08.2026). The system tap detached on
+    # a foreground-app switch and delivered 50 minutes of exact digital zeros:
+    # buffers kept coming, so _MEETING_STALL_SEC could never trip, SCK reported a
+    # healthy stream, and the raw dump saved the silence as faithfully as it would
+    # have saved the meeting. A run of digital zeros this long is treated as a
+    # detached tap. Deliberately generous, because a quiet meeting looks identical
+    # from here — nothing playing also yields exact zeros — and that false
+    # positive is cheap: a restart inside real silence loses a sub-second of
+    # nothing, while the false negative loses the recording.
+    _MEETING_MUTE_SEC = 90.0
+    # Middle rung: the tap is silent AND the output device has its IO open, so
+    # something is holding the speakers. Weaker evidence than it sounds — a
+    # conferencing app keeps that flag on through every pause (measured
+    # 26.08.2026) — so this is not "8 seconds and restart". 45 s of unbroken
+    # digital zeros while a call is open is not a pause any speaker takes.
+    _MEETING_DEAF_SEC = 45.0
+    # End-of-meeting verdict: one unbroken silent block at least this long in
+    # the recovery file gets said out loud, whatever the transcript looks like.
+    _MEETING_SILENT_GAP_WARN_SEC = 120.0
+    # If the silence really is just silence, back off instead of restarting the
+    # stream every 90 s all meeting: double per consecutive mute-recover, capped.
+    # Reset the moment a buffer carries sound again.
+    _MEETING_MUTE_BACKOFF_MAX = 900.0
     _MEETING_WATCHDOG_TICK = 3.0  # heartbeat check interval
     _MEETING_RECOVER_MAX = 3  # max restarts within the window below
     _MEETING_RECOVER_WINDOW = 30.0  # sliding window for the restart cap
@@ -735,6 +761,10 @@ class VoiceTyper:
             mic_device_uid=mic_uid,
         )
         self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
+        # Baseline for the output-switch check. Taken here, not in the watchdog:
+        # the watchdog must compare against the device this capture was BUILT on.
+        self._capture_output_device = default_output_device()
+        self._mute_recover_streak = 0
 
         self._tray.set_meeting_active(True)
         self._tray.set_title("🎧")
@@ -802,6 +832,22 @@ class VoiceTyper:
         sysrec = self._sysrec  # atomic snapshot
         if sysrec is None:
             return None
+        # Output switched under a live capture — AirPods pulled out and sound
+        # back on the speakers, a headset connecting mid-call. Checked BEFORE the
+        # heartbeats and acted on immediately: the tap can survive the switch
+        # attached to the device that just left, and every second spent proving
+        # that by silence is a second of the meeting on the floor. A restart here
+        # costs well under a second, so we do not wait to be sure.
+        device = default_output_device()
+        if (
+            device is not None
+            and self._capture_output_device is not None
+            and device != self._capture_output_device
+        ):
+            self._capture_output_device = device
+            reason = "watchdog: output device changed"
+            self._recover_meeting_capture(reason)
+            return reason
         dt = sysrec.seconds_since_audio()
         if dt is None:
             # No buffer has EVER arrived on this stream. Warmup for the first
@@ -814,7 +860,23 @@ class VoiceTyper:
         elif dt > self._MEETING_STALL_SEC:
             reason = f"watchdog: no audio {dt:.0f}s"
         else:
-            return None
+            # Buffers are arriving. That only proves the stream is plumbed, not
+            # that it is hearing anything — check the sound heartbeat too.
+            mute = sysrec.seconds_since_sound()
+            if mute is None:
+                return None
+            if mute < self._MEETING_STALL_SEC and sysrec.heard_sound():
+                self._mute_recover_streak = 0
+                return None
+            base = self._MEETING_MUTE_SEC
+            if output_is_running(device):
+                # Someone is holding the speakers open while we hear nothing.
+                base = self._MEETING_DEAF_SEC
+            limit = min(base * (2**self._mute_recover_streak), self._MEETING_MUTE_BACKOFF_MAX)
+            if mute <= limit:
+                return None
+            self._mute_recover_streak += 1
+            reason = f"watchdog: system tap silent {mute:.0f}s"
         self._recover_meeting_capture(reason)
         return reason
 
@@ -885,6 +947,9 @@ class VoiceTyper:
                 mic_device_uid=_mic_uid_for_name(self._settings.get("mic")),
             )
             self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
+            # The fresh stream is built on whatever device is current NOW — rebase,
+            # or a switch we just recovered from keeps firing forever.
+            self._capture_output_device = default_output_device()
             # Re-arm the first-buffer deadline: if THIS stream never comes up the
             # watchdog must notice (it reads None until buffer #1) instead of
             # going quiet for the rest of the meeting.
@@ -1055,11 +1120,12 @@ class VoiceTyper:
         # How much audio actually reached the disk. 0.0 means the capture was mute
         # for the whole session — the failure that cost a one-off phone call on
         # 24.08.2026 and passed silently as an empty transcript.
-        dump_secs, dump_paths = 0.0, []
+        dump_secs, dump_paths, dump_gap = 0.0, [], 0.0
         if self._sysrec is not None:
             with contextlib.suppress(Exception):
                 dump_secs = self._sysrec.dump_seconds()
                 dump_paths = self._sysrec.dump_paths()
+                dump_gap = self._sysrec.dump_silent_run_seconds()
         saved_path = None
         try:
             # Drain the worker so the final sentence lands before the file is closed.
@@ -1110,6 +1176,19 @@ class VoiceTyper:
                     )
             elif dump_paths:
                 print(f"💾 raw audio kept ({dump_secs:.0f}s): {dump_paths[0]}")
+                # A length is not a verdict (26.08.2026). One unbroken block of
+                # digital silence this long is not a quiet room — it is a capture
+                # that stopped hearing — and the user has to learn that NOW,
+                # while the meeting can still be re-recorded from the other side,
+                # not days later from the transcript.
+                if dump_gap >= self._MEETING_SILENT_GAP_WARN_SEC:
+                    print(f"‼️ {dump_gap / 60.0:.0f} min of the capture is pure silence")
+                    with contextlib.suppress(Exception):
+                        self._tray.notify(
+                            "Pysar",
+                            self._t("notif.silentGapTitle"),
+                            self._t("notif.silentGapMsg", minutes=f"{dump_gap / 60.0:.0f}"),
+                        )
                 with contextlib.suppress(Exception):
                     self._tray.notify(
                         "Pysar",

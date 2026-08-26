@@ -1101,27 +1101,49 @@ class Tray:
     def set_meeting_capture_mic(self, on: bool) -> None:
         """Called on launch and whenever the settings switch flips."""
         self._meeting_capture_mic = bool(on)
-        with contextlib.suppress(Exception):
-            # Only the idle label depends on it; while a capture runs (or drains)
-            # the item says Stop/Stopping and must not be overwritten.
-            if self._meeting_item is not None and self._meeting_item.state == 0:
-                self._meeting_item.title = self._meeting_start_title()
+
+        def _do() -> None:
+            with contextlib.suppress(Exception):
+                # Only the idle label depends on it; while a capture runs (or drains)
+                # the item says Stop/Stopping and must not be overwritten.
+                if self._meeting_item is not None and self._meeting_item.state == 0:
+                    self._meeting_item.title = self._meeting_start_title()
+
+        AppHelper.callAfter(_do)
 
     def set_meeting_active(self, active: bool) -> None:
-        """Reflect capture on/off in the menu — checkmark + Start/Stop label."""
-        with contextlib.suppress(Exception):
-            self._meeting_item.state = 1 if active else 0
-            self._meeting_item.title = (
-                self._t("tray.meetingStop") if active else self._meeting_start_title()
-            )
+        """Reflect capture on/off in the menu — checkmark + Start/Stop label.
+
+        Hops to the main thread like every other AppKit mutation here. It used to
+        write the NSMenuItem straight from the caller's thread, and _stop_meeting
+        runs on a background thread: the write was silently dropped and the item
+        kept reading "⏳ Stopping…" while everything main-thread-marshalled around
+        it (title, status, HUD) had already gone back to idle. Reported 26.08.2026
+        with a screenshot showing exactly that split."""
+
+        def _do() -> None:
+            with contextlib.suppress(Exception):
+                self._meeting_item.state = 1 if active else 0
+                self._meeting_item.title = (
+                    self._t("tray.meetingStop") if active else self._meeting_start_title()
+                )
+
+        AppHelper.callAfter(_do)
 
     def set_meeting_stopping(self) -> None:
         """Third menu state, shown while a stop drains the queue (up to a minute).
         Without it the item kept saying "Stop transcribing" for the whole drain and
-        clicking it did nothing visible — a frozen button, from the user's side."""
-        with contextlib.suppress(Exception):
-            self._meeting_item.state = -1  # mixed: neither on nor off
-            self._meeting_item.title = self._t("tray.meetingStopping")
+        clicking it did nothing visible — a frozen button, from the user's side.
+
+        Main-thread hop for the same reason as set_meeting_active: enqueued in
+        order, so a stop that immediately follows still lands after this one."""
+
+        def _do() -> None:
+            with contextlib.suppress(Exception):
+                self._meeting_item.state = -1  # mixed: neither on nor off
+                self._meeting_item.title = self._t("tray.meetingStopping")
+
+        AppHelper.callAfter(_do)
 
     # ── Settings window ───────────────────────────────────────────────────────
     def _open_settings_to_profiles(self, _sender) -> None:

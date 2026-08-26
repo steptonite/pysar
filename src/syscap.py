@@ -174,6 +174,14 @@ class _RawDump:
         self._path = path
         self._wav: wave.Wave_write | None = None
         self._frames = 0
+        # 26.08.2026: length alone lied. The webinar dump ran the full 98 minutes
+        # and half of it was digital zeros, so "💾 raw audio kept (5871s)" read
+        # like a success. What matters is not HOW MUCH silence a file holds — a
+        # call where the far side rarely talks is mostly silence and is fine —
+        # but whether it holds one UNBROKEN block of it. That is the shape a dead
+        # tap leaves, and ordinary quiet does not.
+        self._silent_run = 0
+        self._max_silent_run = 0
 
     @property
     def path(self) -> Path:
@@ -182,6 +190,11 @@ class _RawDump:
     @property
     def frames(self) -> int:
         return self._frames
+
+    @property
+    def max_silent_run(self) -> int:
+        """Longest unbroken run of digital-zero frames, in frames."""
+        return max(self._max_silent_run, self._silent_run)
 
     def write(self, x: np.ndarray) -> None:
         if x.size == 0:
@@ -199,6 +212,17 @@ class _RawDump:
             pcm = np.clip(x, -1.0, 1.0)
             self._wav.writeframes((pcm * 32767.0).astype("<i2").tobytes())
             self._frames += int(x.size)
+            # Runs are tracked ACROSS buffer boundaries: a dead tap does not
+            # respect them, and a per-buffer tally would see 50 minutes of
+            # silence as thousands of harmless little ones.
+            nz = np.flatnonzero(x)
+            if nz.size == 0:
+                self._silent_run += int(x.size)
+            else:
+                head = self._silent_run + int(nz[0])
+                gap = int(np.diff(nz).max()) - 1 if nz.size > 1 else 0
+                self._max_silent_run = max(self._max_silent_run, head, gap)
+                self._silent_run = int(x.size - nz[-1] - 1)
         except Exception as e:  # never let the dump kill the capture
             print(f"⚠️ raw dump write failed ({self._path.name}): {e}")
             self._wav = None
@@ -235,6 +259,7 @@ class SystemAudioRecorder:
         self._dump_mic: _RawDump | None = None
         # (paths, seconds) of the last finished capture — survives _close_dumps.
         self._dump_final: tuple[list[Path], float] = ([], 0.0)
+        self._dump_silence_final = 0.0  # longest unbroken silence in the system dump, s
         self._source_mode = source_mode if source_mode in ("off", "fast", "smart") else "off"
         self._on_segment: Callable[[bytes, str | None], None] | None = None
         self._on_error: Callable[[str], None] | None = None
@@ -267,6 +292,33 @@ class SystemAudioRecorder:
         # A watchdog reads it to detect a silent SCK stall (mute/sleep/reconfigure
         # that never fires didStop — regression 23.07.2026).
         self._last_audio_monotonic = 0.0
+        # 26.08.2026 — arrival is NOT liveness. During the GoIT webinar the system
+        # tap detached on a foreground-app switch and kept delivering buffers of
+        # exact digital zeros for 50 minutes: _last_audio_monotonic stayed fresh,
+        # the watchdog never fired, and the raw dump — the last line of defence —
+        # recorded the silence too. So track sound, not delivery.
+        self._first_buffer_monotonic = 0.0
+        self._last_sound_monotonic = 0.0
+
+    def heard_sound(self) -> bool:
+        """True once a system buffer has carried a non-zero sample. Lets a caller
+        tell "this tap has been working" from "this tap has never said anything",
+        which is what a mute-recovery backoff needs to reset honestly."""
+        return self._last_sound_monotonic != 0.0
+
+    def seconds_since_sound(self) -> float | None:
+        """Seconds since the system tap last carried a non-zero sample (measured
+        from the first buffer while it has never carried one), or None when the
+        capture is stopped or no buffer has arrived yet.
+
+        A detached tap is indistinguishable from a genuinely quiet machine — both
+        yield exact zeros — so this is a suspicion, not a verdict. The caller acts
+        on it because acting is cheap: restarting the stream during real silence
+        costs a sub-second gap in a stretch that carries nothing."""
+        if self._stopped.is_set() or self._first_buffer_monotonic == 0.0:
+            return None
+        base = self._last_sound_monotonic or self._first_buffer_monotonic
+        return time.monotonic() - base
 
     def seconds_since_audio(self) -> float | None:
         """Seconds since the last valid audio buffer, or None if the capture has
@@ -295,12 +347,28 @@ class SystemAudioRecorder:
         best = max((d.frames for d in (self._dump_mic, self._dump_sys) if d), default=0)
         return best / float(SAMPLE_RATE)
 
+    def dump_silent_run_seconds(self) -> float:
+        """Longest unbroken stretch of digital silence in the SYSTEM recovery
+        file, in seconds.
+
+        The number the caller needs when a meeting ends: a dump can run the
+        full length of the call and still hold nothing, which is what happened
+        on 26.08.2026. Deliberately the longest RUN and not the total — an
+        hour-long call where the far side rarely speaks is mostly silence and
+        perfectly healthy, while one unbroken block is a tap that died.
+        """
+        if self._dump_sys is not None:
+            return self._dump_sys.max_silent_run / float(SAMPLE_RATE)
+        return self._dump_silence_final
+
     def _close_dumps(self) -> None:
         paths = [d.path for d in (self._dump_mic, self._dump_sys) if d and d.frames > 0]
         best = max((d.frames for d in (self._dump_mic, self._dump_sys) if d), default=0)
         if paths or best:
             # Keep the tally: stop() closes the dumps, and the caller asks after.
             self._dump_final = (paths, best / float(SAMPLE_RATE))
+            if self._dump_sys is not None:
+                self._dump_silence_final = self._dump_sys.max_silent_run / float(SAMPLE_RATE)
         for d in (self._dump_sys, self._dump_mic):
             if d is not None:
                 d.close()
@@ -529,6 +597,13 @@ class SystemAudioRecorder:
         # data keeps flowing even in silence — only a dead stream yields zero
         # buffers, so the watchdog can tell a stall from a legitimate pause.
         self._last_audio_monotonic = time.monotonic()
+        if source == 0:
+            # Sound heartbeat, system source only: the mic floor is never exactly
+            # zero, so mic buffers would mask a dead system tap (bug 26.08.2026).
+            if self._first_buffer_monotonic == 0.0:
+                self._first_buffer_monotonic = self._last_audio_monotonic
+            if mono.any():
+                self._last_sound_monotonic = self._last_audio_monotonic
         x = _to_16k(mono, int(sr))
         # Recovery buffer first: it must survive even if everything downstream
         # (segmenter, whisper, transcript file) fails.
