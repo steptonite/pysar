@@ -493,6 +493,10 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" style="white-space:normal" data-i18n="meeting.source.help">Who is speaking</div></div>
         <select id="mt-source"></select>
       </div>
+      <div class="row" id="mt-diar-box" style="display:block">
+        <div class="help" id="mt-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
+        <button id="mt-diar-install"></button>
+      </div>
     </section>
     <section>
       <div class="row">
@@ -623,6 +627,16 @@ _TEMPLATE = r"""<!doctype html>
           <button id="ft-reset" class="ghost" data-i18n="ft.out.reset">Use default</button>
           <button id="ft-open" data-i18n="meeting.openFolder">Open folder</button>
         </div>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="meeting.diar.label">Split speakers after recording</div>
+          <div class="help" style="white-space:normal" data-i18n="ft.diar.help">Adds a second file with
+            the text split by voice; the transcript itself is unchanged</div></div>
+        <select id="ft-diar"></select>
+      </div>
+      <div class="row" id="ft-diar-box" style="display:block">
+        <div class="help" id="ft-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
+        <button id="ft-diar-install"></button>
       </div>
     </section>
     <section id="ft-queue-sec" style="display:none">
@@ -954,16 +968,73 @@ $("back-enh").addEventListener("click", () => show("main"));
   });
   mtLang.addEventListener("change", () => send("set_meeting_lang", mtLang.value || null));
 
+  const diarReady = () => !!(STATE.diar_status && STATE.diar_status.ready);
+  // ── ОДИН список замість двох сутностей (06.09.2026, рішення Льоші) ────────
+  // Було: зверху «Розмежування мовців», знизу окремий перемикач «Розділяти
+  // спікерів» — дві ручки на одне питання «хто говорить», і людина не розуміла,
+  // що з чим поєднувати. Тепер це одна шкала глибини: без розмітки → канали →
+  // канали + голоси. «Швидко (за гучністю)» прибрано з вибору як свідомо гірший
+  // режим, але значення лишається робочим для тих, у кого воно вже збережене.
   const mtSource = $("mt-source");
+  const srcValue = () => {
+    if (STATE.meeting_diarize) return "split";
+    return (STATE.meeting_source_mode || "off") === "off" ? "off" : "smart";
+  };
   [["off", T("meeting.source.off", "Off")],
-   ["fast", T("meeting.source.fast", "Fast")],
-   ["smart", T("meeting.source.smart", "Smart")]].forEach(([val, label]) => {
+   ["smart", T("meeting.source.smart", "Smart")],
+   ["split", T("meeting.source.split", "Split by voice after recording")]].forEach(([val, label]) => {
     const o = document.createElement("option");
     o.value = val; o.textContent = label;
-    if (val === (STATE.meeting_source_mode || "off")) o.selected = true;
+    if (val === srcValue()) o.selected = true;
     mtSource.appendChild(o);
   });
-  mtSource.addEventListener("change", () => send("set_meeting_source_mode", mtSource.value));
+  mtSource.addEventListener("change", () => {
+    const v = mtSource.value;
+    send("set_meeting_source_mode", v === "off" ? "off" : "smart");
+    send("set_meeting_diarize", v === "split");
+    // Моделі тягнемо саме тут — у момент, коли людина ОБИРАЄ режим, а не в
+    // інсталяторі: більшість користувачів диктує й ніколи цього не торкнеться.
+    if (v === "split" && !diarReady() && !STATE.diar_busy) send("diar_install");
+    if (window.renderDiar) window.renderDiar();
+  });
+
+  // ── Розділення спікерів усередині каналу (прохід після Стоп) ──────────────
+  // Той самий стан показують двоє екранів (зустрічі й транскрибація файлів) —
+  // рушій і моделі спільні, тож і кнопка докачки одна на обидва.
+  const ftDiar = $("ft-diar");
+  [["off", T("ft.diar.off", "Off")],
+   ["split", T("ft.diar.split", "Split speakers after transcription")]].forEach(([val, label]) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if (val === (STATE.ft_diarize ? "split" : "off")) o.selected = true;
+    ftDiar.appendChild(o);
+  });
+  ftDiar.addEventListener("change", () => {
+    const on = ftDiar.value === "split";
+    send("set_ft_diarize", on);
+    if (on && !diarReady() && !STATE.diar_busy) send("diar_install");
+    if (window.renderDiar) window.renderDiar();
+  });
+  $("mt-diar-install").addEventListener("click", () => send("diar_install"));
+  $("ft-diar-install").addEventListener("click", () => send("diar_install"));
+  window.renderDiar = function(){
+    const st = STATE.diar_status || {}, busy = !!STATE.diar_busy;
+    mtSource.value = srcValue();
+    ftDiar.value = STATE.ft_diarize ? "split" : "off";
+    const mb = st.download_mb || 110;
+    const line = busy ? (STATE.diar_progress || T("diar.working", "Завантажую…"))
+      : st.ready ? T("diar.ready", "Розпізнавання голосів готове")
+      : (STATE.diar_progress || T("diar.need", "").replace("{mb}", mb));
+    ["mt", "ft"].forEach(pfx => {
+      $(pfx + "-diar-status").textContent = line;
+      const btn = $(pfx + "-diar-install");
+      btn.textContent = busy ? T("diar.working", "Завантажую…")
+                             : T("diar.install", "Download").replace("{mb}", mb);
+      btn.disabled = busy;
+      btn.style.display = st.ready ? "none" : "";
+    });
+  };
+  window.renderDiar();
 
   const mtPrompt = $("mt-prompt");
   mtPrompt.placeholder = T("meeting.prompt.ph", "");
@@ -1632,6 +1703,7 @@ window.pysarApply = function(s){
   renderSetShortcuts();
   renderHotkeys();
   renderFt();
+  if (window.renderDiar) window.renderDiar();
   if (s.import_conflict && window._showImportConflict) window._showImportConflict(s.import_conflict);
   if (s.import_done && window._closeImportPanel) window._closeImportPanel();
   if (s.open_screen) show(s.open_screen);

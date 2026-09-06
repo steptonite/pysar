@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from .transcriber import transcribe
-from .transcripts import transcripts_dir
+from .transcripts import SegmentSidecar, transcripts_dir
 
 SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz mono s16le
 CHUNK_SEC = 60  # seconds fed per whisper call
@@ -207,10 +207,16 @@ class FileTranscriptionJob:
         on_error: Callable[[str], None],
         prompt: str = "",
         on_paused: Callable[[], None] | None = None,
+        diarize: bool = False,
     ) -> None:
         self._path = path
         self._mode = mode
         self._prompt = prompt
+        self._diarize = diarize
+        # Скільки шкали віддано тексту: решта — прохід по голосах, щоб
+        # «100%» стояло на КІНЦІ роботи, а не на кінці розшифровки.
+        self._text_share = 0.85 if diarize else 1.0
+        self._diar_ticks = 0
         self._on_progress = on_progress
         self._on_done = on_done
         self._on_error = on_error
@@ -241,6 +247,35 @@ class FileTranscriptionJob:
 
     def resume(self) -> None:
         self._pause_event.set()
+
+    def _diarize_result(self, md_path: Path, sidecar: Path, raw_path: str | None) -> None:
+        """Другий файл поруч: той самий текст, розкладений по голосах.
+
+        Тут же — межа відповідальності: збій розділення НЕ має права зіпсувати
+        транскрипт, який уже готовий і вже на диску, тож усе загорнуто."""
+        if not raw_path or not Path(sidecar).exists():
+            return
+
+        def tick(_msg: str = "") -> None:
+            # Рух у хвості шкали = чесний сигнал «ще працюю». Точний відсоток
+            # тут не рахується (рушій його не дає), але шкала не бреше «готово».
+            self._diar_ticks += 1
+            frac = self._text_share + (1.0 - self._text_share) * min(self._diar_ticks / 12.0, 0.95)
+            with contextlib.suppress(Exception):
+                self._on_progress(frac)
+
+        try:
+            from . import diarize as _diar
+
+            if not _diar.is_ready():
+                ok, msg = _diar.ensure_ready()
+                if not ok:
+                    print(f"⚠️ diarization unavailable: {msg}")
+                    return
+            out = _diar.label_transcript(Path(sidecar), {None: Path(raw_path)}, progress=tick)
+            print(f"🗣 speakers split → {out}")
+        except Exception as e:
+            print(f"⚠️ diarization failed for {md_path.name}: {e}")
 
     def _run(self) -> None:
         raw_path: str | None = None
@@ -302,7 +337,13 @@ class FileTranscriptionJob:
             consumed = 0
             carry = b""
 
-            with open(md_path, "w", encoding="utf-8") as md:
+            # Той самий сайдкар меж часу, що й у записі зустрічей (06.09.2026):
+            # без нього готовий транскрипт нема як покласти на аудіо, а отже нема
+            # як розділити спікерів, не перерозшифровуючи файл.
+            with (
+                SegmentSidecar(md_path, {"source_file": src.name, "mode": self._mode}) as side,
+                open(md_path, "w", encoding="utf-8") as md,
+            ):
                 md.write(
                     f"# Pysar — {src.name}\n\n"
                     f"_transcribed {now.strftime('%Y-%m-%d %H:%M')}, "
@@ -358,12 +399,30 @@ class FileTranscriptionJob:
                             m, s = divmod(rem, 60)
                             md.write(f"**[{h}:{m:02d}:{s:02d}]**\n\n{text.strip()}\n\n")
                             md.flush()
+                            end_sec = (consumed + len(to_transcribe)) / (SAMPLE_RATE * 2)
+                            side.write(
+                                text.strip(),
+                                None,
+                                f"{h}:{m:02d}:{s:02d}",
+                                (round(start_sec, 2), round(end_sec, 2)),
+                            )
 
                         consumed += len(to_transcribe)
-                        self._on_progress(min(consumed / total_bytes, 1.0))
+                        # 🔴 06.09.2026: коли ввімкнено розділення, шкала НЕ сміє
+                        # доходити до кінця на останньому шматку тексту — робота
+                        # ще триває. Льоша бачив «готово» і чув кулер: «показує
+                        # як готово, але хуй поймі чи готово насправді». Лишаємо
+                        # хвіст під прохід по голосах.
+                        self._on_progress(min(consumed / total_bytes, 1.0) * self._text_share)
 
                 md.write("_— end —_\n")
                 md.flush()
+            # Розділення спікерів — ОКРЕМИМ файлом, після того як транскрипт уже
+            # цілий на диску. Скасовану роботу не розділяємо: половина запису
+            # дала б половину голосів, і це виглядало б як помилка розпізнавання.
+            if self._diarize and not self._cancel_event.is_set():
+                self._diarize_result(md_path, side.path, raw_path)
+            self._on_progress(1.0)
             self._on_done(str(md_path))
 
         except Exception as exc:
@@ -469,9 +528,13 @@ class FileTranscriptionQueue:
         mode: str,
         prompt: str,
         on_change: Callable[[dict], None],
+        diarize: bool = False,
     ) -> None:
         self._mode = mode
         self._prompt = prompt
+        # Як мова й підказка — фіксується на старті черги: перемикач, натиснутий
+        # посеред прогону, інакше розділив би половину файлів, а половину ні.
+        self._diarize = diarize
         self._on_change = on_change
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -720,6 +783,7 @@ class FileTranscriptionQueue:
                     on_error=lambda e, iid=item.id: self._on_job_error(iid, e),
                     prompt=self._prompt,
                     on_paused=self._on_job_paused,
+                    diarize=self._diarize,
                 )
                 self._current_job = job
                 self._current_item_id = item.id

@@ -156,6 +156,10 @@ def mic_pinning_supported() -> bool:
     return False
 
 
+# s16le: сегментер віддає СИРІ БАЙТИ, не numpy — два байти на семпл.
+_BYTES_PER_SAMPLE = 2
+
+
 class _RawDump:
     """Append-only 16 kHz WAV written straight off the capture thread.
 
@@ -261,7 +265,9 @@ class SystemAudioRecorder:
         self._dump_final: tuple[list[Path], float] = ([], 0.0)
         self._dump_silence_final = 0.0  # longest unbroken silence in the system dump, s
         self._source_mode = source_mode if source_mode in ("off", "fast", "smart") else "off"
-        self._on_segment: Callable[[bytes, str | None], None] | None = None
+        self._on_segment: Callable[[bytes, str | None, tuple[float, float] | None], None] | None = (
+            None
+        )
         self._on_error: Callable[[str], None] | None = None
 
         # Segmenters
@@ -386,7 +392,7 @@ class SystemAudioRecorder:
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(
         self,
-        on_segment: Callable[[bytes, str | None], None] | None = None,
+        on_segment: Callable[[bytes, str | None, tuple[float, float] | None], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
         self._on_segment = on_segment
@@ -485,7 +491,7 @@ class SystemAudioRecorder:
                         if tail:
                             wav = pcm_to_wav(tail)
                             if wav:
-                                self._on_segment(wav, src)
+                                self._on_segment(wav, src, self._span(src, tail))
             else:
                 if self._segmenter is not None:
                     with contextlib.suppress(Exception):
@@ -499,7 +505,7 @@ class SystemAudioRecorder:
                                     self._e_mic = 0.0
                                 else:
                                     src = None
-                                self._on_segment(wav, src)
+                                self._on_segment(wav, src, self._span(src, tail))
         self._stopped.set()
 
     # ── internals ─────────────────────────────────────────────────────────────
@@ -642,8 +648,47 @@ class SystemAudioRecorder:
                     with contextlib.suppress(Exception):
                         wav = pcm_to_wav(seg_res)
                         if wav:
-                            self._on_segment(wav, source)
+                            self._on_segment(wav, source, self._span(source, seg_res))
         setattr(self, acc_attr, arr)
+
+    # ── Позиція сегмента в записі (фіча «мітки секунд», 06.09.2026) ──────────
+    # Час беремо з КІЛЬКОСТІ ЗАПИСАНИХ СЕМПЛІВ у сирому дампі, не з годинника:
+    # годинник пливе на затримку черги транскрибації (сегмент розшифровується
+    # через секунди після того, як прозвучав), а лічильник семплів — ні. Саме ці
+    # межі потім дозволяють розділити спікерів БЕЗ перерозшифровки.
+    def _span(self, source: str | None, data) -> tuple[float, float] | None:
+        """(t0, t1) у секундах від початку захоплення, або None якщо міток нема.
+
+        🔴 НІКОЛИ НЕ КИДАЄ. Виклик стоїть усередині `suppress(Exception)`, який
+        обгортає САМ `_on_segment`, тож будь-яке виключення звідси знищувало б
+        не мітку, а ВЕСЬ сегмент — мовчки. Саме це сталось 06.09.2026: сегментер
+        віддає `bytes`, а тут стояло `.size` (атрибут numpy) ⇒ AttributeError на
+        КОЖНОМУ сегменті ⇒ 18 реплік запису перетворились на порожній транскрипт
+        при повних 7 МБ сирого аудіо. Мітка часу — прикраса; звук — ні.
+        """
+        try:
+            if isinstance(data, int):  # уже полічені семпли
+                n_samples = data
+            elif hasattr(data, "size"):  # numpy
+                n_samples = data.size
+            else:  # сирі байти s16le — саме це віддає сегментер
+                n_samples = len(data) // _BYTES_PER_SAMPLE
+            dumps = {"sys": self._dump_sys, "mic": self._dump_mic}
+            d = dumps.get(source)
+            frames = (
+                d.frames
+                if d is not None
+                else max(
+                    (x.frames for x in (self._dump_sys, self._dump_mic) if x is not None), default=0
+                )
+            )
+            if not frames:
+                return None
+            t1 = frames / float(SAMPLE_RATE)
+            t0 = max(t1 - n_samples / float(SAMPLE_RATE), 0.0)
+            return (round(t0, 2), round(t1, 2))
+        except Exception:
+            return None
 
     def _mix_locked(self) -> np.ndarray:
         """Return the next run of mixed samples that both sources have covered,
@@ -694,7 +739,7 @@ class SystemAudioRecorder:
                             src = "sys" if self._e_sys >= self._e_mic else "mic"
                         else:
                             src = None
-                        self._on_segment(wav, src)
+                        self._on_segment(wav, src, self._span(src, seg))
                         if self._source_mode == "fast":
                             self._e_sys = 0.0
                             self._e_mic = 0.0

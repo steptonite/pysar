@@ -100,6 +100,11 @@ DEFAULTS = {
     #     "smart" = two separate whisper passes (system / mic) → reliable labels,
     #               ~2× slower when both speak (one shared model, RAM unchanged)
     "meeting_source_mode": "off",
+    #   meeting_diarize — після Стоп пройтись по запису й розділити спікерів
+    #                     УСЕРЕДИНІ каналу (кілька людей в одній доріжці).
+    #                     Вимкнено за замовчуванням: прохід коштує часу й тягне
+    #                     ~110 МБ моделей, які качаються на першу вимогу.
+    "meeting_diarize": False,
     #   meeting_island_frame — last position/size of the floating transcript island
     #                          ({x,y,w,h}); None = default (top-right of the screen)
     "meeting_island_frame": None,
@@ -126,6 +131,8 @@ DEFAULTS = {
     #                       cannot be re-recorded, and 500 MB of chatter must not
     #                       evict it.
     "meeting_keep_last": 50,
+    #   ft_diarize — те саме розділення спікерів для транскрибації файлів
+    "ft_diarize": False,
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20, 50, 100, 500)

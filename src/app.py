@@ -13,8 +13,9 @@ import sys
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
-from . import postprocessor, server
+from . import diarize, postprocessor, server
 from .audiodev import default_output_device, output_is_running
 from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
 from .config import (
@@ -189,6 +190,12 @@ class VoiceTyper:
             meeting_prompt=self._settings.get("meeting_prompt", ""),
             meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
             meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
+            meeting_diarize=self._settings.get("meeting_diarize", False),
+            ft_diarize=self._settings.get("ft_diarize", False),
+            diar_status_provider=diarize.status,
+            on_set_meeting_diarize=self._on_set_meeting_diarize,
+            on_set_ft_diarize=self._on_set_ft_diarize,
+            on_diar_install=self._on_diar_install,
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
             meeting_keep_last=self._settings.get("meeting_keep_last", MEETING_KEEP_ALL),
@@ -802,9 +809,14 @@ class VoiceTyper:
             )
         return True
 
-    def _enqueue_meeting(self, seg_wav: bytes, source: str | None = None) -> None:
+    def _enqueue_meeting(
+        self, seg_wav: bytes, source: str | None = None, span: tuple[float, float] | None = None
+    ) -> None:
+        # span = (t0, t1) у секундах від початку захоплення, з лічильника семплів
+        # у сирому дампі. Їде через чергу разом зі звуком, бо на виході воркера
+        # реальний час уже не відновити — там лише годинник (фіча 06.09.2026).
         if self._meeting_queue is not None:
-            self._meeting_queue.put((seg_wav, source))
+            self._meeting_queue.put((seg_wav, source, span))
 
     def _on_meeting_error(self, msg: str) -> None:
         """Capture reported an error or an unrequested stop. Before 23.07.2026 this
@@ -989,11 +1001,17 @@ class VoiceTyper:
             item = self._meeting_queue.get()
             if item is None:  # sentinel queued by _stop_meeting
                 break
-            seg_wav, source = item
-            self._process_meeting_segment(seg_wav, source, base, mode, mfilter)
+            seg_wav, source, span = item
+            self._process_meeting_segment(seg_wav, source, base, mode, mfilter, span)
 
     def _process_meeting_segment(
-        self, seg_wav: bytes, source: str | None, base: str, mode: str, mfilter: MeetingFilter
+        self,
+        seg_wav: bytes,
+        source: str | None,
+        base: str,
+        mode: str,
+        mfilter: MeetingFilter,
+        span: tuple[float, float] | None = None,
     ) -> None:
         # When the mic is off the whole stream is system audio, so label it
         # "System" even in the mixed ("off") mode where syscap can't tag a source.
@@ -1033,7 +1051,7 @@ class VoiceTyper:
             self._transcript_window.append(text, source, ts)
         if self._transcript_file is not None:
             with contextlib.suppress(Exception):
-                self._transcript_file.append(text, source, ts)
+                self._transcript_file.append(text, source, ts, span)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 
@@ -1127,6 +1145,7 @@ class VoiceTyper:
                 dump_paths = self._sysrec.dump_paths()
                 dump_gap = self._sysrec.dump_silent_run_seconds()
         saved_path = None
+        sidecar_path = None
         try:
             # Drain the worker so the final sentence lands before the file is closed.
             if self._meeting_queue is not None:
@@ -1135,6 +1154,7 @@ class VoiceTyper:
 
             if self._transcript_file is not None:
                 saved_path = str(self._transcript_file.path or "")
+                sidecar_path = self._transcript_file.segments_path
                 self._transcript_file.close()
                 self._transcript_file = None
         finally:
@@ -1210,6 +1230,52 @@ class VoiceTyper:
                     self._t("notif.meetingSavedTitle"),
                     self._t("notif.meetingSavedMsg", path=saved_path),
                 )
+            # Розділення спікерів іде ОСТАННІМ і в окремому потоці: транскрипт уже
+            # збережений і про нього вже сказано, тож будь-який збій тут не може
+            # відібрати в користувача результат зустрічі.
+            if sidecar_path and dump_paths and self._settings.get("meeting_diarize", False):
+                threading.Thread(
+                    target=self._diarize_meeting,
+                    args=(Path(sidecar_path), list(dump_paths)),
+                    daemon=True,
+                ).start()
+
+    def _diarize_meeting(self, sidecar: "Path", dumps: list) -> None:
+        """Прохід по спікерах після Стоп. Пише ОКРЕМИЙ файл поруч із транскриптом.
+
+        Живий `.md` не відкривається: розділення — це похідне, і воно не має
+        права зіпсувати запис зустрічі, який трапляється один раз."""
+        audio = diarize.audio_map(dumps)
+        if not audio:
+            return
+        labels = {"sys": self._t("transcript.spk.sys"), "mic": self._t("transcript.spk.mic")}
+        try:
+            if not diarize.is_ready():
+                # Користувач увімкнув режим, але моделі так і не докачались —
+                # мовчати тут не можна: він чекає на файл, якого не буде.
+                ok, msg = diarize.ensure_ready()
+                if not ok:
+                    self._tray.notify("Pysar", self._t("notif.diarNotReadyTitle"), msg)
+                    return
+            self._tray.set_status(self._t("st.diarRunning"))
+            out = diarize.label_transcript(sidecar, audio, labels=labels)
+        except Exception as e:
+            print(f"⚠️ diarization failed: {e}")
+            with contextlib.suppress(Exception):
+                self._tray.notify("Pysar", self._t("notif.diarFailedTitle"), str(e)[:160])
+            return
+        finally:
+            # 🔴 06.09.2026: раніше статус скидався ЛИШЕ на успіху, тож будь-яка
+            # помилка лишала меню назавжди на «Розділяю спікерів…» — Льоша бачив
+            # завислий пункт, який не зникає. Статус — це індикатор роботи, а не
+            # її результат: він мусить гаснути на КОЖНОМУ виході.
+            with contextlib.suppress(Exception):
+                self._tray.set_status(self._t("st.meetingOff"))
+        print(f"🗣 speakers split → {out}")
+        with contextlib.suppress(Exception):
+            self._tray.notify(
+                "Pysar", self._t("notif.diarDoneTitle"), self._t("notif.diarDoneMsg", path=str(out))
+            )
 
     # ── Mode selection ───────────────────────────────────────────────────────
     def _on_mode_select(self, code: str) -> None:
@@ -1411,6 +1477,19 @@ class VoiceTyper:
     def _on_set_meeting_prompt(self, text: str) -> None:
         self._settings["meeting_prompt"] = (text or "").strip()
         save_settings(self._settings)
+
+    def _on_set_meeting_diarize(self, enabled: bool) -> None:
+        self._settings["meeting_diarize"] = bool(enabled)
+        save_settings(self._settings)
+
+    def _on_set_ft_diarize(self, enabled: bool) -> None:
+        self._settings["ft_diarize"] = bool(enabled)
+        save_settings(self._settings)
+
+    def _on_diar_install(self, progress) -> tuple[bool, str]:
+        """Докачка рушія й моделей на вимогу. Викликається з фонового потоку
+        вікна налаштувань — головний потік не можна тримати хвилинами."""
+        return diarize.ensure_ready(progress)
 
     def _on_set_meeting_source_mode(self, mode: str) -> None:
         self._settings["meeting_source_mode"] = mode if mode in ("off", "fast", "smart") else "off"

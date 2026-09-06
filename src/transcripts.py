@@ -7,6 +7,7 @@ so it's import-cheap and unit-testable.
 """
 
 import contextlib
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,65 @@ def transcripts_dir() -> Path:
     return _TRANSCRIPTS
 
 
+class SegmentSidecar:
+    """Межі сегментів у секундах поруч із транскриптом — `<імʼя>.сегменти.jsonl`.
+
+    Спільний для запису зустрічей і транскрибації файлів, щоб схема не розʼїхалась
+    у двох місцях. Кожен рядок лягає на диск ОДРАЗУ (append+flush): 12.07.2026
+    діаризацію відхилили саме за накопичення тексту до кінця прогону — годинний
+    ефір ризикував згинути весь при збої. Помилки сайдкара ніколи не валять
+    транскрипт: мітки часу — фундамент розділення спікерів, але не умова запису.
+    """
+
+    VERSION = 1
+
+    def __init__(self, md_path: Path, meta: dict | None = None):
+        self.path = md_path.with_suffix(".сегменти.jsonl")
+        self._fh = None
+        self._i = 0
+        with contextlib.suppress(Exception):
+            self._fh = open(self.path, "w", encoding="utf-8")  # noqa: SIM115 — довгий хендл
+            head = {
+                "pysar_segments": self.VERSION,
+                "transcript": md_path.name,
+                "note": "межі сегментів у секундах від початку запису — "
+                "потрібні, щоб розділити спікерів без перерозшифровки",
+            }
+            head.update(meta or {})
+            self._fh.write(json.dumps({"_meta": head}, ensure_ascii=False) + "\n")
+            self._fh.flush()
+
+    def write(self, text: str, src: str | None, clock: str, span) -> None:
+        if self._fh is None:
+            return
+        row = {
+            "i": self._i,
+            "t0": span[0] if span else None,
+            "t1": span[1] if span else None,
+            "src": src,
+            "clock": clock,
+            "text": text,
+        }
+        self._i += 1
+        with contextlib.suppress(Exception):
+            self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            self._fh.flush()
+
+    def close(self) -> None:
+        if self._fh is not None:
+            with contextlib.suppress(Exception):
+                self._fh.close()
+            self._fh = None
+
+    def __enter__(self) -> "SegmentSidecar":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        # Хендл мусить закритись і на скасуванні, і на аварії прогону: файлова
+        # транскрипція має гілки cancelled/aborted, які не доходять до кінця.
+        self.close()
+
+
 class TranscriptFile:
     """An append-as-you-go Markdown transcript. ``open()`` creates the file with a
     dated header; ``append(text)`` adds one segment line and flushes immediately so
@@ -53,6 +113,12 @@ class TranscriptFile:
         self._started = started or datetime.now()
         self._fh = None
         self.path: Path | None = None
+        # Сайдкар меж часу (фіча «мітки секунд», 06.09.2026). Живе ПОРУЧ із .md і
+        # пишеться тим самим append+flush: 12.07.2026 діаризацію відхилили саме
+        # за накопичення тексту до кінця прогону — годинний ефір ризикував
+        # згинути весь при збої. Тут кожен рядок на диску одразу.
+        self._side: SegmentSidecar | None = None
+        self.segments_path: Path | None = None
         # Speaker-source labels (source-separation modes). Keyed "sys"/"mic"; a
         # heading is written only when the source changes, so consecutive segments
         # from one speaker group under one label.
@@ -71,21 +137,45 @@ class TranscriptFile:
         self._fh.write(f"# Pysar transcript — {human}\n\n")
         self._fh.flush()
         self._last_source = None
+        self._side = SegmentSidecar(
+            self.path, {"started": self._started.isoformat(timespec="seconds")}
+        )
+        self.segments_path = self._side.path
         return self.path
 
-    def append(self, text: str, source: str | None = None, ts: datetime | None = None) -> None:
+    def append(
+        self,
+        text: str,
+        source: str | None = None,
+        ts: datetime | None = None,
+        span: tuple[float, float] | None = None,
+    ) -> None:
         text = (text or "").strip()
         if not text or self._fh is None:
             return
         # A small header before every block: "Source · HH:MM" (or just the time
         # when the source is unknown — e.g. the mixed "off" mode). The user wants
         # each block stamped, not consecutive lines grouped under one label.
-        clock = (ts or datetime.now()).strftime("%H:%M")
+        # Секунди в годиннику з 06.09.2026: без них два сусідні блоки в одну
+        # хвилину неможливо розрізнити, а правки в редакторі чіпляються за час.
+        clock = (ts or datetime.now()).strftime("%H:%M:%S")
         head = f"{self._labels.get(source, source)} · {clock}" if source is not None else clock
         self._fh.write(f"**{head}**\n\n")
         self._last_source = source
         self._fh.write(text + "\n\n")
         self._fh.flush()
+        self._write_segment(text, source, ts, span)
+
+    def _write_segment(
+        self,
+        text: str,
+        source: str | None,
+        ts: datetime | None,
+        span: tuple[float, float] | None,
+    ) -> None:
+        """Один рядок у сайдкар, одразу на диск. Ніколи не валить транскрипт."""
+        if self._side is not None:
+            self._side.write(text, source, (ts or datetime.now()).strftime("%H:%M:%S"), span)
 
     def close(self) -> None:
         if self._fh is None:
@@ -96,3 +186,6 @@ class TranscriptFile:
             self._fh.flush()
             self._fh.close()
         self._fh = None
+        if self._side is not None:
+            self._side.close()
+            self._side = None

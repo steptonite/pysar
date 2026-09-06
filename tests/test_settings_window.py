@@ -234,3 +234,59 @@ def test_dispatch_routes_open_meetings_folder():
     calls = []
     dispatch({"action": "open_meetings_folder"}, {"open_meetings_folder": lambda: calls.append(1)})
     assert calls == [1]
+
+
+# ── Розділення спікерів (діаризація після Стоп, 06.09.2026) ──────────────────
+
+
+def test_build_html_has_the_diarization_controls():
+    """Розділення живе В ТОМУ САМОМУ списку, що й розмежування каналів.
+
+    06.09.2026 Льоша: «нахуя плодити сущності, якщо можна додати у випадаючий
+    список». Два керма на одне питання «хто говорить» — це і є плодження:
+    людина не розуміє, що з чим поєднувати. Тому окремого перемикача більше
+    немає, а тест стежить, щоб він не повернувся."""
+    html = build_html(_state())
+    for cid in (
+        "mt-source",
+        "mt-diar-install",
+        "mt-diar-status",
+        "ft-diar",
+        "ft-diar-install",
+        "ft-diar-status",
+    ):
+        assert f'id="{cid}"' in html
+    assert 'type="checkbox" id="mt-diar"' not in html, "окремий перемикач повернувся"
+    assert "meeting.source.split" in html or "set_meeting_diarize" in html
+
+
+def test_diarization_state_survives_a_push():
+    """Стан докачки оновлюється пушем із фонового потоку — якщо renderDiar не
+    у списку pysarApply, прогрес завмирає на «Починаю…» назавжди."""
+    html = build_html(_state())
+    assert "window.renderDiar" in html
+    assert "if (window.renderDiar) window.renderDiar();" in html
+
+
+def test_dispatch_routes_the_diarization_actions():
+    seen = {}
+    handlers = {
+        "set_meeting_diarize": lambda v: seen.setdefault("meeting", v),
+        "set_ft_diarize": lambda v: seen.setdefault("ft", v),
+        "diar_install": lambda: seen.setdefault("install", True),
+    }
+    dispatch({"action": "set_meeting_diarize", "value": True}, handlers)
+    dispatch({"action": "set_ft_diarize", "value": False}, handlers)
+    dispatch({"action": "diar_install"}, handlers)
+    assert seen == {"meeting": True, "ft": False, "install": True}
+
+
+def test_build_html_embeds_the_diarization_state():
+    html = build_html(
+        _state(
+            meeting_diarize=True,
+            diar_status={"engine": False, "models": False, "ready": False, "download_mb": 110},
+            diar_busy=False,
+        )
+    )
+    assert '"meeting_diarize": true' in html or '"meeting_diarize":true' in html

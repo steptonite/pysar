@@ -901,6 +901,12 @@ class Tray:
         on_set_meeting_prompt: Callable[[str], None] | None = None,
         on_set_meeting_prompt_source: Callable[[str], None] | None = None,
         on_set_meeting_source_mode: Callable[[str], None] | None = None,
+        meeting_diarize: bool = False,
+        ft_diarize: bool = False,
+        diar_status_provider: Callable[[], dict] | None = None,
+        on_set_meeting_diarize: Callable[[bool], None] | None = None,
+        on_set_ft_diarize: Callable[[bool], None] | None = None,
+        on_diar_install: Callable | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
         ft_prompt: str = "",
@@ -990,6 +996,18 @@ class Tray:
         self._on_set_meeting_prompt = on_set_meeting_prompt
         self._on_set_meeting_prompt_source = on_set_meeting_prompt_source
         self._on_set_meeting_source_mode = on_set_meeting_source_mode
+        # Розділення спікерів усередині каналу (діаризація після Стоп). Моделі
+        # докачуються на вимогу, тож поруч зі значенням живе стан установки —
+        # вікно налаштувань має показувати ПРОЦЕС, а не мовчати три хвилини.
+        self._meeting_diarize = meeting_diarize
+        self._ft_diarize = ft_diarize
+        self._diar_status_provider = diar_status_provider
+        self._on_set_meeting_diarize = on_set_meeting_diarize
+        self._on_set_ft_diarize = on_set_ft_diarize
+        self._on_diar_install = on_diar_install
+        self._diar_busy = False
+        self._diar_progress = ""
+        self._diar_status_cache: dict | None = None
         self._on_set_meeting_hidden = on_set_meeting_hidden
         self._on_set_meeting_opacity = on_set_meeting_opacity
         self._enhance_enabled = enhance_enabled
@@ -1154,6 +1172,7 @@ class Tray:
     def _open_settings(self, _sender, screen: str | None = None) -> None:
         """Open the WKWebView settings panel (built lazily on first use)."""
         self._enhance_status_cache = None  # re-probe Ollama once, for this open
+        self._diar_status_cache = None  # ...і так само перепитати стан діаризації
         try:
             if self._settings_window is None:
                 from .settings_window import SettingsWindow
@@ -1189,6 +1208,9 @@ class Tray:
                         "set_meeting_prompt": self._set_meeting_prompt,
                         "set_meeting_prompt_source": self._set_meeting_prompt_source,
                         "set_meeting_source_mode": self._set_meeting_source_mode,
+                        "set_meeting_diarize": self._set_meeting_diarize,
+                        "set_ft_diarize": self._set_ft_diarize,
+                        "diar_install": self._diar_install,
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
                         "open_transcripts_folder": self._open_transcripts_folder,
@@ -1254,6 +1276,11 @@ class Tray:
             "meeting_prompt": self._meeting_prompt,
             "meeting_prompt_source": self._meeting_prompt_source,
             "meeting_source_mode": self._meeting_source_mode,
+            "meeting_diarize": self._meeting_diarize,
+            "ft_diarize": self._ft_diarize,
+            "diar_status": self._diar_status(),
+            "diar_busy": self._diar_busy,
+            "diar_progress": self._diar_progress,
             "meeting_hidden": self._meeting_hidden,
             "meeting_island_opacity": self._meeting_island_opacity,
             "meeting_keep_last": self._meeting_keep_last,
@@ -1474,6 +1501,55 @@ class Tray:
         if self._on_set_meeting_prompt_source:
             self._on_set_meeting_prompt_source(self._meeting_prompt_source)
 
+    def _diar_status(self) -> dict:
+        """Кешований знімок готовності діаризації (імпорт рушія недешевий, а
+        state_provider смикається на кожен push)."""
+        if self._diar_status_cache is None:
+            self._diar_status_cache = (
+                self._diar_status_provider()
+                if self._diar_status_provider
+                else {"engine": False, "models": False, "ready": False}
+            )
+        return self._diar_status_cache
+
+    def _set_meeting_diarize(self, on) -> None:
+        self._meeting_diarize = bool(on)
+        if self._on_set_meeting_diarize:
+            self._on_set_meeting_diarize(self._meeting_diarize)
+
+    def _set_ft_diarize(self, on) -> None:
+        self._ft_diarize = bool(on)
+        if self._on_set_ft_diarize:
+            self._on_set_ft_diarize(self._ft_diarize)
+
+    def _diar_install(self, _=None) -> None:
+        """Докачка рушія й моделей. Обовʼязково у фоні: pip + ~110 МБ — це
+        хвилини, а вікно налаштувань живе на головному потоці й замерзло б."""
+        if self._diar_busy or self._on_diar_install is None:
+            return
+        self._diar_busy = True
+        self._diar_progress = self._t("diar.starting")
+        self._refresh_settings_window()
+        threading.Thread(target=self._diar_install_worker, daemon=True).start()
+
+    def _diar_install_worker(self) -> None:
+        def progress(msg: str) -> None:
+            self._diar_progress = msg
+            AppHelper.callAfter(self._refresh_settings_window)
+
+        try:
+            ok, msg = self._on_diar_install(progress)
+        except Exception as e:  # ніколи не лишати кнопку в стані «качаю» назавжди
+            ok, msg = False, str(e)[:160]
+        self._diar_busy = False
+        self._diar_progress = msg
+        self._diar_status_cache = None  # перепитати: файли щойно зʼявились
+        AppHelper.callAfter(self._refresh_settings_window)
+        if ok:
+            AppHelper.callAfter(
+                rumps.notification, "Pysar", self._t("diar.readyTitle"), self._t("diar.readyMsg")
+            )
+
     def _set_meeting_source_mode(self, mode: str) -> None:
         self._meeting_source_mode = mode if mode in ("off", "fast", "smart") else "off"
         if self._on_set_meeting_source_mode:
@@ -1643,6 +1719,7 @@ class Tray:
                 self._ft_lang or self._lang(),
                 prompt=self._ft_resolve_prompt(),
                 on_change=self._ft_on_change,
+                diarize=self._ft_diarize,
             )
             self._ft_queue.start()
         self._refresh_settings_window()

@@ -712,3 +712,101 @@ def test_queue_add_while_paused_stays_paused(monkeypatch, tmp_path):
     q.resume()
     assert _wait_for_state(q, "done")
     assert q.snapshot()["done_count"] == 2
+
+
+# ── Сайдкар меж часу у файловій транскрипції (фіча 06.09.2026) ───────────────
+
+
+def test_job_writes_time_spans_sidecar(monkeypatch, tmp_path):
+    """Кожен розпізнаний чанк лягає в `.сегменти.jsonl` із межами в секундах —
+    без них готовий транскрипт нема як покласти на аудіо, а отже нема як
+    розділити спікерів, не перерозшифровуючи файл."""
+    import json
+
+    _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC * 2 + 5), CHUNK_SEC * 2 + 5, tmp_path)
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+    )
+
+    done, errors = [], []
+    job = FileTranscriptionJob("spans.mp4", "uk", lambda _p: None, done.append, errors.append)
+    job._run()
+
+    assert errors == []
+    side = Path(done[0]).with_suffix(".сегменти.jsonl")
+    lines = side.read_text(encoding="utf-8").splitlines()
+    meta = json.loads(lines[0])["_meta"]
+    assert meta["pysar_segments"] == 1 and meta["source_file"] == "spans.mp4"
+
+    rows = [json.loads(x) for x in lines[1:]]
+    assert rows, "жодного сегмента не записано"
+    assert [r["i"] for r in rows] == list(range(len(rows)))
+    # Час монотонний і не перекривається: t1 попереднього = t0 наступного.
+    for a, b in itertools.pairwise(rows):
+        assert a["t1"] <= b["t0"] + 0.01
+    assert rows[0]["t0"] == 0.0 and rows[0]["t1"] > 0
+    assert all(r["text"] == "текст" for r in rows)
+
+
+# ── Розділення спікерів у файловій транскрипції (06.09.2026) ─────────────────
+
+
+def test_job_splits_speakers_only_when_asked(monkeypatch, tmp_path):
+    """Вимкнений перемикач = жодного дотику до важкого проходу."""
+    _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC + 2), CHUNK_SEC + 2, tmp_path)
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+    )
+    calls = []
+    monkeypatch.setattr(FileTranscriptionJob, "_diarize_result", lambda self, *a: calls.append(a))
+
+    done = []
+    FileTranscriptionJob("a.mp4", "uk", lambda _p: None, done.append, print)._run()
+    assert calls == []
+
+    FileTranscriptionJob("b.mp4", "uk", lambda _p: None, done.append, print, diarize=True)._run()
+    assert len(calls) == 1
+    _md, sidecar, raw = calls[0]
+    assert str(sidecar).endswith(".сегменти.jsonl")
+    assert raw, "розділяти нема з чого без декодованого аудіо"
+
+
+def test_cancelled_job_is_not_split_by_speakers(monkeypatch, tmp_path):
+    """Половина запису дала б половину голосів — це виглядало б як помилка
+    розпізнавання, а не як скасування."""
+    _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC * 3), CHUNK_SEC * 3, tmp_path)
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+    )
+    calls = []
+    monkeypatch.setattr(FileTranscriptionJob, "_diarize_result", lambda self, *a: calls.append(a))
+
+    done = []
+    job = FileTranscriptionJob("c.mp4", "uk", lambda _p: None, done.append, print, diarize=True)
+    job._cancel_event.set()
+    job._run()
+    assert calls == []
+    assert done, "скасована робота все одно віддає частковий транскрипт"
+
+
+def test_diarization_failure_never_kills_the_transcript(monkeypatch, tmp_path):
+    """Транскрипт зустрічі/файлу трапляється один раз; похідне від нього не має
+    права його відібрати."""
+    _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC + 2), CHUNK_SEC + 2, tmp_path)
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+    )
+    monkeypatch.setattr("src.diarize.is_ready", lambda: True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("моделі впали")
+
+    monkeypatch.setattr("src.diarize.label_transcript", _boom)
+
+    done, errors = [], []
+    FileTranscriptionJob(
+        "d.mp4", "uk", lambda _p: None, done.append, errors.append, diarize=True
+    )._run()
+    assert errors == []
+    assert done and Path(done[0]).exists()
+    assert "_— end —_" in Path(done[0]).read_text(encoding="utf-8")

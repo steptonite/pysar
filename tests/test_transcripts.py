@@ -1,12 +1,13 @@
 """TranscriptFile speaker-source + timestamp headers — pure string I/O, no filesystem."""
 
 import io
+import json
 from datetime import datetime
 
 from pysar import transcripts
-from pysar.transcripts import TranscriptFile
+from pysar.transcripts import TranscriptFile, set_transcripts_dir
 
-_TS = datetime(2026, 6, 30, 14, 32, 7)  # fixed clock → "14:32"
+_TS = datetime(2026, 6, 30, 14, 32, 7)  # fixed clock → "14:32:07"
 
 
 def _tf():
@@ -20,7 +21,7 @@ def test_no_source_stamps_time_only():
     tf = _tf()
     tf.append("hello", ts=_TS)
     # Unknown source (mixed "off" mode) → header carries the time only.
-    assert tf._fh.getvalue() == "**14:32**\n\nhello\n\n"
+    assert tf._fh.getvalue() == "**14:32:07**\n\nhello\n\n"
 
 
 def test_every_block_gets_source_and_time_header():
@@ -29,13 +30,15 @@ def test_every_block_gets_source_and_time_header():
     tf.append("b", source="sys", ts=_TS)  # same speaker → header still repeats per block
     tf.append("c", source="mic", ts=_TS)
     out = tf._fh.getvalue()
-    assert out == ("**System · 14:32**\n\na\n\n**System · 14:32**\n\nb\n\n**You · 14:32**\n\nc\n\n")
+    assert out == (
+        "**System · 14:32:07**\n\na\n\n**System · 14:32:07**\n\nb\n\n**You · 14:32:07**\n\nc\n\n"
+    )
 
 
 def test_source_label_resolves_from_map():
     tf = _tf()
     tf.append("x", source="mic", ts=_TS)
-    assert "**You · 14:32**" in tf._fh.getvalue()
+    assert "**You · 14:32:07**" in tf._fh.getvalue()
 
 
 # ── User-chosen output folder ────────────────────────────────────────────────
@@ -77,3 +80,69 @@ def test_transcript_file_writes_into_chosen_folder(tmp_path):
         assert "привіт" in path.read_text(encoding="utf-8")
     finally:
         transcripts.set_transcripts_dir(None)
+
+
+# ── Сайдкар меж часу (фіча 06.09.2026) ──────────────────────────────────────
+# Мітки секунд — фундамент розділення спікерів: без них готовий транскрипт нема
+# як покласти на аудіо. Гейт 12.07.2026: жодного накопичення до кінця прогону.
+
+
+def test_sidecar_is_written_next_to_the_transcript(tmp_path):
+    set_transcripts_dir(tmp_path)
+    tf = TranscriptFile(started=_TS)
+    md = tf.open()
+    tf.append("привіт", "sys", _TS, (1.5, 3.25))
+    tf.close()
+
+    assert tf.segments_path == md.with_suffix(".сегменти.jsonl")
+    rows = [json.loads(x) for x in tf.segments_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["_meta"]["pysar_segments"] == 1
+    assert rows[1] == {
+        "i": 0,
+        "t0": 1.5,
+        "t1": 3.25,
+        "src": "sys",
+        "clock": "14:32:07",
+        "text": "привіт",
+    }
+
+
+def test_sidecar_row_hits_the_disk_before_close(tmp_path):
+    """Гейт 12.07.2026: годинний ефір не має ризикувати всім текстом. Кожен рядок
+    мусить бути читабельним із диска ОДРАЗУ, ще до close()."""
+    set_transcripts_dir(tmp_path)
+    tf = TranscriptFile(started=_TS)
+    tf.open()
+    tf.append("перше", "sys", _TS, (0.0, 2.0))
+
+    live = tf.segments_path.read_text(encoding="utf-8").splitlines()
+    assert len(live) == 2  # мета + рядок, ще до close()
+    assert json.loads(live[1])["text"] == "перше"
+    tf.close()
+
+
+def test_missing_span_does_not_break_the_transcript(tmp_path):
+    """Змішаний режим може не дати меж (немає дампів) — транскрипт мусить писатись
+    як писався, а сайдкар просто лишає час порожнім."""
+    set_transcripts_dir(tmp_path)
+    tf = TranscriptFile(started=_TS)
+    md = tf.open()
+    tf.append("без часу", None, _TS, None)
+    tf.close()
+
+    assert "**14:32:07**" in md.read_text(encoding="utf-8")
+    row = json.loads(tf.segments_path.read_text(encoding="utf-8").splitlines()[1])
+    assert row["t0"] is None and row["t1"] is None
+
+
+def test_segments_are_numbered_in_order(tmp_path):
+    set_transcripts_dir(tmp_path)
+    tf = TranscriptFile(started=_TS)
+    tf.open()
+    for k in range(3):
+        tf.append(f"рядок {k}", "mic", _TS, (float(k), float(k) + 1))
+    tf.close()
+
+    rows = [json.loads(x) for x in tf.segments_path.read_text(encoding="utf-8").splitlines()[1:]]
+    assert [r["i"] for r in rows] == [0, 1, 2]
+    assert [r["t0"] for r in rows] == [0.0, 1.0, 2.0]

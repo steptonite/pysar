@@ -1,0 +1,213 @@
+"""Смок-тести розділення спікерів (фіча 06.09.2026).
+
+Моделі й `sherpa_onnx` тут НЕ потрібні: перевіряється все, що може відвалитись
+мовчки — вибір інтерпретатора для докачки, цілісність завантаження, накладання
+мовців на текст і те, як воно виглядає у файлі.
+"""
+
+import io
+import json
+import sys
+from typing import ClassVar
+
+import pytest
+from src import diarize
+
+
+# ── Докачка: те, що ламається на ЧУЖОМУ маку ─────────────────────────────────
+def test_pip_target_is_the_venv_the_app_actually_reads(tmp_path, monkeypatch):
+    """🔴 Головний запобіжник установки в інших (Катя, Аня).
+
+    Встановлена `/Applications/Pysar.app` запускає копію фреймворкового Python зі
+    свого бандла, а venv підмішує через PYSAR_SITE. Якби докачка йшла в
+    sys.executable, пакет ліг би повз той site-packages, який апка читає:
+    кнопка звітує «готово», а розділення не працює."""
+    venv = tmp_path / "venv"
+    site = venv / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (venv / "bin").mkdir()
+    (venv / "bin" / "python").write_text("#!/bin/sh\n")
+    monkeypatch.setenv("PYSAR_SITE", str(site))
+    assert diarize.venv_python() == str(venv / "bin" / "python")
+
+
+def test_pip_target_falls_back_to_the_running_interpreter(tmp_path, monkeypatch):
+    """Без PYSAR_SITE і без venv поруч — краще поставити хоч кудись, ніж упасти."""
+    monkeypatch.setenv("PYSAR_SITE", str(tmp_path / "nope" / "lib" / "py" / "site-packages"))
+    monkeypatch.setattr(diarize.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(diarize.sys, "prefix", str(tmp_path / "empty"))
+    assert diarize.venv_python() == sys.executable
+
+
+def test_truncated_download_is_deleted_not_kept(tmp_path, monkeypatch):
+    """Недокачаний .onnx — найгірший сценарій: файл на місці, «модель є», а
+    падає воно значно пізніше й незрозуміло. Розмір звіряється з Content-Length."""
+
+    class _Resp(io.BytesIO):
+        headers: ClassVar[dict] = {"Content-Length": "1000"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(diarize.urllib.request, "urlopen", lambda *a, **k: _Resp(b"x" * 10))
+    dest = tmp_path / "model.onnx"
+    with pytest.raises(OSError, match="не повністю"):
+        diarize._download("https://example/model.onnx", dest)
+    assert not dest.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_archive_cannot_write_outside_the_models_folder():
+    """Архів із мережі не має права розкластись куди захоче."""
+    assert diarize._safe_member("sherpa-onnx-pyannote/model.onnx")
+    assert not diarize._safe_member("/etc/passwd")
+    assert not diarize._safe_member("../../../.zshrc")
+
+
+def test_install_refuses_when_the_disk_is_full(monkeypatch):
+    monkeypatch.setattr(diarize, "have_engine", lambda: False)
+    monkeypatch.setattr(diarize, "have_models", lambda: False)
+    monkeypatch.setattr(diarize, "_free_mb", lambda _p: 12.0)
+    ok, msg = diarize.ensure_ready()
+    assert not ok
+    assert "місця" in msg
+
+
+def test_status_shape():
+    st = diarize.status()
+    assert set(st) >= {"engine", "models", "ready", "download_mb"}
+    assert st["ready"] == (st["engine"] and st["models"])
+
+
+# ── Сайдкар і накладання ─────────────────────────────────────────────────────
+def _sidecar(tmp_path, rows, meta=None):
+    p = tmp_path / "t.сегменти.jsonl"
+    lines = [json.dumps({"_meta": meta or {"transcript": "t.md"}}, ensure_ascii=False)]
+    lines += [json.dumps(r, ensure_ascii=False) for r in rows]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def test_broken_sidecar_line_does_not_lose_the_rest(tmp_path):
+    """Сайдкар пишеться на живому записі й може обірватись на будь-якому байті —
+    один битий рядок не має права з'їсти весь файл."""
+    p = _sidecar(tmp_path, [{"i": 0, "t0": 0.0, "t1": 1.0, "text": "перший"}])
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"i": 1, "t0": 1.0, "t1": 2\n')  # обірваний
+        f.write(json.dumps({"i": 2, "t0": 2.0, "t1": 3.0, "text": "третій"}) + "\n")
+    meta, rows = diarize.read_sidecar(p)
+    assert meta["transcript"] == "t.md"
+    assert [r["text"] for r in rows] == ["перший", "третій"]
+
+
+def test_speaker_is_the_voice_with_the_biggest_overlap():
+    rows = [
+        {"t0": 0.0, "t1": 2.0, "src": "sys", "text": "а"},
+        {"t0": 5.0, "t1": 7.0, "src": "sys", "text": "б"},
+    ]
+    ivs = {"sys": [(0.0, 3.0, 0), (4.0, 8.0, 1)]}
+    out = diarize.assign_speakers(rows, ivs)
+    assert [r["speaker"] for r in out] == ["sys#0", "sys#1"]
+
+
+def test_row_without_timestamps_stays_without_a_speaker():
+    """Старий транскрипт без міток часу — чесніше лишити без мовця, ніж вгадати."""
+    out = diarize.assign_speakers([{"t0": None, "t1": None, "src": None, "text": "х"}], {"sys": []})
+    assert out[0]["speaker"] is None
+
+
+def test_unknown_source_looks_at_every_track():
+    """Режим без розділення каналів пише src=None — тоді дивимось усі доріжки."""
+    rows = [{"t0": 1.0, "t1": 2.0, "src": None, "text": "х"}]
+    out = diarize.assign_speakers(rows, {"mic": [(0.5, 3.0, 4)]})
+    assert out[0]["speaker"] == "mic#4"
+
+
+def test_speakers_are_numbered_by_who_spoke_first():
+    """«Спікер 1» має бути тим, хто заговорив першим, а не тим, кому кластер
+    дав менший внутрішній номер."""
+    rows = [{"speaker": "sys#7"}, {"speaker": "sys#2"}, {"speaker": "sys#7"}]
+    names = diarize.speaker_names(rows)
+    assert names["sys#7"].endswith("Спікер 1")
+    assert names["sys#2"].endswith("Спікер 2")
+
+
+def test_unrecognized_cluster_is_marked_not_merged():
+    """Мікро-кластер іде у «❓», а не тоне в сусідньому голосі: злити двох
+    людина може одним рухом, розчепити злиплих — ніяк."""
+    names = diarize.speaker_names([{"speaker": "mic#-1"}])
+    assert names["mic#-1"].startswith("❓")
+
+
+def test_channel_label_survives_into_the_name():
+    names = diarize.speaker_names([{"speaker": "mic#0"}], {"mic": "Ти"})
+    assert names["mic#0"] == "Ти · Спікер 1"
+
+
+def test_consecutive_turns_of_one_voice_merge_into_one_block():
+    """Інакше заголовок з'являється кожні 5 секунд і читати неможливо."""
+    rows = [
+        {"t0": 0.0, "speaker": "s#0", "text": "раз"},
+        {"t0": 3.0, "speaker": "s#0", "text": "два"},
+        {"t0": 9.0, "speaker": "s#1", "text": "три"},
+    ]
+    md = diarize.render_markdown(rows, diarize.speaker_names(rows), "тест")
+    assert md.count("**") == 4  # два заголовки
+    assert "раз два" in md
+    assert "0:00:00" in md and "0:00:09" in md
+
+
+def test_audio_map_reads_the_source_from_the_dump_name():
+    m = diarize.audio_map(["/x/2026-09-06-sys.wav", "/x/2026-09-06-mic.wav", "/x/random.wav"])
+    assert set(m) == {"sys", "mic"}
+    assert m["mic"].name.endswith("-mic.wav")
+
+
+def test_transcript_without_timestamps_is_refused_with_a_reason(tmp_path, monkeypatch):
+    """Запис, зроблений до появи міток часу, не можна розділити на місці — і про
+    це треба сказати словами, а не мовчки видати порожній файл."""
+    p = _sidecar(tmp_path, [{"i": 0, "t0": None, "t1": None, "text": "старе"}])
+    wav = tmp_path / "a-sys.wav"
+    wav.write_bytes(b"\0" * 100)
+    with pytest.raises(ValueError, match="міток часу"):
+        diarize.label_transcript(p, {"sys": wav})
+
+
+def test_second_job_is_refused_while_one_is_running(tmp_path):
+    """8 ГБ: дві діаризації одночасно кладуть машину у своп."""
+    p = _sidecar(tmp_path, [{"i": 0, "t0": 0.0, "t1": 1.0, "text": "x"}])
+    diarize._JOB_LOCK.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="уже виконується"):
+            diarize.label_transcript(p, {"sys": tmp_path / "a-sys.wav"})
+    finally:
+        diarize._JOB_LOCK.release()
+
+
+def test_a_single_network_hiccup_does_not_cost_the_whole_download(monkeypatch):
+    """Установка Pysar на Intel Air 2015 вже падала на разовому DNS-збої
+    (13.07.2026) — повтор має вижити."""
+    monkeypatch.setattr(diarize.time, "sleep", lambda _s: None)
+    tries = []
+
+    def flaky():
+        tries.append(1)
+        if len(tries) < 3:
+            raise OSError("Could not resolve host")
+        return "ok"
+
+    assert diarize._retry(flaky) == "ok"
+    assert len(tries) == 3
+
+
+def test_retry_gives_up_and_reports_the_real_error(monkeypatch):
+    monkeypatch.setattr(diarize.time, "sleep", lambda _s: None)
+
+    def dead():
+        raise OSError("мережі немає")
+
+    with pytest.raises(OSError, match="мережі немає"):
+        diarize._retry(dead)
