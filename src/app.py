@@ -197,6 +197,7 @@ class VoiceTyper:
             on_set_ft_diarize=self._on_set_ft_diarize,
             diar_speakers=self._settings.get("diar_speakers", 0),
             on_set_diar_speakers=self._on_set_diar_speakers,
+            on_open_editor=self._on_open_editor,
             on_diar_install=self._on_diar_install,
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
@@ -1157,6 +1158,12 @@ class VoiceTyper:
             if self._transcript_file is not None:
                 saved_path = str(self._transcript_file.path or "")
                 sidecar_path = self._transcript_file.segments_path
+                # Звʼязка «текст ↔ оригінальний звук» пишеться саме тут, поки
+                # хендл ще живий: далі редактор транскриптів шукає аудіо лише за
+                # нею, а не за здогадками про імена файлів.
+                if dump_paths:
+                    with contextlib.suppress(Exception):
+                        self._transcript_file.set_segment_meta({"audio": list(dump_paths)})
                 self._transcript_file.close()
                 self._transcript_file = None
         finally:
@@ -1492,6 +1499,25 @@ class VoiceTyper:
     def _on_set_ft_diarize(self, enabled: bool) -> None:
         self._settings["ft_diarize"] = bool(enabled)
         save_settings(self._settings)
+
+    def _on_open_editor(self, path: str | None = None) -> tuple[bool, str]:
+        """Редактор транскриптів. Без шляху — найсвіжіший транскрипт, у якого
+        Є мітки часу: без них редагувати під звук нічого."""
+        from . import editor
+        from .transcripts import transcripts_dir
+
+        target = Path(path) if path else None
+        if target is None:
+            with contextlib.suppress(Exception):
+                cands = sorted(
+                    transcripts_dir().glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+                )
+                target = next((c for c in cands if editor.can_edit(c)), None)
+        if target is None:
+            return False, self._t("notif.editorNoTranscript")
+        if not editor.can_edit(target):
+            return False, self._t("notif.editorNoSpans")
+        return editor.open_editor(target)
 
     def _on_set_diar_speakers(self, count: int) -> None:
         # 0 = «хай рахує сам». Стеля 12 — не обмеження рушія, а межа, за якою

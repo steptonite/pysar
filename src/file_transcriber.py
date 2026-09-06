@@ -355,7 +355,10 @@ class FileTranscriptionJob:
             # без нього готовий транскрипт нема як покласти на аудіо, а отже нема
             # як розділити спікерів, не перерозшифровуючи файл.
             with (
-                SegmentSidecar(md_path, {"source_file": src.name, "mode": self._mode}) as side,
+                SegmentSidecar(
+                    md_path,
+                    {"source_file": src.name, "mode": self._mode, "audio": [str(src)]},
+                ) as side,
                 open(md_path, "w", encoding="utf-8") as md,
             ):
                 md.write(

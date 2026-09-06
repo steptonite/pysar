@@ -499,6 +499,11 @@ _TEMPLATE = r"""<!doctype html>
             the number, say it — the split will hold to it</div></div>
         <select id="mt-spk"></select>
       </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="editor.label">Refine the transcript</div>
+          <div class="help" style="white-space:normal" data-i18n="editor.help">Listen and fix</div></div>
+        <button id="mt-editor" data-i18n="editor.open">Open the editor</button>
+      </div>
       <div class="row" id="mt-diar-box" style="display:block">
         <div class="help" id="mt-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="mt-diar-install"></button>
@@ -645,6 +650,11 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" style="white-space:normal" data-i18n="diar.speakers.help">If you remember
             the number, say it — the split will hold to it</div></div>
         <select id="ft-spk"></select>
+      </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="editor.label">Refine the transcript</div>
+          <div class="help" style="white-space:normal" data-i18n="editor.help">Listen and fix</div></div>
+        <button id="ft-editor" data-i18n="editor.open">Open the editor</button>
       </div>
       <div class="row" id="ft-diar-box" style="display:block">
         <div class="help" id="ft-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
@@ -1060,6 +1070,8 @@ $("back-enh").addEventListener("click", () => show("main"));
       if (window.renderDiar) window.renderDiar();
     });
   });
+  $("mt-editor").addEventListener("click", () => send("open_editor"));
+  $("ft-editor").addEventListener("click", () => send("open_editor"));
   $("mt-diar-install").addEventListener("click", () => send("diar_install"));
   $("ft-diar-install").addEventListener("click", () => send("diar_install"));
   window.renderDiar = function(){
@@ -1234,6 +1246,9 @@ $("back-enh").addEventListener("click", () => show("main"));
     const btn = e.target.closest("[data-ft-act]");
     if (!btn) return;
     e.preventDefault();
+    // Редактор адресується ШЛЯХОМ до готового файлу, а не номером у черзі:
+    // черга живе до наступного прогону, а транскрипт лишається назавжди.
+    if (btn.dataset.ftAct === "open_editor") return send("open_editor", btn.dataset.ftPath || "");
     send(btn.dataset.ftAct, Number(btn.dataset.ftId));
   });
 
@@ -1728,7 +1743,14 @@ function renderFt(){
       link.href = "#";
       link.dataset.ftAct = "ft_open_result";
       link.dataset.ftId = item.id;
+      const edit = document.createElement("a");
+      edit.textContent = T("editor.item", "refine");
+      edit.href = "#";
+      edit.dataset.ftAct = "open_editor";
+      edit.dataset.ftPath = item.result_path || "";
       stat.textContent = T("ft.item.done", "done") + " · ";
+      stat.appendChild(edit);
+      stat.appendChild(document.createTextNode(" · "));
       stat.appendChild(link);
     } else if (item.status === "error") {
       stat.textContent = item.error;

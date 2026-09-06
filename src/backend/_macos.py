@@ -908,6 +908,7 @@ class Tray:
         on_set_ft_diarize: Callable[[bool], None] | None = None,
         diar_speakers: int = 0,
         on_set_diar_speakers: Callable[[int], None] | None = None,
+        on_open_editor: Callable | None = None,
         on_diar_install: Callable | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
@@ -1008,6 +1009,7 @@ class Tray:
         self._on_set_ft_diarize = on_set_ft_diarize
         self._diar_speakers = int(diar_speakers or 0)
         self._on_set_diar_speakers = on_set_diar_speakers
+        self._on_open_editor = on_open_editor
         self._on_diar_install = on_diar_install
         self._diar_busy = False
         self._diar_progress = ""
@@ -1219,6 +1221,7 @@ class Tray:
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
                         "open_transcripts_folder": self._open_transcripts_folder,
+                        "open_editor": self._open_editor,
                         "choose_transcripts_folder": self._choose_transcripts_folder,
                         "reset_transcripts_folder": self._reset_transcripts_folder,
                         "open_meetings_folder": self._open_meetings_folder,
@@ -1583,6 +1586,18 @@ class Tray:
         self._meeting_island_opacity = max(0.0, min(1.0, v))
         if self._on_set_meeting_opacity:
             self._on_set_meeting_opacity(self._meeting_island_opacity)
+
+    def _open_editor(self, path=None) -> None:
+        """Відкрити редактор транскриптів. Без шляху — на останній транскрипт.
+
+        Кнопка живе на обох екранах (зустрічі й транскрибація файлів), бо саме
+        цього бракувало: редактор існував, але піднімався окремою командою й
+        для людини його фактично не було."""
+        if self._on_open_editor is None:
+            return
+        ok, msg = self._on_open_editor(path or None)
+        if not ok:
+            self.notify("Pysar", self._t("notif.editorFailTitle"), msg)
 
     def _open_transcripts_folder(self) -> None:
         path = self._transcripts_dir()

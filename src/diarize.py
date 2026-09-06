@@ -681,4 +681,23 @@ def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0) -> Pat
     out.write_text(
         render_markdown(rows, names, f"{title} — розділено на спікерів"), encoding="utf-8"
     )
+    # Машиночитний близнюк того самого результату — для редактора транскриптів:
+    # з .md він мусив би розбирати назад те, що ми щойно зібрали, і на першій же
+    # реплиці з переносом рядка помилився б.
+    with contextlib.suppress(Exception):
+        base = sidecar.name.split(".сегменти")[0]
+        (sidecar.with_name(base + ".спікери.json")).write_text(
+            json.dumps(
+                {
+                    "names": names,
+                    "rows": [
+                        {"i": r.get("i"), "speaker": r.get("speaker")}
+                        for r in rows
+                        if r.get("i") is not None
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
     return out

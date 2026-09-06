@@ -61,6 +61,7 @@ class SegmentSidecar:
         self.path = md_path.with_suffix(".сегменти.jsonl")
         self._fh = None
         self._i = 0
+        self._head: dict = {}
         with contextlib.suppress(Exception):
             self._fh = open(self.path, "w", encoding="utf-8")  # noqa: SIM115 — довгий хендл
             head = {
@@ -70,7 +71,22 @@ class SegmentSidecar:
                 "потрібні, щоб розділити спікерів без перерозшифровки",
             }
             head.update(meta or {})
+            self._head = head
             self._fh.write(json.dumps({"_meta": head}, ensure_ascii=False) + "\n")
+            self._fh.flush()
+
+    def set_meta(self, extra: dict) -> None:
+        """Дописати в шапку те, що стало відоме вже під час запису — насамперед
+        шляхи до аудіо, з якого зроблено транскрипт.
+
+        Файл лише ДОПИСУЄТЬСЯ (це його головна властивість: рядок на диску одразу),
+        тож нова шапка йде окремим рядком, а читач бере останню. Без цієї звʼязки
+        редактор транскриптів не знає, який звук грати під текстом."""
+        if self._fh is None:
+            return
+        with contextlib.suppress(Exception):
+            self._head.update(extra or {})
+            self._fh.write(json.dumps({"_meta": self._head}, ensure_ascii=False) + "\n")
             self._fh.flush()
 
     def write(self, text: str, src: str | None, clock: str, span) -> None:
@@ -142,6 +158,11 @@ class TranscriptFile:
         )
         self.segments_path = self._side.path
         return self.path
+
+    def set_segment_meta(self, extra: dict) -> None:
+        """Прокинути в сайдкар те, що з'ясувалось під час запису (шляхи аудіо)."""
+        if self._side is not None:
+            self._side.set_meta(extra)
 
     def append(
         self,
