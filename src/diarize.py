@@ -367,12 +367,12 @@ def to_wav16k(src: Path, dest: Path) -> Path:
 
 
 # ── Кадрова діаризація ────────────────────────────────────────────────────────
-def diarize_wav(path: Path, progress=None) -> list[tuple[float, float, int]]:
+def diarize_wav(path: Path, progress=None, speakers: int = 0) -> list[tuple[float, float, int]]:
     """(t0, t1, кластер) для одного файлу. Кластер −1 = «невпізнано»."""
-    return diarize_samples(load_audio(path), progress=progress)
+    return diarize_samples(load_audio(path), progress=progress, speakers=speakers)
 
 
-def diarize_samples(x, progress=None) -> list[tuple[float, float, int]]:
+def diarize_samples(x, progress=None, speakers: int = 0) -> list[tuple[float, float, int]]:
     import numpy as np
     import sherpa_onnx
 
@@ -404,14 +404,21 @@ def diarize_samples(x, progress=None) -> list[tuple[float, float, int]]:
         if progress:
             with contextlib.suppress(Exception):
                 progress(f"Розділяю спікерів: {wi + 1}/{windows}")
-    return _stitch(x, ivs, np)
+    return _stitch(x, ivs, np, speakers=speakers)
 
 
-def _stitch(x, ivs, np) -> list[tuple[float, float, int]]:
+def _stitch(x, ivs, np, speakers: int = 0) -> list[tuple[float, float, int]]:
     """Локальні кластери різних вікон → один глобальний мовець.
 
     Без цього людина на 40-й хвилині стає «новим спікером» просто тому, що
-    почалося друге вікно."""
+    почалося друге вікно.
+
+    `speakers` ≥ 2 — людина ПАМʼЯТАЄ, скільки голосів було. Число застосовується
+    саме тут, на глобальних центроїдах, а не в конфізі кластеризатора: там воно
+    діяло б на КОЖНЕ 30-хвилинне вікно окремо й розпилило б одного мовця на
+    трьох у тихому вікні. Тут же ми просто зливаємо найсхожіші голоси, поки їх
+    не лишиться рівно стільки, скільки сказала людина.
+    """
     import sherpa_onnx
 
     if not ivs:
@@ -462,12 +469,50 @@ def _stitch(x, ivs, np) -> list[tuple[float, float, int]]:
             glob[key] = len(gcent)
             gcent.append(cent[key].copy())
 
+    if speakers >= 2 and len(gcent) > speakers:
+        glob, gcent = _merge_to(glob, gcent, speakers, np)
+
     out = [(a, b, glob.get(k, -1)) for a, b, k in ivs]
+    if speakers >= 2:
+        # Число назвала людина — не маємо права перетворювати «зайвий» голос на
+        # «❓»: короткий мовець тут очікуваний, а не сміття.
+        return out
     dur: dict[int, float] = {}
     for a, b, g in out:
         dur[g] = dur.get(g, 0.0) + (b - a)
     tiny = {g for g, d in dur.items() if d < MIN_CLUSTER_SEC}
     return [(a, b, (-1 if g in tiny else g)) for a, b, g in out]
+
+
+def _merge_to(glob: dict, gcent: list, k: int, np):
+    """Злити найсхожіші глобальні голоси, поки їх не стане рівно `k`.
+
+    Агломерація по косинусу: щоразу шукаємо найближчу пару центроїдів і
+    об'єднуємо. Якщо рушій знайшов МЕНШЕ голосів, ніж назвала людина, нічого не
+    вигадуємо — розділити наявне на більше ми не можемо чесно."""
+    cents = [g.copy() for g in gcent]
+    remap = {i: i for i in range(len(cents))}
+    while len({remap[i] for i in remap}) > k:
+        alive = sorted({remap[i] for i in remap})
+        best, pair = -2.0, None
+        for ai in range(len(alive)):
+            for bi in range(ai + 1, len(alive)):
+                sim = float(cents[alive[ai]] @ cents[alive[bi]])
+                if sim > best:
+                    best, pair = sim, (alive[ai], alive[bi])
+        if pair is None:
+            break
+        keep, drop = pair
+        merged = cents[keep] + cents[drop]
+        cents[keep] = merged / (np.linalg.norm(merged) + 1e-9)
+        for i, v in list(remap.items()):
+            if v == drop:
+                remap[i] = keep
+    order = {old: new for new, old in enumerate(sorted({remap[i] for i in remap}))}
+    return (
+        {key: order[remap[v]] for key, v in glob.items()},
+        [cents[old] for old in sorted({remap[i] for i in remap})],
+    )
 
 
 # ── Накладання на текст (чисті функції — тестуються без моделей) ──────────────
@@ -592,6 +637,7 @@ def label_transcript(
     out_path: Path | None = None,
     labels: dict[str, str] | None = None,
     progress=None,
+    speakers: int = 0,
 ) -> Path:
     """Прохід над готовим записом → окремий файл `<імʼя>.спікери.md`.
 
@@ -600,12 +646,12 @@ def label_transcript(
     if not _JOB_LOCK.acquire(blocking=False):
         raise RuntimeError("розділення спікерів уже виконується — зачекай, поки завершиться")
     try:
-        return _label_locked(sidecar, audio, out_path, labels, progress)
+        return _label_locked(sidecar, audio, out_path, labels, progress, speakers)
     finally:
         _JOB_LOCK.release()
 
 
-def _label_locked(sidecar, audio, out_path, labels, progress) -> Path:
+def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0) -> Path:
     meta, rows = read_sidecar(sidecar)
     if not rows:
         raise ValueError("у сайдкарі немає сегментів")
@@ -613,10 +659,19 @@ def _label_locked(sidecar, audio, out_path, labels, progress) -> Path:
         # Транскрипт без міток часу — це запис, зроблений до 06.09.2026. Накласти
         # мовців на нього неможливо без окремого проходу по аудіо (ретроспектива).
         raise ValueError("у транскрипті немає міток часу — потрібен ретроспективний прохід")
+    live = [
+        (src, Path(path))
+        for src, path in audio.items()
+        if path and Path(path).exists() and Path(path).stat().st_size > 44
+    ]
+    # Число голосів, назване людиною, — це число на ВЕСЬ запис. Коли каналів
+    # два (мікрофон і система), поділити його між ними ми чесно не можемо:
+    # накинути «трьох» на кожен канал означало б вигадати шістьох. Тому на
+    # двоканальному записі підказка не діє, і кластери шукаються самі.
+    per_source = speakers if len(live) == 1 else 0
     intervals = {}
-    for src, path in audio.items():
-        if path and Path(path).exists() and Path(path).stat().st_size > 44:
-            intervals[src] = diarize_wav(Path(path), progress=progress)
+    for src, path in live:
+        intervals[src] = diarize_wav(path, progress=progress, speakers=per_source)
     if not intervals:
         raise ValueError("немає аудіо для розділення — запис не зберігся")
     rows = assign_speakers(rows, intervals)

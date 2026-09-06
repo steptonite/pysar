@@ -133,6 +133,8 @@ DEFAULTS = {
     "meeting_keep_last": 50,
     #   ft_diarize — те саме розділення спікерів для транскрибації файлів
     "ft_diarize": False,
+    #   diar_speakers — скільки голосів людина ПАМʼЯТАЄ (0 = хай рушій рахує сам)
+    "diar_speakers": 0,
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20, 50, 100, 500)

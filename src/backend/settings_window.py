@@ -493,6 +493,12 @@ _TEMPLATE = r"""<!doctype html>
           <div class="help" style="white-space:normal" data-i18n="meeting.source.help">Who is speaking</div></div>
         <select id="mt-source"></select>
       </div>
+      <div class="row" id="mt-spk-row">
+        <div class="body"><div class="label" data-i18n="diar.speakers.label">How many voices</div>
+          <div class="help" style="white-space:normal" data-i18n="diar.speakers.help">If you remember
+            the number, say it — the split will hold to it</div></div>
+        <select id="mt-spk"></select>
+      </div>
       <div class="row" id="mt-diar-box" style="display:block">
         <div class="help" id="mt-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="mt-diar-install"></button>
@@ -634,6 +640,12 @@ _TEMPLATE = r"""<!doctype html>
             the text split by voice; the transcript itself is unchanged</div></div>
         <select id="ft-diar"></select>
       </div>
+      <div class="row" id="ft-spk-row">
+        <div class="body"><div class="label" data-i18n="diar.speakers.label">How many voices</div>
+          <div class="help" style="white-space:normal" data-i18n="diar.speakers.help">If you remember
+            the number, say it — the split will hold to it</div></div>
+        <select id="ft-spk"></select>
+      </div>
       <div class="row" id="ft-diar-box" style="display:block">
         <div class="help" id="ft-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="ft-diar-install"></button>
@@ -738,7 +750,12 @@ function applyI18n(){
   const mts = $("mt-source"), MTS = {
     off: T("meeting.source.off", "Off"), fast: T("meeting.source.fast", "Fast"),
     smart: T("meeting.source.smart", "Smart"),
+    split: T("meeting.source.split", "Split by voice after recording"),
   };
+  const ftd = $("ft-diar"), FTD = {
+    off: T("ft.diar.off", "Off"), split: T("ft.diar.split", "Split speakers"),
+  };
+  if (ftd) [...ftd.options].forEach(o => { o.textContent = FTD[o.value] ?? o.textContent; });
   if (mts) [...mts.options].forEach(o => { o.textContent = MTS[o.value] ?? o.textContent; });
   const mtSrc = $("mt-prompt-src"), MTSRC = {
     custom: T("meeting.promptSrc.custom", "Custom hint"),
@@ -990,8 +1007,14 @@ $("back-enh").addEventListener("click", () => show("main"));
   });
   mtSource.addEventListener("change", () => {
     const v = mtSource.value;
-    send("set_meeting_source_mode", v === "off" ? "off" : "smart");
-    send("set_meeting_diarize", v === "split");
+    // 🔴 06.09.2026: STATE оновлюємо ОДРАЗУ, ще до send(). renderDiar() нижче
+    // перечитує саме STATE і перезаписує .value, а бек на ці дії стан назад НЕ
+    // пушить — тож без цих двох рядків список стрибав назад тієї ж миті й
+    // виглядав захардкодженим: людина обирає, а воно не перемикається.
+    STATE.meeting_source_mode = v === "off" ? "off" : "smart";
+    STATE.meeting_diarize = (v === "split");
+    send("set_meeting_source_mode", STATE.meeting_source_mode);
+    send("set_meeting_diarize", STATE.meeting_diarize);
     // Моделі тягнемо саме тут — у момент, коли людина ОБИРАЄ режим, а не в
     // інсталяторі: більшість користувачів диктує й ніколи цього не торкнеться.
     if (v === "split" && !diarReady() && !STATE.diar_busy) send("diar_install");
@@ -1011,9 +1034,31 @@ $("back-enh").addEventListener("click", () => show("main"));
   });
   ftDiar.addEventListener("change", () => {
     const on = ftDiar.value === "split";
+    STATE.ft_diarize = on;  // те саме, що й вище: інакше renderDiar відкотить вибір
     send("set_ft_diarize", on);
     if (on && !diarReady() && !STATE.diar_busy) send("diar_install");
     if (window.renderDiar) window.renderDiar();
+  });
+  // ── Скільки голосів (одне значення на обидва екрани) ──────────────────────
+  // Рушій рахує кластери сам, і на поганому звуці помиляється саме в кількості.
+  // Людина, яка була в кімнаті, це число ЗНАЄ — і це найдешевша підказка, яку
+  // вона може дати. 0 = «рахуй сам» (як було).
+  const spk = ["mt", "ft"].map(pfx => $(pfx + "-spk"));
+  spk.forEach(sel => {
+    const auto = document.createElement("option");
+    auto.value = "0"; auto.textContent = T("diar.speakers.auto", "Auto");
+    sel.appendChild(auto);
+    for (let n = 2; n <= 12; n++) {
+      const o = document.createElement("option");
+      o.value = String(n); o.textContent = String(n);
+      sel.appendChild(o);
+    }
+    sel.value = String(STATE.diar_speakers || 0);
+    sel.addEventListener("change", () => {
+      STATE.diar_speakers = parseInt(sel.value, 10) || 0;
+      send("set_diar_speakers", STATE.diar_speakers);
+      if (window.renderDiar) window.renderDiar();
+    });
   });
   $("mt-diar-install").addEventListener("click", () => send("diar_install"));
   $("ft-diar-install").addEventListener("click", () => send("diar_install"));
@@ -1021,6 +1066,16 @@ $("back-enh").addEventListener("click", () => show("main"));
     const st = STATE.diar_status || {}, busy = !!STATE.diar_busy;
     mtSource.value = srcValue();
     ftDiar.value = STATE.ft_diarize ? "split" : "off";
+    // Ряд «скільки голосів» показуємо лише там, де розділення справді ввімкнене:
+    // порожня ручка на вимкненому режимі — це та сама плутанина, за яку 06.09
+    // прилетіло за два «розділення» на одному екрані.
+    spk.forEach(sel => { sel.value = String(STATE.diar_speakers || 0); });
+    const spkRow = (pfx, on) => {
+      const r = $(pfx + "-spk-row");
+      if (r) r.style.display = on ? "" : "none";
+    };
+    spkRow("mt", !!STATE.meeting_diarize);
+    spkRow("ft", !!STATE.ft_diarize);
     const mb = st.download_mb || 110;
     const line = busy ? (STATE.diar_progress || T("diar.working", "Завантажую…"))
       : st.ready ? T("diar.ready", "Розпізнавання голосів готове")
@@ -1623,7 +1678,11 @@ function renderFt(){
   if (q.state === "scanning") {
     st.textContent = T("ft.scanning", "Checking files…");
   } else if (q.state === "running") {
-    st.textContent = T("ft.running", "Transcribing…") + " " + counts + " · " + pct + "%";
+    // Друга фаза має власне імʼя: шкала в хвості майже не рухається, і без
+    // цього рядка «Транскрибую… 100%» читалось як «готово», поки мак ще гріється.
+    const label = (current && current.phase === "diarize")
+      ? T("ft.diarizing", "Splitting speakers…") : T("ft.running", "Transcribing…");
+    st.textContent = label + " " + counts + " · " + pct + "%";
   } else if (q.state === "pausing") {
     st.textContent = T("ft.pausing", "Finishing the current fragment…") + " — " + counts;
   } else if (q.state === "paused") {
@@ -1660,7 +1719,9 @@ function renderFt(){
     if (item.status === "pending") {
       stat.textContent = T("ft.item.pending", "queued");
     } else if (item.status === "running") {
-      stat.textContent = Math.round((item.progress || 0) * 100) + "%";
+      stat.textContent = item.phase === "diarize"
+        ? T("ft.item.diar", "splitting speakers…")
+        : Math.round((item.progress || 0) * 100) + "%";
     } else if (item.status === "done") {
       const link = document.createElement("a");
       link.textContent = T("ft.reveal", "Show in Finder");

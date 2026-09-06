@@ -208,11 +208,14 @@ class FileTranscriptionJob:
         prompt: str = "",
         on_paused: Callable[[], None] | None = None,
         diarize: bool = False,
+        on_phase: Callable[[str], None] | None = None,
+        speakers: int = 0,
     ) -> None:
         self._path = path
         self._mode = mode
         self._prompt = prompt
         self._diarize = diarize
+        self._speakers = int(speakers or 0)
         # Скільки шкали віддано тексту: решта — прохід по голосах, щоб
         # «100%» стояло на КІНЦІ роботи, а не на кінці розшифровки.
         self._text_share = 0.85 if diarize else 1.0
@@ -221,6 +224,10 @@ class FileTranscriptionJob:
         self._on_done = on_done
         self._on_error = on_error
         self._on_paused = on_paused or (lambda: None)
+        # Чим саме зайнятий файл ЗАРАЗ: "" (розшифровка) чи "diarize". Шкала у
+        # відсотках нічого не каже людині про другу фазу, а вона довга: 06.09.2026
+        # Льоша побачив «готово» тоді, коли по температурі маку робота ще йшла.
+        self._on_phase = on_phase or (lambda _ph: None)
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()
@@ -264,6 +271,8 @@ class FileTranscriptionJob:
             with contextlib.suppress(Exception):
                 self._on_progress(frac)
 
+        with contextlib.suppress(Exception):
+            self._on_phase("diarize")
         try:
             from . import diarize as _diar
 
@@ -272,10 +281,15 @@ class FileTranscriptionJob:
                 if not ok:
                     print(f"⚠️ diarization unavailable: {msg}")
                     return
-            out = _diar.label_transcript(Path(sidecar), {None: Path(raw_path)}, progress=tick)
+            out = _diar.label_transcript(
+                Path(sidecar), {None: Path(raw_path)}, progress=tick, speakers=self._speakers
+            )
             print(f"🗣 speakers split → {out}")
         except Exception as e:
             print(f"⚠️ diarization failed for {md_path.name}: {e}")
+        finally:
+            with contextlib.suppress(Exception):
+                self._on_phase("")
 
     def _run(self) -> None:
         raw_path: str | None = None
@@ -492,6 +506,7 @@ class QueueItem:
     name: str
     status: str  # pending | running | done | error | skipped | cancelled
     progress: float = 0.0
+    phase: str = ""  # "" — розшифровка, "diarize" — прохід по голосах
     result_path: str = ""
     error: str = ""
     # ffprobe has already screened this file. Items added to a running queue
@@ -529,12 +544,14 @@ class FileTranscriptionQueue:
         prompt: str,
         on_change: Callable[[dict], None],
         diarize: bool = False,
+        speakers: int = 0,
     ) -> None:
         self._mode = mode
         self._prompt = prompt
         # Як мова й підказка — фіксується на старті черги: перемикач, натиснутий
         # посеред прогону, інакше розділив би половину файлів, а половину ні.
         self._diarize = diarize
+        self._speakers = int(speakers or 0)
         self._on_change = on_change
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -699,6 +716,7 @@ class FileTranscriptionQueue:
                 "path": i.path,
                 "status": i.status,
                 "progress": i.progress,
+                "phase": i.phase,
                 "result_path": i.result_path,
                 "error": i.error,
             }
@@ -784,6 +802,8 @@ class FileTranscriptionQueue:
                     prompt=self._prompt,
                     on_paused=self._on_job_paused,
                     diarize=self._diarize,
+                    on_phase=lambda ph, iid=item.id: self._on_job_phase(iid, ph),
+                    speakers=self._speakers,
                 )
                 self._current_job = job
                 self._current_item_id = item.id
@@ -819,6 +839,15 @@ class FileTranscriptionQueue:
             if item is None:
                 return
             item.progress = progress
+            snap = self._make_snapshot()
+        self._on_change(snap)
+
+    def _on_job_phase(self, item_id: int, phase: str) -> None:
+        with self._lock:
+            item = self._items_by_id.get(item_id)
+            if item is None:
+                return
+            item.phase = phase
             snap = self._make_snapshot()
         self._on_change(snap)
 

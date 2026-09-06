@@ -195,6 +195,8 @@ class VoiceTyper:
             diar_status_provider=diarize.status,
             on_set_meeting_diarize=self._on_set_meeting_diarize,
             on_set_ft_diarize=self._on_set_ft_diarize,
+            diar_speakers=self._settings.get("diar_speakers", 0),
+            on_set_diar_speakers=self._on_set_diar_speakers,
             on_diar_install=self._on_diar_install,
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
@@ -1258,7 +1260,12 @@ class VoiceTyper:
                     self._tray.notify("Pysar", self._t("notif.diarNotReadyTitle"), msg)
                     return
             self._tray.set_status(self._t("st.diarRunning"))
-            out = diarize.label_transcript(sidecar, audio, labels=labels)
+            out = diarize.label_transcript(
+                sidecar,
+                audio,
+                labels=labels,
+                speakers=int(self._settings.get("diar_speakers", 0) or 0),
+            )
         except Exception as e:
             print(f"⚠️ diarization failed: {e}")
             with contextlib.suppress(Exception):
@@ -1484,6 +1491,16 @@ class VoiceTyper:
 
     def _on_set_ft_diarize(self, enabled: bool) -> None:
         self._settings["ft_diarize"] = bool(enabled)
+        save_settings(self._settings)
+
+    def _on_set_diar_speakers(self, count: int) -> None:
+        # 0 = «хай рахує сам». Стеля 12 — не обмеження рушія, а межа, за якою
+        # ручне число вже не памʼятається, а вгадується.
+        try:
+            n = int(count)
+        except Exception:
+            n = 0
+        self._settings["diar_speakers"] = n if 2 <= n <= 12 else 0
         save_settings(self._settings)
 
     def _on_diar_install(self, progress) -> tuple[bool, str]:

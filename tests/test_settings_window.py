@@ -290,3 +290,42 @@ def test_build_html_embeds_the_diarization_state():
         )
     )
     assert '"meeting_diarize": true' in html or '"meeting_diarize":true' in html
+
+
+# ── Регресія 06.09.2026: список, який не перемикається ────────────────────────
+# renderDiar() перечитує STATE і ПЕРЕЗАПИСУЄ .value кожного з цих селектів.
+# Бек на ці дії стан назад не пушить, тож якщо обробник change не оновить STATE
+# сам — вибір людини відкочується тієї ж миті, і список виглядає захардкоденим.
+# Саме це Льоша й побачив: «воно не перемикається ніяк».
+# Поведінку перевірено ще й у живому браузері на зібраній сторінці; тут —
+# структурний запобіжник, щоб рядок не зник при наступній правці.
+
+
+def _handler_body(html: str, marker: str) -> str:
+    start = html.index(marker)
+    return html[start : html.index("});", start)]
+
+
+def test_meeting_source_change_updates_state_before_sending():
+    body = _handler_body(build_html(_state()), 'mtSource.addEventListener("change"')
+    assert "STATE.meeting_source_mode =" in body
+    assert "STATE.meeting_diarize =" in body
+
+
+def test_ft_diar_change_updates_state_before_sending():
+    body = _handler_body(build_html(_state()), 'ftDiar.addEventListener("change"')
+    assert "STATE.ft_diarize = on;" in body
+
+
+def test_speaker_count_control_is_on_both_screens():
+    html = build_html(_state(diar_speakers=3))
+    assert '<select id="mt-spk">' in html
+    assert '<select id="ft-spk">' in html
+    assert 'send("set_diar_speakers"' in html
+    assert '"diar_speakers": 3' in html or '"diar_speakers":3' in html
+
+
+def test_dispatch_routes_the_speaker_count():
+    seen = []
+    dispatch({"action": "set_diar_speakers", "value": 4}, {"set_diar_speakers": seen.append})
+    assert seen == [4]

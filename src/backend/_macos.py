@@ -906,6 +906,8 @@ class Tray:
         diar_status_provider: Callable[[], dict] | None = None,
         on_set_meeting_diarize: Callable[[bool], None] | None = None,
         on_set_ft_diarize: Callable[[bool], None] | None = None,
+        diar_speakers: int = 0,
+        on_set_diar_speakers: Callable[[int], None] | None = None,
         on_diar_install: Callable | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
@@ -1004,6 +1006,8 @@ class Tray:
         self._diar_status_provider = diar_status_provider
         self._on_set_meeting_diarize = on_set_meeting_diarize
         self._on_set_ft_diarize = on_set_ft_diarize
+        self._diar_speakers = int(diar_speakers or 0)
+        self._on_set_diar_speakers = on_set_diar_speakers
         self._on_diar_install = on_diar_install
         self._diar_busy = False
         self._diar_progress = ""
@@ -1210,6 +1214,7 @@ class Tray:
                         "set_meeting_source_mode": self._set_meeting_source_mode,
                         "set_meeting_diarize": self._set_meeting_diarize,
                         "set_ft_diarize": self._set_ft_diarize,
+                        "set_diar_speakers": self._set_diar_speakers,
                         "diar_install": self._diar_install,
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
@@ -1278,6 +1283,7 @@ class Tray:
             "meeting_source_mode": self._meeting_source_mode,
             "meeting_diarize": self._meeting_diarize,
             "ft_diarize": self._ft_diarize,
+            "diar_speakers": self._diar_speakers,
             "diar_status": self._diar_status(),
             "diar_busy": self._diar_busy,
             "diar_progress": self._diar_progress,
@@ -1522,6 +1528,15 @@ class Tray:
         if self._on_set_ft_diarize:
             self._on_set_ft_diarize(self._ft_diarize)
 
+    def _set_diar_speakers(self, count) -> None:
+        try:
+            n = int(count)
+        except Exception:
+            n = 0
+        self._diar_speakers = n if 2 <= n <= 12 else 0
+        if self._on_set_diar_speakers:
+            self._on_set_diar_speakers(self._diar_speakers)
+
     def _diar_install(self, _=None) -> None:
         """Докачка рушія й моделей. Обовʼязково у фоні: pip + ~110 МБ — це
         хвилини, а вікно налаштувань живе на головному потоці й замерзло б."""
@@ -1720,6 +1735,7 @@ class Tray:
                 prompt=self._ft_resolve_prompt(),
                 on_change=self._ft_on_change,
                 diarize=self._ft_diarize,
+                speakers=self._diar_speakers,
             )
             self._ft_queue.start()
         self._refresh_settings_window()

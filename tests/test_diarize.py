@@ -211,3 +211,42 @@ def test_retry_gives_up_and_reports_the_real_error(monkeypatch):
 
     with pytest.raises(OSError, match="мережі немає"):
         diarize._retry(dead)
+
+
+# ── Ручний вибір кількості голосів (06.09.2026) ───────────────────────────────
+class TestManualSpeakerCount:
+    """Людина, яка була в кімнаті, знає число голосів краще за рушій.
+
+    Число застосовується на ГЛОБАЛЬНИХ центроїдах — після зшивання вікон, а не
+    в конфізі кластеризатора: там воно діяло б на кожні 30 хв окремо й розпилило
+    б одного мовця на трьох у тихому вікні."""
+
+    @staticmethod
+    def _vecs(np):
+        # Дві пари майже однакових голосів: чесне злиття має дати рівно 2.
+        raw = [[1.0, 0.0], [0.99, 0.14], [0.0, 1.0], [0.14, 0.99]]
+        out = []
+        for v in raw:
+            a = np.array(v, dtype=np.float32)
+            out.append(a / np.linalg.norm(a))
+        return out
+
+    def test_merges_nearest_voices_down_to_the_requested_count(self):
+        np = pytest.importorskip("numpy")
+        gcent = self._vecs(np)
+        glob = {f"w0_{i}": i for i in range(4)}
+        new_glob, new_cent = diarize._merge_to(glob, gcent, 2, np)
+        assert len(new_cent) == 2
+        assert sorted(set(new_glob.values())) == [0, 1]
+        # Пари не мають розʼїхатись по різних мовцях.
+        assert new_glob["w0_0"] == new_glob["w0_1"]
+        assert new_glob["w0_2"] == new_glob["w0_3"]
+
+    def test_fewer_voices_than_asked_are_left_alone(self):
+        # Рушій знайшов двох, людина сказала «четверо» — вигадувати нікого.
+        np = pytest.importorskip("numpy")
+        gcent = self._vecs(np)[:2]
+        glob = {"w0_0": 0, "w0_1": 1}
+        new_glob, new_cent = diarize._merge_to(glob, gcent, 4, np)
+        assert len(new_cent) == 2
+        assert new_glob == {"w0_0": 0, "w0_1": 1}
