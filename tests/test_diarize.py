@@ -402,3 +402,24 @@ def test_failed_split_leaves_the_transcript_untouched(tmp_path, monkeypatch):
         diarize.label_transcript(side, {"sys": wav}, originals=tmp_path / "originals")
     assert md.read_text(encoding="utf-8") == "# сирий віспер\n"
     assert not (tmp_path / "originals").exists()
+
+
+def test_whisper_tokens_are_glued_back_into_words_before_cutting():
+    # Справжній рядок сайдкара 11.09.2026: whisper віддає токени, не слова.
+    from src.diarize import _tokens_to_words
+
+    w = [
+        [0.02, 0.08, " Д"],
+        [0.08, 0.16, "е"],
+        [0.16, 0.24, ","],
+        [0.95, 1.3, " брат"],
+        [1.3, 1.47, "ик"],
+        [1.47, 1.53, ","],
+        [1.58, 1.71, " зд"],
+        [1.72, 1.89, "ор"],
+        [1.89, 2.13, "ова"],
+        [2.23, 2.23, "."],
+    ]
+    got = _tokens_to_words(w)
+    assert [t.strip() for _, _, t in got] == ["Де,", "братик,", "здорова."]
+    assert got[1][:2] == (0.95, 1.53)

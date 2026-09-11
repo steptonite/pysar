@@ -613,6 +613,26 @@ def _best_overlap(cand: list, t0: float, t1: float):
     return best if share > 0 else None
 
 
+def _tokens_to_words(tokens: list) -> list[tuple[float, float, str]]:
+    """Зібрати токени whisper назад у слова.
+
+    🔴 11.09.2026, «ріже по буквах»: у `w` лежать не слова, а ТОКЕНИ —
+    `' Д'`, `'е'`, `','`, `' брат'`, `'ик'`. Нове слово починає лише токен із
+    пробілом попереду; решта (шматки слова, розділові знаки) дописується до
+    попереднього. Якщо пробілу немає ні в кого, це вже готові слова."""
+    parsed = [(float(t[0]), float(t[1]), str(t[2])) for t in tokens]
+    if not any(text[:1].isspace() for _, _, text in parsed):
+        return parsed
+    out: list[list] = []
+    for a, b, text in parsed:
+        if out and not text[:1].isspace():
+            out[-1][1] = b
+            out[-1][2] += text
+        else:
+            out.append([a, b, text])
+    return [(a, b, text) for a, b, text in out]
+
+
 def _split_row_by_words(row: dict, cand: list) -> list[dict]:
     """Порізати рядок там, де МІНЯЄТЬСЯ ГОЛОС, а не там, де whisper поставив крапку.
 
@@ -624,15 +644,14 @@ def _split_row_by_words(row: dict, cand: list) -> list[dict]:
 
     Дрібні прошарки (одне-два слова чужим голосом усередині чужої фрази) не
     ріжемо: це майже завжди похибка кластеризації на 0,2 с, а не перебивання."""
-    words = row.get("w") or []
+    try:
+        words = _tokens_to_words(row.get("w") or [])
+    except (TypeError, ValueError, IndexError):
+        return []
     if len(words) < 2:
         return []
     runs: list[tuple] = []
-    for w in words:
-        try:
-            a, b, text = float(w[0]), float(w[1]), str(w[2])
-        except (TypeError, ValueError, IndexError):
-            return []
+    for a, b, text in words:
         who = _cluster_at(cand, (a + b) / 2.0) or _best_overlap(cand, a, b)
         if runs and runs[-1][0] == who:
             runs[-1][3].append(text)
