@@ -183,3 +183,30 @@ def test_scope_cannot_revive_a_disabled_guard():
     g = _scoped_gate(120.0, mode="off")
     g.set_scope("files", True)
     assert g.enabled_for("files") is False
+
+
+def test_pause_writes_the_real_temperatures_to_the_log(capsys):
+    # 11.09.2026, Льоша: «важливо щоб реальна темпа захоплювалась» — у лог іде
+    # кожен замір паузи з назвою ядра, а кінець — із тривалістю й піком.
+    temps = iter([113.4, 104.2, 89.6])
+    gate = thermal.ThermalGate(
+        mode="hot",
+        poll_sec=0,
+        cache_sec=0,
+        reader=lambda: ("ядро Tp0A", next(temps)),
+        sleep=lambda _s: None,
+    )
+    assert gate.wait(scope="meeting") is True
+    out = capsys.readouterr().out
+    assert "guard pause [meeting] ядро Tp0A 113.4°" in out
+    assert "guard hold [meeting] ядро Tp0A 104.2°" in out
+    assert "guard resume [meeting] ядро Tp0A 89.6°" in out and "peak 113.4°" in out
+
+
+def test_cold_checks_are_logged_but_not_on_every_chunk(capsys):
+    gate = thermal.ThermalGate(
+        mode="hot", cache_sec=0, reader=lambda: ("ядро Tp02", 70.0), sleep=lambda _s: None
+    )
+    for _ in range(5):
+        gate.wait(scope="files")
+    assert capsys.readouterr().out.count("guard check [files] ядро Tp02 70.0°") == 1

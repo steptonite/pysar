@@ -16,6 +16,12 @@ import threading
 import time
 from collections.abc import Callable
 
+
+def _log(line: str) -> None:
+    # stdout застосунку йде в pysar.log (див. logsetup.py).
+    print(line, flush=True)
+
+
 # ── Профілі порогів ───────────────────────────────────────────────────────────
 # Пара чисел: (пауза при, продовжити при). Різниця між ними — гістерезис: без
 # нього робота смикалась би «пауза-старт-пауза» по десять разів на хвилину,
@@ -362,7 +368,7 @@ class ThermalGate:
     def __init__(
         self,
         mode: str = DEFAULT_MODE,
-        poll_sec: float = 5.0,
+        poll_sec: float = 2.0,
         cache_sec: float = 2.0,
         reader: Callable[[], tuple[str, float] | None] = hottest,
         sleep: Callable[[float], None] = time.sleep,
@@ -383,6 +389,25 @@ class ThermalGate:
         # ввімкнувши сторожа для черги файлів, ти мовчки поставив паузи й на
         # розділення голосів після «Стоп» — а це різні сценарії за терміновістю.
         self._scopes: dict[str, bool] = {"meeting": True, "files": True}
+        self._checked: dict[str, float] = {}
+
+    # — журнал —
+    # 🔴 11.09.2026, Льоша: «важливо щоб реальна темпа захоплювалась… поки що має
+    # писатись, бо як ми зрозуміємо що він адекватно включається». Плашка показує
+    # лише останнє число, а меню — вже інше. Тому в pysar.log іде СИРИЙ замір:
+    # старт паузи, кожен замір під час неї, кінець із тривалістю й піком, а поза
+    # паузою — що бачив сторож, не частіше ніж раз на CHECK_LOG_SEC.
+    CHECK_LOG_SEC = 30.0
+
+    def _where(self) -> str:
+        return self._last[0] if self._last else "?"
+
+    def _log_check(self, tag: str, temp: float) -> None:
+        now = time.monotonic()
+        if now - self._checked.get(tag, -self.CHECK_LOG_SEC) < self.CHECK_LOG_SEC:
+            return
+        self._checked[tag] = now
+        _log(f"🌡 guard check [{tag}] {self._where()} {temp:.1f}° < {self._pause_c:.0f}° — працюємо")
 
     # — налаштування —
     @property
@@ -439,18 +464,36 @@ class ThermalGate:
         if not self.enabled_for(scope):
             return True
         notified = False
+        started = time.monotonic()
+        peak = 0.0
+        tag = scope or "-"
         try:
             while True:
                 temp = self.temperature()
                 if temp is None:
                     return True
+                peak = max(peak, temp)
                 if not self._holding:
                     if temp < self._pause_c:
+                        self._log_check(tag, temp)
                         return True
                     self._holding = True
+                    started = time.monotonic()
+                    _log(
+                        f"🌡 guard pause [{tag}] {self._where()} {temp:.1f}° ≥ {self._pause_c:.0f}° "
+                        f"(mode {self._mode})"
+                    )
                 elif temp <= self._resume_c:
                     self._holding = False
+                    _log(
+                        f"🌡 guard resume [{tag}] {self._where()} {temp:.1f}° ≤ {self._resume_c:.0f}° "
+                        f"after {time.monotonic() - started:.0f}s, peak {peak:.1f}°"
+                    )
                     return True
+                else:
+                    _log(
+                        f"🌡 guard hold [{tag}] {self._where()} {temp:.1f}° ({time.monotonic() - started:.0f}s)"
+                    )
                 if on_state is not None and not notified:
                     notified = True
                 if on_state is not None:
