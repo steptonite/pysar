@@ -49,6 +49,17 @@ class Segmenter:
         self._soft_seg_sec = soft_seg_sec
         self._micro_pause_sec = micro_pause_sec
 
+        # 🔴 Позиція сегмента в потоці — рахується ТУТ і більше ніде.
+        # Раніше межі (t0, t1) для розділення голосів рахувались із того, скільки
+        # семплів уже лежить у сирому дампі НА МОМЕНТ ВИДАЧІ сегмента. Але між
+        # кінцем фрази і видачею встигає пройти ще звук, і сегментер до того ж
+        # викидає тишу на початку — тож мітки їхали вперед і НАКЛАДАЛИСЬ одна на
+        # одну. У записі 06.09.2026 сусідні репліки перекривались на 10-20 с, і
+        # розділення голосів ставило всім один і той самий «Спікер 1»: воно
+        # чесно голосувало по відрізку, в якому говорили ТРОЄ.
+        self._fed_samples = 0  # скільки семплів пройшло через сегментер
+        self._seg_start_sample = 0  # де почався сегмент, що будується
+        self.last_span_samples: tuple[int, int] | None = None  # межі ОСТАННЬОГО
         self._buf: list[np.ndarray] = []  # blocks of the segment being built
         self._voiced_sec = 0.0  # voiced audio accumulated in _buf
         self._silence_sec = 0.0  # trailing silence run length
@@ -58,6 +69,8 @@ class Segmenter:
     def feed(self, block: np.ndarray) -> bytes | None:
         """Consume one audio block; return a finished segment's raw float32 bytes
         when a boundary is hit, else None."""
+        block_start = self._fed_samples
+        self._fed_samples += int(block.size)
         rms = float(np.sqrt(np.mean(np.square(block)))) if block.size else 0.0
 
         # Adaptive noise floor: track the quietest level fast, leak up slowly.
@@ -77,6 +90,7 @@ class Segmenter:
             # monologue still must buffer and hit the MAX_SEG cap.
             if rms > self._ABS_MIN:
                 self._buffering = True
+                self._seg_start_sample = block_start
                 self._buf.append(block)
                 self._voiced_sec = self._block_dur if voiced else 0.0
                 self._silence_sec = 0.0
@@ -119,6 +133,8 @@ class Segmenter:
 
     def _emit(self) -> bytes:
         data = np.concatenate(self._buf).astype(np.float32)
+        # Межі фіксуємо ДО скидання: далі цей сегмент уже ніхто не відновить.
+        self.last_span_samples = (self._seg_start_sample, self._fed_samples)
         self._reset()
         return data.tobytes()
 

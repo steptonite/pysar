@@ -121,3 +121,80 @@ class TestSegmentSurvivesSpanFailure:
         span = r._span("sys", b"\x00\x01" * 8000)  # 8000 семплів = 0.5 с
         assert span == (0.5, 1.0), f"очікував (0.5, 1.0), отримав {span}"
         assert span == r._span("sys", __import__("numpy").zeros(8000, dtype="float32"))
+
+
+# ── Межі бере САМ сегментер ───────────────────────────────────────────────────
+# 🔴 Рахунок по дампу (усе вище) давав мітки, які НАКЛАДАЛИСЬ: між кінцем фрази
+# і видачею сегмента у дамп натікав ще звук. У записі 06.09.2026 сусідні репліки
+# перекривались на 10-20 с, і розділення голосів ставило одного «Спікера 1» на
+# відрізок, де говорили троє. Тепер позицію рахує той, хто різав.
+
+
+class _FakeSeg:
+    def __init__(self, span):
+        self.last_span_samples = span
+
+
+def test_span_comes_from_the_segmenter_not_from_the_dump():
+    from pysar.syscap import SAMPLE_RATE
+
+    r = _rec(sys_frames=90 * SAMPLE_RATE)  # у дамп уже натекло 90 с
+    r._source_mode = "smart"
+    r._seg_sys = _FakeSeg((10 * SAMPLE_RATE, 14 * SAMPLE_RATE))
+    r._seg_mic = None
+    # Сегмент прозвучав на 10-14 с, а не «останні 4 с перед 90-ю».
+    assert r._span("sys", 4 * SAMPLE_RATE) == (10.0, 14.0)
+
+
+def test_neighbouring_segments_do_not_overlap():
+    from pysar.segmenter import Segmenter
+
+    import numpy as np
+
+    rate, block = 16000, 1600
+    seg = Segmenter(
+        sample_rate=rate,
+        block_size=block,
+        pause_sec=0.3,
+        min_seg_sec=0.2,
+        max_seg_sec=30.0,
+        silence_margin=3.0,
+    )
+    loud = np.full(block, 0.3, dtype=np.float32)
+    quiet = np.zeros(block, dtype=np.float32)
+    spans = []
+    for _wave in range(3):
+        for _ in range(8):
+            if seg.feed(loud) is not None:
+                spans.append(seg.last_span_samples)
+        for _ in range(8):
+            if seg.feed(quiet) is not None:
+                spans.append(seg.last_span_samples)
+    assert len(spans) >= 2, spans
+    assert spans[1][0] >= spans[0][1], f"межі наклались: {spans}"
+
+
+def test_span_skips_the_silence_the_segmenter_dropped():
+    from pysar.segmenter import Segmenter
+
+    import numpy as np
+
+    rate, block = 16000, 1600
+    seg = Segmenter(
+        sample_rate=rate,
+        block_size=block,
+        pause_sec=0.3,
+        min_seg_sec=0.2,
+        max_seg_sec=30.0,
+        silence_margin=3.0,
+    )
+    quiet = np.zeros(block, dtype=np.float32)
+    loud = np.full(block, 0.3, dtype=np.float32)
+    for _ in range(10):  # секунда тиші на початку — вона НЕ частина репліки
+        seg.feed(quiet)
+    for _ in range(5):
+        seg.feed(loud)
+    for _ in range(6):
+        seg.feed(quiet)
+    assert seg.last_span_samples is not None
+    assert seg.last_span_samples[0] >= 10 * block
