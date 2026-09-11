@@ -210,3 +210,16 @@ def test_cold_checks_are_logged_but_not_on_every_chunk(capsys):
     for _ in range(5):
         gate.wait(scope="files")
     assert capsys.readouterr().out.count("guard check [files] ядро Tp02 70.0°") == 1
+
+
+def test_pause_ends_only_after_the_core_stays_cool_not_on_one_cold_reading(capsys):
+    # 11.09.2026, живий лог: 4 паузи по 2 с — ядро падало 113° → 88° за один
+    # замір, і робота одразу вертались. Відпускати можна лише після settle_sec
+    # поспіль нижче порога; стрибок угору скидає відлік.
+    fake = _Fake([110.0, 87.0, 88.0, 95.0, 85.0, 84.0, 83.0])
+    gate = thermal.ThermalGate(
+        mode="hot", poll_sec=2.0, cache_sec=0.0, settle_sec=6.0, reader=fake.read, sleep=fake.sleep
+    )
+    assert gate.wait(scope="meeting") is True
+    assert len(fake.slept) == 6
+    assert capsys.readouterr().out.count("guard resume") == 1

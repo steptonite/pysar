@@ -12,14 +12,18 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
 
+SETTLE_SEC = 20.0  # скільки ядро має протриматись нижче порога, щоб пауза скінчилась
+
 
 def _log(line: str) -> None:
-    # stdout застосунку йде в pysar.log (див. logsetup.py).
-    print(line, flush=True)
+    # stdout застосунку йде в pysar.log (див. logsetup.py). Час — щоб видно було
+    # ЦИКЛ: скільки робота гріла до паузи і скільки пауза тривала насправді.
+    print(f"{time.strftime('%H:%M:%S')} {line}", flush=True)
 
 
 # ── Профілі порогів ───────────────────────────────────────────────────────────
@@ -372,8 +376,10 @@ class ThermalGate:
         cache_sec: float = 2.0,
         reader: Callable[[], tuple[str, float] | None] = hottest,
         sleep: Callable[[float], None] = time.sleep,
+        settle_sec: float = 0.0,
     ) -> None:
         self._lock = threading.Lock()
+        self._settle = settle_sec
         self._pause_c, self._resume_c = profile(mode)
         self._mode = mode if mode in PROFILES else DEFAULT_MODE
         self._poll = poll_sec
@@ -467,6 +473,12 @@ class ThermalGate:
         started = time.monotonic()
         peak = 0.0
         tag = scope or "-"
+        # 🔴 11.09.2026, лог першого ж запису: 4 паузи, КОЖНА рівно 2 с — ядро
+        # падало з 113° до 88° за один замір, робота вертались і знов розганяла
+        # його. Пауза студила число, а не мак. Тому відпускаємо лише після того,
+        # як нижче порога протрималось `settle_sec` поспіль.
+        need = 1 if self._poll <= 0 or self._settle <= 0 else math.ceil(self._settle / self._poll)
+        cool_n = 0
         try:
             while True:
                 temp = self.temperature()
@@ -484,13 +496,17 @@ class ThermalGate:
                         f"(mode {self._mode})"
                     )
                 elif temp <= self._resume_c:
-                    self._holding = False
-                    _log(
-                        f"🌡 guard resume [{tag}] {self._where()} {temp:.1f}° ≤ {self._resume_c:.0f}° "
-                        f"after {time.monotonic() - started:.0f}s, peak {peak:.1f}°"
-                    )
-                    return True
+                    cool_n += 1
+                    if cool_n >= need:
+                        self._holding = False
+                        _log(
+                            f"🌡 guard resume [{tag}] {self._where()} {temp:.1f}° ≤ {self._resume_c:.0f}° "
+                            f"after {time.monotonic() - started:.0f}s, peak {peak:.1f}°"
+                        )
+                        return True
+                    _log(f"🌡 guard cool [{tag}] {self._where()} {temp:.1f}° ({cool_n}/{need})")
                 else:
+                    cool_n = 0
                     _log(
                         f"🌡 guard hold [{tag}] {self._where()} {temp:.1f}° ({time.monotonic() - started:.0f}s)"
                     )
@@ -526,5 +542,5 @@ def gate() -> ThermalGate:
     global _gate
     with _gate_lock:
         if _gate is None:
-            _gate = ThermalGate()
+            _gate = ThermalGate(settle_sec=SETTLE_SEC)
         return _gate
