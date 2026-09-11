@@ -910,6 +910,10 @@ class Tray:
         on_set_diar_speakers: Callable[[int], None] | None = None,
         thermal_mode: str = "normal",
         on_set_thermal_mode: Callable[[str], None] | None = None,
+        thermal_meeting: bool = True,
+        on_set_thermal_meeting: Callable[[bool], None] | None = None,
+        thermal_ft: bool = True,
+        on_set_thermal_ft: Callable[[bool], None] | None = None,
         on_diar_install: Callable | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
@@ -1012,6 +1016,10 @@ class Tray:
         self._on_set_diar_speakers = on_set_diar_speakers
         self._thermal_mode = str(thermal_mode or "normal")
         self._on_set_thermal_mode = on_set_thermal_mode
+        self._thermal_meeting = bool(thermal_meeting)
+        self._on_set_thermal_meeting = on_set_thermal_meeting
+        self._thermal_ft = bool(thermal_ft)
+        self._on_set_thermal_ft = on_set_thermal_ft
         self._on_diar_install = on_diar_install
         self._diar_busy = False
         self._diar_progress = ""
@@ -1220,6 +1228,8 @@ class Tray:
                         "set_ft_diarize": self._set_ft_diarize,
                         "set_diar_speakers": self._set_diar_speakers,
                         "set_thermal_mode": self._set_thermal_mode,
+                        "set_thermal_meeting": self._set_thermal_meeting,
+                        "set_thermal_ft": self._set_thermal_ft,
                         "diar_install": self._diar_install,
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
@@ -1290,6 +1300,8 @@ class Tray:
             "ft_diarize": self._ft_diarize,
             "diar_speakers": self._diar_speakers,
             "thermal_mode": self._thermal_mode,
+            "thermal_meeting": self._thermal_meeting,
+            "thermal_ft": self._thermal_ft,
             "diar_status": self._diar_status(),
             "diar_busy": self._diar_busy,
             "diar_progress": self._diar_progress,
@@ -1538,6 +1550,16 @@ class Tray:
         self._thermal_mode = str(mode or "normal")
         if self._on_set_thermal_mode:
             self._on_set_thermal_mode(self._thermal_mode)
+
+    def _set_thermal_meeting(self, on) -> None:
+        self._thermal_meeting = bool(on)
+        if self._on_set_thermal_meeting:
+            self._on_set_thermal_meeting(self._thermal_meeting)
+
+    def _set_thermal_ft(self, on) -> None:
+        self._thermal_ft = bool(on)
+        if self._on_set_thermal_ft:
+            self._on_set_thermal_ft(self._thermal_ft)
 
     def _set_diar_speakers(self, count) -> None:
         try:

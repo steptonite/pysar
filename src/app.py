@@ -146,6 +146,8 @@ class VoiceTyper:
         # Сторож тепла піднімається ПЕРШИМ: інакше перший же важкий прогін
         # після старту пішов би з дефолтним режимом, а не з обраним людиною.
         thermal.gate().set_mode(self._settings.get("thermal_mode", "normal"))
+        thermal.gate().set_scope("meeting", bool(self._settings.get("thermal_meeting", True)))
+        thermal.gate().set_scope("files", bool(self._settings.get("thermal_ft", True)))
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
             current_mode=self._mode,
@@ -202,6 +204,10 @@ class VoiceTyper:
             on_set_diar_speakers=self._on_set_diar_speakers,
             thermal_mode=self._settings.get("thermal_mode", "normal"),
             on_set_thermal_mode=self._on_set_thermal_mode,
+            thermal_meeting=bool(self._settings.get("thermal_meeting", True)),
+            on_set_thermal_meeting=self._on_set_thermal_meeting,
+            thermal_ft=bool(self._settings.get("thermal_ft", True)),
+            on_set_thermal_ft=self._on_set_thermal_ft,
             on_diar_install=self._on_diar_install,
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
@@ -1247,6 +1253,26 @@ class VoiceTyper:
                     daemon=True,
                 ).start()
 
+    def _meeting_cool_gate(self) -> bool:
+        """Пауза на перегрів ПІД ЧАС розділення голосів після «Стоп».
+
+        🔴 11.09.2026. Сторож тут працював і раніше — але мовчки, зсередини
+        рушія: у меню весь час висіло «Розділяю спікерів…», і пауза на охолодження
+        виглядала як зависання. Тепер температуру видно в тому ж рядку меню, а
+        після охолодження напис повертається на місце."""
+        gate = thermal.gate()
+        if not gate.enabled_for("meeting"):
+            return True
+
+        def state(holding: bool, temp: float | None) -> None:
+            with contextlib.suppress(Exception):
+                if holding and temp is not None:
+                    self._tray.set_status(self._t("st.diarCooling", t=round(temp)))
+                else:
+                    self._tray.set_status(self._t("st.diarRunning"))
+
+        return gate.wait(on_state=state, scope="meeting")
+
     def _diarize_meeting(self, sidecar: "Path", dumps: list) -> None:
         """Прохід по спікерах після Стоп. Пише ОКРЕМИЙ файл поруч із транскриптом.
 
@@ -1270,6 +1296,7 @@ class VoiceTyper:
                 audio,
                 labels=labels,
                 speakers=int(self._settings.get("diar_speakers", 0) or 0),
+                gate=self._meeting_cool_gate,
             )
         except Exception as e:
             print(f"⚠️ diarization failed: {e}")
@@ -1520,6 +1547,22 @@ class VoiceTyper:
         self._settings["thermal_mode"] = m
         save_settings(self._settings)
         thermal.gate().set_mode(m)
+
+    def _on_set_thermal_meeting(self, on: bool) -> None:
+        """Вмикач сторожа на розділенні голосів після зустрічі."""
+        self._settings["thermal_meeting"] = bool(on)
+        save_settings(self._settings)
+        from . import thermal
+
+        thermal.gate().set_scope("meeting", bool(on))
+
+    def _on_set_thermal_ft(self, on: bool) -> None:
+        """Вмикач сторожа на черзі транскрибації файлів."""
+        self._settings["thermal_ft"] = bool(on)
+        save_settings(self._settings)
+        from . import thermal
+
+        thermal.gate().set_scope("files", bool(on))
 
     def _on_diar_install(self, progress) -> tuple[bool, str]:
         """Докачка рушія й моделей на вимогу. Викликається з фонового потоку

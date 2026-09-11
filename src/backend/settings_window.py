@@ -503,6 +503,18 @@ _TEMPLATE = r"""<!doctype html>
         <div class="help" id="mt-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="mt-diar-install"></button>
       </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="thermal.label">Protect the Mac from overheating</div>
+          <div class="help" style="white-space:normal" data-i18n="thermal.help">Work waits while the Mac
+            is hot and carries on once it cools down — nothing is lost, it just takes longer</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-thermal-on">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row" id="mt-thermal-row">
+        <div class="body"><div class="label" data-i18n="thermal.level">When to pause</div>
+          <div class="help" data-i18n="thermal.shared">The threshold is shared by meetings and files</div></div>
+        <select id="mt-thermal"></select>
+      </div>
     </section>
     <section>
       <div class="row">
@@ -654,6 +666,12 @@ _TEMPLATE = r"""<!doctype html>
         <div class="body"><div class="label" data-i18n="thermal.label">Protect the Mac from overheating</div>
           <div class="help" style="white-space:normal" data-i18n="thermal.help">Work waits while the Mac
             is hot and carries on once it cools down — nothing is lost, it just takes longer</div></div>
+        <label class="toggle"><input type="checkbox" id="ft-thermal-on">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
+      <div class="row" id="ft-thermal-row">
+        <div class="body"><div class="label" data-i18n="thermal.level">When to pause</div>
+          <div class="help" data-i18n="thermal.shared">The threshold is shared by meetings and files</div></div>
         <select id="ft-thermal"></select>
       </div>
     </section>
@@ -1069,24 +1087,39 @@ $("back-enh").addEventListener("click", () => show("main"));
   // ── Берегти мак ───────────────────────────────────────────────────────────
   // Числа в підписах стоять свідомо: «бережно/звичайно» без градусів нічого не
   // каже людині, яка вже бачила 105° на своєму маку.
-  const ftTh = $("ft-thermal");
-  if (ftTh) {
+  // Поріг ОДИН на застосунок, а вмикачів два — зустрічі й файли окремо. Тому
+  // обидва списки редагують те саме значення й синхронізуються між собою: два
+  // різні пороги на одному екрані читалися б як два різні сторожі.
+  const thSel = ["ft-thermal", "mt-thermal"].map($).filter(Boolean);
+  thSel.forEach(sel => {
     [["off",    T("thermal.off", "Off")],
      ["gentle", T("thermal.gentle", "Gentle — pause at 88°")],
      ["normal", T("thermal.normal", "Normal — pause at 95°")],
      ["hot",    T("thermal.hot", "To the limit — pause at 101°")]].forEach(([val, label]) => {
       const o = document.createElement("option");
       o.value = val; o.textContent = label;
-      ftTh.appendChild(o);
+      sel.appendChild(o);
     });
-    ftTh.value = STATE.thermal_mode || "normal";
-    ftTh.addEventListener("change", () => {
+    sel.value = STATE.thermal_mode || "normal";
+    sel.addEventListener("change", () => {
       // STATE — перед send(), інакше наступний перемальовок відкотить вибір
       // і список виглядатиме захардкодженим (те саме, що ловили 06.09.2026).
-      STATE.thermal_mode = ftTh.value;
-      send("set_thermal_mode", ftTh.value);
+      STATE.thermal_mode = sel.value;
+      send("set_thermal_mode", sel.value);
+      if (window.renderDiar) window.renderDiar();
     });
-  }
+  });
+  [["mt-thermal-on", "thermal_meeting", "set_thermal_meeting"],
+   ["ft-thermal-on", "thermal_ft",      "set_thermal_ft"]].forEach(([id, key, msg]) => {
+    const box = $(id);
+    if (!box) return;
+    box.checked = STATE[key] !== false;
+    box.addEventListener("change", () => {
+      STATE[key] = box.checked;
+      send(msg, box.checked);
+      if (window.renderDiar) window.renderDiar();
+    });
+  });
   $("mt-diar-install").addEventListener("click", () => send("diar_install"));
   $("ft-diar-install").addEventListener("click", () => send("diar_install"));
   window.renderDiar = function(){
@@ -1097,7 +1130,14 @@ $("back-enh").addEventListener("click", () => show("main"));
     // порожня ручка на вимкненому режимі — це та сама плутанина, за яку 06.09
     // прилетіло за два «розділення» на одному екрані.
     spk.forEach(sel => { sel.value = String(STATE.diar_speakers || 0); });
-    if (ftTh) ftTh.value = STATE.thermal_mode || "normal";
+    thSel.forEach(sel => { sel.value = STATE.thermal_mode || "normal"; });
+    // Поріг ховаємо, коли сторожа на цій ділянці вимкнено: ручка, яка ні на що
+    // не впливає, — це те саме, за що прилітало 06.09 за два «розділення».
+    [["mt", STATE.thermal_meeting !== false], ["ft", STATE.thermal_ft !== false]]
+      .forEach(([pfx, on]) => {
+        const box = $(pfx + "-thermal-on"); if (box) box.checked = on;
+        const row = $(pfx + "-thermal-row"); if (row) row.style.display = on ? "" : "none";
+      });
     const spkRow = (pfx, on) => {
       const r = $(pfx + "-spk-row");
       if (r) r.style.display = on ? "" : "none";

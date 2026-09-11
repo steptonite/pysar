@@ -265,7 +265,7 @@ class FileTranscriptionJob:
         from . import thermal
 
         gate = thermal.gate()
-        if not gate.enabled:
+        if not gate.enabled_for("files"):
             return True
 
         def state(holding: bool, temp: float | None) -> None:
@@ -275,7 +275,7 @@ class FileTranscriptionJob:
                 else:
                     self._on_phase(phase_when_done)
 
-        return gate.wait(should_stop=self._cancel_event.is_set, on_state=state)
+        return gate.wait(should_stop=self._cancel_event.is_set, on_state=state, scope="files")
 
     def _diarize_result(self, md_path: Path, sidecar: Path, raw_path: str | None) -> None:
         """Другий файл поруч: той самий текст, розкладений по голосах.

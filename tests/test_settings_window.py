@@ -344,8 +344,10 @@ def test_thermal_control_is_on_the_file_screen():
 def test_thermal_change_updates_state_before_sending():
     # Той самий клас баги, що 06.09.2026: якщо STATE не оновити ДО send(),
     # наступний перемальовок відкотить вибір і список виглядатиме мертвим.
-    body = _handler_body(build_html(_state()), 'ftTh.addEventListener("change"')
-    assert body.index("STATE.thermal_mode") < body.index('send("set_thermal_mode"')
+    html = build_html(_state())
+    # Маркер «const thSel» однозначний: обидва списки порога будуються тут.
+    body = html[html.index("const thSel") : html.index('[["mt-thermal-on"')]
+    assert body.index("STATE.thermal_mode = sel.value") < body.index('send("set_thermal_mode"')
 
 
 def test_dispatch_routes_the_thermal_mode():
@@ -359,3 +361,36 @@ def test_cooling_phase_has_its_own_line_in_the_queue_status():
     html = build_html(_state())
     assert "ft.cooling" in html
     assert 'ph.startsWith("cool")' in html
+
+
+# ── 11.09.2026: два вимикачі сторожа (зустрічі / файли) ───────────────────────
+# Льоша просив вимикач ОКРЕМО в записі зустрічей і в транскрибації файлів:
+# поріг спільний, а рішення «стерегти чи ні» — різне за сценарієм.
+
+
+def test_thermal_switch_is_on_both_screens():
+    html = build_html(_state())
+    assert '<input type="checkbox" id="mt-thermal-on">' in html
+    assert '<input type="checkbox" id="ft-thermal-on">' in html
+    assert "send(msg, box.checked)" in html
+    assert '"set_thermal_meeting"' in html
+    assert '"set_thermal_ft"' in html
+
+
+def test_thermal_level_select_is_on_both_screens():
+    html = build_html(_state())
+    assert '<select id="mt-thermal">' in html
+    assert '<select id="ft-thermal">' in html
+
+
+def test_thermal_switch_updates_state_before_sending():
+    """Та сама регресія 06.09: без STATE перед send() перемальовок відкотить."""
+    body = _handler_body(build_html(_state()), 'box.addEventListener("change"')
+    assert "STATE[key] = box.checked;" in body
+    assert body.index("STATE[key]") < body.index("send(msg")
+
+
+def test_thermal_level_row_hidden_when_guard_is_off():
+    html = build_html(_state())
+    assert "-thermal-row" in html
+    assert 'row.style.display = on ? "" : "none"' in html

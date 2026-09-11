@@ -250,3 +250,44 @@ class TestManualSpeakerCount:
         new_glob, new_cent = diarize._merge_to(glob, gcent, 4, np)
         assert len(new_cent) == 2
         assert new_glob == {"w0_0": 0, "w0_1": 1}
+
+
+# ── 11.09.2026: злиття до заданої кількості голосів ───────────────────────────
+# 🔴 Поле: запис двох стрімерів. Людина сказала «2 голоси», і саме через це
+# розділення зламалося — обидва живі голоси злилися в одного, а окремим
+# «спікером» лишився секундний шматок музики. Причина: зливалася найсхожіша
+# ПАРА, а два голоси з однієї трансляції схожі між собою більше, ніж будь-хто
+# з них — на музику. Тепер поглинається НАЙКОРОТШИЙ голос.
+
+
+def _unit(np, *xs):
+    v = np.array(xs, dtype="float32")
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def test_merge_keeps_the_two_talkers_and_absorbs_the_short_noise():
+    np = pytest.importorskip("numpy")
+    # 0 і 1 — люди (схожі між собою), 2 — коротке сміття збоку.
+    cents = [_unit(np, 1.0, 0.1, 0.0), _unit(np, 0.9, 0.2, 0.0), _unit(np, 0.0, 0.0, 1.0)]
+    glob = {"a": 0, "b": 1, "c": 2}
+    dur = {0: 60.0, 1: 45.0, 2: 1.0}
+    out, cents2 = diarize._merge_to(glob, cents, 2, np, dur)
+    assert len(cents2) == 2
+    assert out["a"] != out["b"], "двох мовців злили в одного — та сама бага 11.09"
+    assert out["c"] in (out["a"], out["b"]), "сміття мусить кудись вкластися"
+
+
+def test_merge_without_durations_still_returns_exactly_k():
+    """Старі виклики без тривалостей мають працювати, а не падати."""
+    np = pytest.importorskip("numpy")
+    cents = [_unit(np, 1.0, 0.0), _unit(np, 0.9, 0.1), _unit(np, 0.0, 1.0)]
+    out, cents2 = diarize._merge_to({"a": 0, "b": 1, "c": 2}, cents, 2, np)
+    assert len(cents2) == 2
+    assert len(set(out.values())) == 2
+
+
+def test_merge_never_invents_more_voices_than_found():
+    np = pytest.importorskip("numpy")
+    cents = [_unit(np, 1.0, 0.0)]
+    out, cents2 = diarize._merge_to({"a": 0}, cents, 3, np, {0: 10.0})
+    assert len(cents2) == 1 and out == {"a": 0}

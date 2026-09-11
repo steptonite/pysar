@@ -179,6 +179,12 @@ class ThermalGate:
         self._last: tuple[str, float] | None = None
         self._last_at = 0.0
         self._holding = False
+        # 🔴 11.09.2026. Поріг спільний, а вмикач — окремий на кожну ділянку
+        # роботи: запис зустрічі людина хоче стерегти НЕ обовʼязково тоді ж,
+        # коли пакетну розшифровку файлів. Один тумблер на двох означав би, що
+        # ввімкнувши сторожа для черги файлів, ти мовчки поставив паузи й на
+        # розділення голосів після «Стоп» — а це різні сценарії за терміновістю.
+        self._scopes: dict[str, bool] = {"meeting": True, "files": True}
 
     # — налаштування —
     @property
@@ -193,6 +199,18 @@ class ThermalGate:
     @property
     def enabled(self) -> bool:
         return self._pause_c > 0
+
+    def set_scope(self, scope: str, on: bool) -> None:
+        """Увімкнути/вимкнути сторожа на одній ділянці («meeting» / «files»)."""
+        with self._lock:
+            self._scopes[scope] = bool(on)
+
+    def enabled_for(self, scope: str | None) -> bool:
+        """Чи стереже сторож цю ділянку. Незнайома назва = стереже: нова
+        ділянка має бути під охороною за замовчуванням, а не без неї."""
+        if not self.enabled:
+            return False
+        return True if scope is None else self._scopes.get(scope, True)
 
     @property
     def holding(self) -> bool:
@@ -214,12 +232,13 @@ class ThermalGate:
         self,
         should_stop: Callable[[], bool] | None = None,
         on_state: Callable[[bool, float | None], None] | None = None,
+        scope: str | None = None,
     ) -> bool:
         """Тримає виклик, поки гаряче. False — просили спинитись, поки чекали.
 
         Датчика немає → одразу True: сторож без датчика мовчить, а не глушить
         роботу назавжди."""
-        if not self.enabled:
+        if not self.enabled_for(scope):
             return True
         notified = False
         try:

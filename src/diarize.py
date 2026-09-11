@@ -494,7 +494,16 @@ def _stitch(x, ivs, np, speakers: int = 0) -> list[tuple[float, float, int]]:
             gcent.append(cent[key].copy())
 
     if speakers >= 2 and len(gcent) > speakers:
-        glob, gcent = _merge_to(glob, gcent, speakers, np)
+        # Тривалість КОЖНОГО глобального голосу — щоб злиття знало, хто тут
+        # людина, а хто сміття. Без цього воно зливало двох справжніх мовців
+        # (вони схожі: той самий кодек трансляції) і лишало окремо секундний
+        # уривок музики — 11.09.2026 саме так два стрімери стали одним.
+        gdur: dict[int, float] = {}
+        for a, b, key in ivs:
+            g = glob.get(key)
+            if g is not None:
+                gdur[g] = gdur.get(g, 0.0) + (b - a)
+        glob, gcent = _merge_to(glob, gcent, speakers, np, gdur)
 
     out = [(a, b, glob.get(k, -1)) for a, b, k in ivs]
     if speakers >= 2:
@@ -508,27 +517,39 @@ def _stitch(x, ivs, np, speakers: int = 0) -> list[tuple[float, float, int]]:
     return [(a, b, (-1 if g in tiny else g)) for a, b, g in out]
 
 
-def _merge_to(glob: dict, gcent: list, k: int, np):
-    """Злити найсхожіші глобальні голоси, поки їх не стане рівно `k`.
+def _merge_to(glob: dict, gcent: list, k: int, np, dur: dict | None = None):
+    """Звести глобальні голоси до рівно `k`, поглинаючи НАЙКОРОТШІ.
 
-    Агломерація по косинусу: щоразу шукаємо найближчу пару центроїдів і
-    об'єднуємо. Якщо рушій знайшов МЕНШЕ голосів, ніж назвала людина, нічого не
-    вигадуємо — розділити наявне на більше ми не можемо чесно."""
+    🔴 11.09.2026. Раніше тут щоразу зливалася найсхожіша ПАРА — і на записі
+    двох стрімерів це дало рівно протилежне тому, що просив користувач: два
+    справжні голоси (схожі, бо йдуть через один кодек трансляції) злилися в
+    один, а окремим «мовцем» лишився секундний шматок музики. Тому тепер
+    рахуємо, скільки кожен голос ГОВОРИТЬ, і поглинаємо найкоротший у найсхожий
+    із решти. Довгі голоси — це люди, вони мають дожити до кінця.
+
+    Якщо рушій знайшов МЕНШЕ голосів, ніж назвала людина, нічого не вигадуємо —
+    розділити наявне на більше ми не можемо чесно."""
     cents = [g.copy() for g in gcent]
     remap = {i: i for i in range(len(cents))}
+    secs = {i: float((dur or {}).get(i, 0.0)) for i in range(len(cents))}
     while len({remap[i] for i in remap}) > k:
         alive = sorted({remap[i] for i in remap})
-        best, pair = -2.0, None
-        for ai in range(len(alive)):
-            for bi in range(ai + 1, len(alive)):
-                sim = float(cents[alive[ai]] @ cents[alive[bi]])
-                if sim > best:
-                    best, pair = sim, (alive[ai], alive[bi])
-        if pair is None:
+        drop = min(alive, key=lambda i: (secs.get(i, 0.0), i))
+        best, keep = -2.0, None
+        for i in alive:
+            if i == drop:
+                continue
+            sim = float(cents[drop] @ cents[i])
+            if sim > best:
+                best, keep = sim, i
+        if keep is None:
             break
-        keep, drop = pair
-        merged = cents[keep] + cents[drop]
+        # Центроїд зважуємо тривалістю: хвилина мовлення не має важити стільки
+        # ж, скільки півсекунди, інакше довгий голос «попливе» до короткого.
+        wk, wd = max(secs.get(keep, 0.0), 1e-6), max(secs.get(drop, 0.0), 1e-6)
+        merged = cents[keep] * wk + cents[drop] * wd
         cents[keep] = merged / (np.linalg.norm(merged) + 1e-9)
+        secs[keep] = wk + wd
         for i, v in list(remap.items()):
             if v == drop:
                 remap[i] = keep

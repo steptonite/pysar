@@ -129,3 +129,39 @@ def test_hottest_falls_back_to_any_sensor_when_there_is_no_die(monkeypatch):
 def test_hottest_is_none_when_the_machine_has_no_sensors(monkeypatch):
     monkeypatch.setattr(thermal, "read_temps", lambda: {})
     assert thermal.hottest() is None
+
+
+# ── 11.09.2026: окремі вмикачі на ділянки («зустріч» / «файли») ───────────────
+# Поріг спільний, а стерегти зустріч і чергу файлів людина може хотіти окремо.
+
+
+def _scoped_gate(temp: float, mode: str = "normal"):
+    return thermal.ThermalGate(
+        mode=mode, poll_sec=0, reader=lambda: ("tdie", temp), sleep=lambda _s: None
+    )
+
+
+def test_scope_off_lets_hot_work_through():
+    g = _scoped_gate(120.0)
+    g.set_scope("files", False)
+    assert g.enabled_for("files") is False
+    assert g.wait(scope="files") is True  # не зависло, хоч і пекло
+
+
+def test_other_scope_still_guarded():
+    g = _scoped_gate(120.0)
+    g.set_scope("files", False)
+    assert g.enabled_for("meeting") is True
+    stopped = g.wait(should_stop=lambda: True, scope="meeting")
+    assert stopped is False  # ворота таки тримали й відпустили на «стоп»
+
+
+def test_unknown_scope_is_guarded_by_default():
+    """Нова ділянка має зʼявлятися ПІД охороною, а не повз неї."""
+    assert _scoped_gate(50.0).enabled_for("щось-нове") is True
+
+
+def test_scope_cannot_revive_a_disabled_guard():
+    g = _scoped_gate(120.0, mode="off")
+    g.set_scope("files", True)
+    assert g.enabled_for("files") is False

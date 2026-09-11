@@ -64,6 +64,8 @@ _UK = {
     "ft.diarizing": "Розділяю спікерів…",
     "ft.cooling": "Даю маку охолонути… {t}°",
     "thermal.label": "Берегти мак від перегріву",
+    "thermal.level": "Коли робити паузу",
+    "thermal.shared": "Поріг спільний для зустрічей і файлів",
     "thermal.help": "Гаряче — робота чекає, охололо — сама продовжує. Нічого не "
     "втрачається, просто триває довше. Без охолоджуючої підставки бери «Бережно»",
     "thermal.off": "Не берегти",
@@ -316,7 +318,8 @@ _UK = {
     "st.meetingOn": "🎧 Транскрибую звук системи + мікрофон…",
     "st.meetingOnSys": "🎧 Транскрибую звук системи…",
     "st.meetingOff": "🎧 Транскрипцію збережено",
-    "st.diarRunning": "🗣 Розділяю спікерів…",
+    "st.diarRunning": "🗣 Розділяю спікерів… (мак зайнятий)",
+    "st.diarCooling": "🌡 Даю маку охолонути… {t}°",
     "st.meetingStopping": "⏳ Завершую попередню транскрипцію…",
     # Дренаж черги після «Зупинити»: без лічильника довга зупинка (хвилина на
     # CPU-режимі) читається як зависання — саме так її й прочитали 18.08.2026.
@@ -433,6 +436,8 @@ _EN = {
     "ft.diarizing": "Splitting speakers…",
     "ft.cooling": "Letting the Mac cool down… {t}°",
     "thermal.label": "Protect the Mac from overheating",
+    "thermal.level": "When to pause",
+    "thermal.shared": "The threshold is shared by meetings and files",
     "thermal.help": "When it gets hot the work waits, and carries on by itself once it cools. "
     "Nothing is lost, it just takes longer. Without a cooling stand, pick “Gentle”",
     "thermal.off": "Don't protect",
@@ -683,7 +688,8 @@ _EN = {
     "st.meetingOn": "🎧 Transcribing system audio + mic…",
     "st.meetingOnSys": "🎧 Transcribing system audio…",
     "st.meetingOff": "🎧 Transcript saved",
-    "st.diarRunning": "🗣 Splitting speakers…",
+    "st.diarRunning": "🗣 Splitting speakers… (the Mac is busy)",
+    "st.diarCooling": "🌡 Letting the Mac cool down… {t}°",
     "st.meetingStopping": "⏳ Finishing the previous transcription…",
     "st.meetingDraining": "⏳ Writing up what was said… {n} left",
     "st.meetingLine": "🎧 {preview}",
