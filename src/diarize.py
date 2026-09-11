@@ -769,20 +769,25 @@ def label_transcript(
     progress=None,
     speakers: int = 0,
     gate=None,
+    originals: Path | None = None,
 ) -> Path:
-    """Прохід над готовим записом → окремий файл `<імʼя>.спікери.md`.
+    """Прохід над готовим записом → мовці вписуються в сам транскрипт.
 
     `audio` — {джерело: wav}; для зустрічі це {"mic": …, "sys": …}, для файлу
-    {None: …}. Оригінальний `.md` не відкривається взагалі."""
+    {None: …}. Текст береться із сайдкара, не з `.md`, тож основний файл
+    підміняється лише ПІСЛЯ успіху і атомарно (див. `_adopt`). Явний `out_path`
+    — старий режим: окремий файл, основний не чіпається."""
     if not _JOB_LOCK.acquire(blocking=False):
         raise RuntimeError("розділення спікерів уже виконується — зачекай, поки завершиться")
     try:
-        return _label_locked(sidecar, audio, out_path, labels, progress, speakers, gate)
+        return _label_locked(sidecar, audio, out_path, labels, progress, speakers, gate, originals)
     finally:
         _JOB_LOCK.release()
 
 
-def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0, gate=None) -> Path:
+def _label_locked(
+    sidecar, audio, out_path, labels, progress, speakers=0, gate=None, originals=None
+) -> Path:
     meta, rows = read_sidecar(sidecar)
     if not rows:
         raise ValueError("у сайдкарі немає сегментів")
@@ -808,8 +813,46 @@ def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0, gate=N
     rows = assign_speakers(rows, intervals)
     names = speaker_names(rows, labels)
     title = meta.get("transcript") or sidecar.stem
-    out = out_path or sidecar.with_name(sidecar.name.split(".сегменти")[0] + ".спікери.md")
-    out.write_text(
-        render_markdown(rows, names, f"{title} — розділено на спікерів"), encoding="utf-8"
-    )
-    return out
+    text = render_markdown(rows, names, f"{title} — розділено на спікерів")
+    stem = sidecar.name.split(".сегменти")[0]
+    if out_path is not None:
+        out_path.write_text(text, encoding="utf-8")
+        return out_path
+    md = sidecar.with_name(stem + ".md")
+    if not md.exists():
+        # Основного файлу вже нема (прибрали руками) — підміняти нічого, пишемо поруч.
+        out = sidecar.with_name(stem + ".спікери.md")
+        out.write_text(text, encoding="utf-8")
+        return out
+    return _adopt(md, text, originals if originals is not None else originals_dir())
+
+
+ORIGINALS_DIRNAME = "whisper-originals"
+
+
+def originals_dir() -> Path:
+    """Тимчасовий буфер сирих розшифровок віспера — страховка, поки розділення
+    вписується прямо в транскрипт. 🔴 11.09.2026, рішення Льоші: дубль
+    `.спікери.md` прибрано, але оригінал не губимо, доки ревізія не підтвердить,
+    що підміна нічого не з'їдає. Лежить поза текою транскриптів, щоб не
+    плутатись поруч із ними."""
+    from .paths import data_dir
+
+    return data_dir() / ORIGINALS_DIRNAME
+
+
+def _adopt(md: Path, text: str, originals: Path) -> Path:
+    """Вписати розділений текст у сам `.md`, зберігши сиру версію в буфері.
+
+    Порядок має значення: спершу копія оригіналу, потім тимчасовий файл, потім
+    атомарна підміна. Збій на будь-якому кроці лишає на місці звичайний
+    транскрипт. Копія не перезаписується: повторний прохід не має права
+    замінити сирий віспер уже розділеною версією."""
+    originals.mkdir(parents=True, exist_ok=True)
+    keep = originals / md.name
+    if not keep.exists():
+        shutil.copy2(md, keep)
+    tmp = md.with_name(md.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, md)
+    return md

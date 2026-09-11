@@ -1160,6 +1160,7 @@ class VoiceTyper:
                 dump_gap = self._sysrec.dump_silent_run_seconds()
         saved_path = None
         sidecar_path = None
+        late = None  # (воркер, файл), якщо віспер ще дописує після таймауту
         try:
             # Drain the worker so the final sentence lands before the file is closed.
             if self._meeting_queue is not None:
@@ -1169,8 +1170,16 @@ class VoiceTyper:
             if self._transcript_file is not None:
                 saved_path = str(self._transcript_file.path or "")
                 sidecar_path = self._transcript_file.segments_path
-                self._transcript_file.close()
-                self._transcript_file = None
+                worker = self._meeting_worker
+                if worker is not None and worker.is_alive():
+                    # 🔴 11.09.2026: раніше файл закривався тут же, і все, що віспер
+                    # розпізнавав після 60-секундного таймауту, падало в
+                    # `if self._transcript_file is not None` і НЕ записувалось.
+                    # Зустріч не перезаписується — закриваємо у фоні, після воркера.
+                    late = (worker, self._transcript_file)
+                else:
+                    self._transcript_file.close()
+                    self._transcript_file = None
         finally:
             # The UI reset must land even if the drain/close above blew up —
             # otherwise the menu keeps offering "stop transcription" for a
@@ -1247,12 +1256,31 @@ class VoiceTyper:
             # Розділення спікерів іде ОСТАННІМ і в окремому потоці: транскрипт уже
             # збережений і про нього вже сказано, тож будь-який збій тут не може
             # відібрати в користувача результат зустрічі.
-            if sidecar_path and dump_paths and self._settings.get("meeting_diarize", False):
+            diar_on = bool(
+                sidecar_path and dump_paths and self._settings.get("meeting_diarize", False)
+            )
+            if late or diar_on:
                 threading.Thread(
-                    target=self._diarize_meeting,
-                    args=(Path(sidecar_path), list(dump_paths)),
+                    target=self._finish_meeting_tail,
+                    args=(late, sidecar_path, list(dump_paths or []), diar_on),
                     daemon=True,
                 ).start()
+
+    def _finish_meeting_tail(self, late, sidecar_path, dump_paths: list, diar_on: bool) -> None:
+        """Після «Стоп», у фоні: дочекатись віспера → закрити файл → розділити.
+
+        Розділення читає сайдкар, тож стартувати, поки воркер ще дописує, означає
+        розкласти по голосах недописаний запис, а підмінити `.md` під відкритим
+        дескриптором — загубити хвіст у відвʼязаному файлі."""
+        if late is not None:
+            worker, tf = late
+            worker.join()
+            with contextlib.suppress(Exception):
+                tf.close()
+            if self._transcript_file is tf:
+                self._transcript_file = None
+        if diar_on:
+            self._diarize_meeting(Path(sidecar_path), list(dump_paths))
 
     def _meeting_cool_gate(self) -> bool:
         """Пауза на перегрів ПІД ЧАС розділення голосів після «Стоп».
@@ -1267,10 +1295,13 @@ class VoiceTyper:
 
         def state(holding: bool, temp: float | None) -> None:
             with contextlib.suppress(Exception):
-                if holding and temp is not None:
-                    self._tray.set_status(self._t("st.diarCooling", t=round(temp)))
-                else:
-                    self._tray.set_status(self._t("st.diarRunning"))
+                msg = (
+                    self._t("st.diarCooling", t=round(temp))
+                    if holding and temp is not None
+                    else self._t("st.diarRunning")
+                )
+                self._tray.set_status(msg)
+                self._tray.show_hud(msg, "recognizing")
 
         return gate.wait(on_state=state, scope="meeting")
 
@@ -1292,6 +1323,10 @@ class VoiceTyper:
                     self._tray.notify("Pysar", self._t("notif.diarNotReadyTitle"), msg)
                     return
             self._tray.set_status(self._t("st.diarRunning"))
+            # Рядок у меню ніхто не бачить, поки меню закрите: 11.09.2026 Льоша
+            # 3 хв дивився на «спокійну» іконку й вирішив, що нічого не стартувало.
+            with contextlib.suppress(Exception):
+                self._tray.show_hud(self._t("st.diarRunning"), "recognizing")
             out = diarize.label_transcript(
                 sidecar,
                 audio,
@@ -1311,6 +1346,8 @@ class VoiceTyper:
             # її результат: він мусить гаснути на КОЖНОМУ виході.
             with contextlib.suppress(Exception):
                 self._tray.set_status(self._t("st.meetingOff"))
+                if not self._recording and not self._meeting:
+                    self._tray.hide_hud()
         print(f"🗣 speakers split → {out}")
         with contextlib.suppress(Exception):
             self._tray.notify(

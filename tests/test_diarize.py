@@ -351,3 +351,54 @@ def test_rows_without_words_keep_the_old_behaviour():
     row = {"i": 0, "t0": 0.0, "t1": 2.0, "src": "sys", "clock": "21:05:20", "text": "текст"}
     out = diarize.assign_speakers([row], {"sys": [(0.0, 1.9, 3)]})
     assert out == [{**row, "speaker": "sys#3"}]
+
+
+def _adoptable(tmp_path, monkeypatch):
+    side = tmp_path / "transcript_x.сегменти.jsonl"
+    rows = [
+        {"_meta": {"transcript": "transcript_x.md"}},
+        {"i": 0, "t0": 0.0, "t1": 1.0, "src": "sys", "text": "привіт"},
+        {"i": 1, "t0": 1.0, "t1": 2.0, "src": "sys", "text": "бувай"},
+    ]
+    side.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8"
+    )
+    md = tmp_path / "transcript_x.md"
+    md.write_text("# сирий віспер\n", encoding="utf-8")
+    wav = tmp_path / "a-sys.wav"
+    wav.write_bytes(b"\0" * 100)
+    monkeypatch.setattr(diarize, "diarize_wav", lambda *a, **k: [(0.0, 1.0, 0), (1.0, 2.0, 1)])
+    return side, md, wav
+
+
+def test_speakers_go_into_the_transcript_itself_and_raw_whisper_is_buffered(tmp_path, monkeypatch):
+    """11.09.2026: дубль `.спікери.md` прибрано — але сирий віспер лежить у буфері."""
+    side, md, wav = _adoptable(tmp_path, monkeypatch)
+    buf = tmp_path / "originals"
+    out = diarize.label_transcript(side, {"sys": wav}, originals=buf)
+    assert out == md
+    assert "розділено на спікерів" in md.read_text(encoding="utf-8")
+    assert (buf / md.name).read_text(encoding="utf-8") == "# сирий віспер\n"
+    assert not list(tmp_path.glob("*.спікери.md"))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_second_pass_never_overwrites_the_buffered_raw_whisper(tmp_path, monkeypatch):
+    side, md, wav = _adoptable(tmp_path, monkeypatch)
+    buf = tmp_path / "originals"
+    diarize.label_transcript(side, {"sys": wav}, originals=buf)
+    diarize.label_transcript(side, {"sys": wav}, originals=buf)
+    assert (buf / md.name).read_text(encoding="utf-8") == "# сирий віспер\n"
+
+
+def test_failed_split_leaves_the_transcript_untouched(tmp_path, monkeypatch):
+    side, md, wav = _adoptable(tmp_path, monkeypatch)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("рушій упав")
+
+    monkeypatch.setattr(diarize, "diarize_wav", boom)
+    with pytest.raises(RuntimeError):
+        diarize.label_transcript(side, {"sys": wav}, originals=tmp_path / "originals")
+    assert md.read_text(encoding="utf-8") == "# сирий віспер\n"
+    assert not (tmp_path / "originals").exists()
