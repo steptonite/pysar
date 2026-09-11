@@ -237,11 +237,11 @@ def test_average_mode_ignores_a_single_spike():
 
 
 def test_average_mode_pauses_on_sustained_heat_and_resumes_when_average_drops():
-    # 112×3 → середнє 112 ≥ 101 → пауза; далі 70: середнє падає 101,5 · 97,3 · 94 ·
-    # 91,7 · 89,75 ≤ 90 → відпускаємо на восьмому замірі.
+    # 112×3 → середнє 112 ≥ 101 → пауза; далі 70: середнє падає 101,5 · 95,2 · 91 ·
+    # 88 ≤ 90 → відпускаємо на сьомому замірі.
     fake = _Fake([112.0, 112.0, 112.0, 70.0])
     gate = thermal.ThermalGate(
         mode="hot", poll_sec=2.0, cache_sec=0.0, avg_sec=30.0, reader=fake.read, sleep=fake.sleep
     )
     assert gate.wait() is True
-    assert len(fake.slept) == 7
+    assert len(fake.slept) == 6
