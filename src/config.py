@@ -193,7 +193,7 @@ MODES = {
 # conventional best practice for language pickers.
 MODE_LABELS = {
     "auto": "🔤 Auto (detect)",
-    "ru": "🇷🇺 Русский",
+    "ru": "💩 Русский",
     "en": "🇬🇧 English",
     "translate": "🌐 → English (from any)",
     "uk": "🇺🇦 Українська",
@@ -306,7 +306,7 @@ def set_hotkey_label(index: int, profile_set: dict | None = None) -> str:
 MODE_ICONS = {
     "auto": "🔤",
     "uk": "🇺🇦",
-    "ru": "🇷🇺",
+    "ru": "💩",
     "en": "🇬🇧",
     "translate": "🌐",
 }

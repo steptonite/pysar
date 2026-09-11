@@ -21,7 +21,7 @@ Built and tuned on an **Apple M2 with 8 GB** of unified memory — the constrain
 - **Two dictation modes.** *Batch* transcribes the whole take at once and pastes it — the cleanest result for a long, considered thought. *Streaming* types each sentence into the field while you keep talking, cutting audio on natural pauses (never mid-word) and transcribing sentence-by-sentence through a single serialized worker, so word order holds and whisper is never run concurrently. Choose in **Settings → Dictation**. → [Streaming dictation](#streaming-dictation)
 - **Focus-aware safety.** Streaming watches where the keyboard focus actually is. Switch to another text field and it follows you there. Switch somewhere with no field at all — Spotlight, the desktop — and it refuses to type blind: the rest of the take is collected and handed to your clipboard in one piece when you stop, so nothing lands in the wrong window.
 - **Status pill.** A small floating overlay near the menu-bar icon shows the live state — listening, recognizing, buffering — so you can tell it's working even when your dictation key is a silent one with no LED.
-- **19 output languages.** `Ctrl+Option+U` (🇺🇦) · `R` (🇷🇺) · `E` (🌐 → English from *any* spoken language), with 17 more in the **🌍 Languages** submenu. The menu-bar flag shows what's active. Every shortcut — dictation toggle, languages, profile sets — is reassignable live in **Settings → Hotkeys**, no relaunch.
+- **19 output languages.** `Ctrl+Option+U` (🇺🇦) · `R` (💩) · `E` (🌐 → English from *any* spoken language), with 17 more in the **🌍 Languages** submenu. The menu-bar flag shows what's active. Every shortcut — dictation toggle, languages, profile sets — is reassignable live in **Settings → Hotkeys**, no relaunch.
 
 **Accuracy**
 
@@ -92,7 +92,7 @@ Then launch **Pysar** from Spotlight and grant **Input Monitoring** and **Access
 | Action | How |
 |---|---|
 | Dictate | Caps Lock → speak → Caps Lock |
-| Switch language | `Ctrl+Option+U` 🇺🇦 · `R` 🇷🇺 · `E` 🌐→EN, or the 🌍 submenu |
+| Switch language | `Ctrl+Option+U` 🇺🇦 · `R` 💩 · `E` 🌐→EN, or the 🌍 submenu |
 | Arm a profile set | `Ctrl+Option+<digit>` |
 | Meeting mode | **🎧 Transcribe everything** in the menu bar |
 | Settings | menu bar → Settings |
