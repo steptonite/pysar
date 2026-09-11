@@ -223,3 +223,25 @@ def test_pause_ends_only_after_the_core_stays_cool_not_on_one_cold_reading(capsy
     assert gate.wait(scope="meeting") is True
     assert len(fake.slept) == 6
     assert capsys.readouterr().out.count("guard resume") == 1
+
+
+def test_average_mode_ignores_a_single_spike():
+    # 11.09.2026: ядро дає 112° за 2 с роботи — один стрибок не причина паузи.
+    fake = _Fake([70.0, 112.0])
+    gate = thermal.ThermalGate(
+        mode="hot", poll_sec=2.0, cache_sec=0.0, avg_sec=30.0, reader=fake.read, sleep=fake.sleep
+    )
+    assert gate.wait() is True
+    assert gate.wait() is True  # середнє 91° < 101°
+    assert fake.slept == []
+
+
+def test_average_mode_pauses_on_sustained_heat_and_resumes_when_average_drops():
+    # 112×3 → середнє 112 ≥ 101 → пауза; далі 70: середнє падає 101,5 · 97,3 · 94 ·
+    # 91,7 · 89,75 ≤ 90 → відпускаємо на восьмому замірі.
+    fake = _Fake([112.0, 112.0, 112.0, 70.0])
+    gate = thermal.ThermalGate(
+        mode="hot", poll_sec=2.0, cache_sec=0.0, avg_sec=30.0, reader=fake.read, sleep=fake.sleep
+    )
+    assert gate.wait() is True
+    assert len(fake.slept) == 7

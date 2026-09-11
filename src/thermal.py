@@ -17,7 +17,10 @@ import threading
 import time
 from collections.abc import Callable
 
-SETTLE_SEC = 20.0  # скільки ядро має протриматись нижче порога, щоб пауза скінчилась
+# 🔴 11.09.2026, замір: ядро розганяється 77° → 112° менш ніж за 2 с роботи — це
+# штатно для Apple silicon, а не перегрів. Рішення за ОДНИМ заміром давало цикл
+# «2 с роботи / 20 с паузи». Тому сторож дивиться на СЕРЕДНЄ за AVG_SEC.
+AVG_SEC = 30.0
 
 
 def _log(line: str) -> None:
@@ -377,9 +380,12 @@ class ThermalGate:
         reader: Callable[[], tuple[str, float] | None] = hottest,
         sleep: Callable[[float], None] = time.sleep,
         settle_sec: float = 0.0,
+        avg_sec: float = 0.0,
     ) -> None:
         self._lock = threading.Lock()
         self._settle = settle_sec
+        self._avg = avg_sec
+        self._hist: list[tuple[float, float]] = []
         self._pause_c, self._resume_c = profile(mode)
         self._mode = mode if mode in PROFILES else DEFAULT_MODE
         self._poll = poll_sec
@@ -408,12 +414,12 @@ class ThermalGate:
     def _where(self) -> str:
         return self._last[0] if self._last else "?"
 
-    def _log_check(self, tag: str, temp: float) -> None:
+    def _log_check(self, tag: str, text: str) -> None:
         now = time.monotonic()
         if now - self._checked.get(tag, -self.CHECK_LOG_SEC) < self.CHECK_LOG_SEC:
             return
         self._checked[tag] = now
-        _log(f"🌡 guard check [{tag}] {self._where()} {temp:.1f}° < {self._pause_c:.0f}° — працюємо")
+        _log(f"🌡 guard check [{tag}] {self._where()} {text} < {self._pause_c:.0f}° — працюємо")
 
     # — налаштування —
     @property
@@ -455,7 +461,20 @@ class ThermalGate:
         reading = self._reader()
         self._last_at = now
         self._last = reading
-        return None if reading is None else reading[1]
+        if reading is None:
+            return None
+        self._hist.append((now, reading[1]))
+        self._hist = [(t, v) for t, v in self._hist if now - t <= self._avg]
+        return reading[1]
+
+    def level(self, temp: float) -> float:
+        """За чим вирішувати: середнє за `avg_sec` або сам замір, якщо середнє вимкнене."""
+        if self._avg <= 0 or not self._hist:
+            return temp
+        return sum(v for _, v in self._hist) / len(self._hist)
+
+    def _fmt(self, temp: float, lvl: float) -> str:
+        return f"{temp:.1f}°" if self._avg <= 0 else f"{temp:.1f}° сер{self._avg:.0f}с {lvl:.1f}°"
 
     def wait(
         self,
@@ -485,30 +504,33 @@ class ThermalGate:
                 if temp is None:
                     return True
                 peak = max(peak, temp)
+                lvl = self.level(temp)
                 if not self._holding:
-                    if temp < self._pause_c:
-                        self._log_check(tag, temp)
+                    if lvl < self._pause_c:
+                        self._log_check(tag, self._fmt(temp, lvl))
                         return True
                     self._holding = True
                     started = time.monotonic()
                     _log(
-                        f"🌡 guard pause [{tag}] {self._where()} {temp:.1f}° ≥ {self._pause_c:.0f}° "
+                        f"🌡 guard pause [{tag}] {self._where()} {self._fmt(temp, lvl)} ≥ {self._pause_c:.0f}° "
                         f"(mode {self._mode})"
                     )
-                elif temp <= self._resume_c:
+                elif lvl <= self._resume_c:
                     cool_n += 1
                     if cool_n >= need:
                         self._holding = False
                         _log(
-                            f"🌡 guard resume [{tag}] {self._where()} {temp:.1f}° ≤ {self._resume_c:.0f}° "
+                            f"🌡 guard resume [{tag}] {self._where()} {self._fmt(temp, lvl)} ≤ {self._resume_c:.0f}° "
                             f"after {time.monotonic() - started:.0f}s, peak {peak:.1f}°"
                         )
                         return True
-                    _log(f"🌡 guard cool [{tag}] {self._where()} {temp:.1f}° ({cool_n}/{need})")
+                    _log(
+                        f"🌡 guard cool [{tag}] {self._where()} {self._fmt(temp, lvl)} ({cool_n}/{need})"
+                    )
                 else:
                     cool_n = 0
                     _log(
-                        f"🌡 guard hold [{tag}] {self._where()} {temp:.1f}° ({time.monotonic() - started:.0f}s)"
+                        f"🌡 guard hold [{tag}] {self._where()} {self._fmt(temp, lvl)} ({time.monotonic() - started:.0f}s)"
                     )
                 if on_state is not None and not notified:
                     notified = True
@@ -542,5 +564,5 @@ def gate() -> ThermalGate:
     global _gate
     with _gate_lock:
         if _gate is None:
-            _gate = ThermalGate(settle_sec=SETTLE_SEC)
+            _gate = ThermalGate(avg_sec=AVG_SEC)
         return _gate
