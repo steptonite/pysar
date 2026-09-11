@@ -147,9 +147,9 @@ def test_span_comes_from_the_segmenter_not_from_the_dump():
 
 
 def test_neighbouring_segments_do_not_overlap():
-    from pysar.segmenter import Segmenter
-
     import numpy as np
+
+    from pysar.segmenter import Segmenter
 
     rate, block = 16000, 1600
     seg = Segmenter(
@@ -175,9 +175,9 @@ def test_neighbouring_segments_do_not_overlap():
 
 
 def test_span_skips_the_silence_the_segmenter_dropped():
-    from pysar.segmenter import Segmenter
-
     import numpy as np
+
+    from pysar.segmenter import Segmenter
 
     rate, block = 16000, 1600
     seg = Segmenter(
