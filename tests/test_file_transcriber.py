@@ -810,3 +810,54 @@ def test_diarization_failure_never_kills_the_transcript(monkeypatch, tmp_path):
     assert errors == []
     assert done and Path(done[0]).exists()
     assert "_— end —_" in Path(done[0]).read_text(encoding="utf-8")
+
+
+# ── Термо-пауза ───────────────────────────────────────────────────────────────
+
+
+def _job(**kw):
+    return FileTranscriptionJob(
+        "hot.mp4", "uk", lambda _p: None, lambda _d: None, lambda _e: None, **kw
+    )
+
+
+def test_cool_down_is_a_no_op_when_the_guard_is_off(monkeypatch):
+    from src import thermal
+
+    monkeypatch.setattr(thermal, "_gate", thermal.ThermalGate(mode="off"))
+    assert _job()._cool_down() is True
+
+
+def test_cool_down_shows_the_temperature_it_waits_on(monkeypatch):
+    """Людина мусить бачити, ЧОМУ стоїть шкала — інакше це читається як зависання."""
+    from src import thermal
+
+    readings = iter([("PMU tdie1", 99.0), ("PMU tdie1", 80.0)])
+    gate = thermal.ThermalGate(
+        mode="normal", cache_sec=0.0, reader=lambda: next(readings), sleep=lambda _s: None
+    )
+    monkeypatch.setattr(thermal, "_gate", gate)
+
+    phases = []
+    job = FileTranscriptionJob(
+        "hot.mp4", "uk", lambda _p: None, lambda _d: None, lambda _e: None, on_phase=phases.append
+    )
+    assert job._cool_down() is True
+    assert "cool:99" in phases, phases
+    assert phases[-1] == "", "після охолодження фаза мусить повернутись до роботи"
+
+
+def test_cool_down_releases_a_cancelled_job(monkeypatch):
+    # Скасована робота не має чекати охолодження — людина вже натиснула «стоп».
+    from src import thermal
+
+    gate = thermal.ThermalGate(
+        mode="normal",
+        cache_sec=0.0,
+        reader=lambda: ("PMU tdie1", 110.0),
+        sleep=lambda _s: None,
+    )
+    monkeypatch.setattr(thermal, "_gate", gate)
+    job = _job()
+    job.cancel()
+    assert job._cool_down() is False

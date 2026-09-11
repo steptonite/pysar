@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import diarize, postprocessor, server
+from . import diarize, postprocessor, server, thermal
 from .audiodev import default_output_device, output_is_running
 from .backend import HotkeyListener, Paster, TranscriptWindow, Tray, login_item_enabled
 from .config import (
@@ -143,6 +143,9 @@ class VoiceTyper:
         self._capture_output_device = None  # CoreAudio output device at capture start
         self._capture_started_at = 0.0  # monotonic start of the CURRENT capture stream
 
+        # Сторож тепла піднімається ПЕРШИМ: інакше перший же важкий прогін
+        # після старту пішов би з дефолтним режимом, а не з обраним людиною.
+        thermal.gate().set_mode(self._settings.get("thermal_mode", "normal"))
         self._tray = Tray(
             modes=[(code, MODE_LABELS[code]) for code in MENU_MODES],
             current_mode=self._mode,
@@ -197,6 +200,8 @@ class VoiceTyper:
             on_set_ft_diarize=self._on_set_ft_diarize,
             diar_speakers=self._settings.get("diar_speakers", 0),
             on_set_diar_speakers=self._on_set_diar_speakers,
+            thermal_mode=self._settings.get("thermal_mode", "normal"),
+            on_set_thermal_mode=self._on_set_thermal_mode,
             on_diar_install=self._on_diar_install,
             meeting_hidden=self._settings.get("meeting_hidden", False),
             meeting_island_opacity=self._settings.get("meeting_island_opacity", 0.92),
@@ -1502,6 +1507,19 @@ class VoiceTyper:
             n = 0
         self._settings["diar_speakers"] = n if 2 <= n <= 12 else 0
         save_settings(self._settings)
+
+    def _on_set_thermal_mode(self, mode: str) -> None:
+        """Наскільки берегти залізо. Застосовується ОДРАЗУ, не з наступного
+        запуску: сторож живе один на процес, і робота, що вже йде, питає саме
+        його на кожному шматку."""
+        from . import thermal
+
+        m = str(mode or "normal")
+        if m not in thermal.PROFILES:
+            m = thermal.DEFAULT_MODE
+        self._settings["thermal_mode"] = m
+        save_settings(self._settings)
+        thermal.gate().set_mode(m)
 
     def _on_diar_install(self, progress) -> tuple[bool, str]:
         """Докачка рушія й моделей на вимогу. Викликається з фонового потоку

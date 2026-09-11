@@ -908,6 +908,8 @@ class Tray:
         on_set_ft_diarize: Callable[[bool], None] | None = None,
         diar_speakers: int = 0,
         on_set_diar_speakers: Callable[[int], None] | None = None,
+        thermal_mode: str = "normal",
+        on_set_thermal_mode: Callable[[str], None] | None = None,
         on_diar_install: Callable | None = None,
         on_set_meeting_hidden: Callable[[bool], None] | None = None,
         on_set_meeting_opacity: Callable[[float], None] | None = None,
@@ -1008,6 +1010,8 @@ class Tray:
         self._on_set_ft_diarize = on_set_ft_diarize
         self._diar_speakers = int(diar_speakers or 0)
         self._on_set_diar_speakers = on_set_diar_speakers
+        self._thermal_mode = str(thermal_mode or "normal")
+        self._on_set_thermal_mode = on_set_thermal_mode
         self._on_diar_install = on_diar_install
         self._diar_busy = False
         self._diar_progress = ""
@@ -1215,6 +1219,7 @@ class Tray:
                         "set_meeting_diarize": self._set_meeting_diarize,
                         "set_ft_diarize": self._set_ft_diarize,
                         "set_diar_speakers": self._set_diar_speakers,
+                        "set_thermal_mode": self._set_thermal_mode,
                         "diar_install": self._diar_install,
                         "set_meeting_hidden": self._set_meeting_hidden,
                         "set_meeting_opacity": self._set_meeting_opacity,
@@ -1284,6 +1289,7 @@ class Tray:
             "meeting_diarize": self._meeting_diarize,
             "ft_diarize": self._ft_diarize,
             "diar_speakers": self._diar_speakers,
+            "thermal_mode": self._thermal_mode,
             "diar_status": self._diar_status(),
             "diar_busy": self._diar_busy,
             "diar_progress": self._diar_progress,
@@ -1527,6 +1533,11 @@ class Tray:
         self._ft_diarize = bool(on)
         if self._on_set_ft_diarize:
             self._on_set_ft_diarize(self._ft_diarize)
+
+    def _set_thermal_mode(self, mode) -> None:
+        self._thermal_mode = str(mode or "normal")
+        if self._on_set_thermal_mode:
+            self._on_set_thermal_mode(self._thermal_mode)
 
     def _set_diar_speakers(self, count) -> None:
         try:

@@ -255,6 +255,28 @@ class FileTranscriptionJob:
     def resume(self) -> None:
         self._pause_event.set()
 
+    def _cool_down(self, phase_when_done: str = "") -> bool:
+        """Пауза між шматками, поки мак не охолоне. True — можна працювати далі.
+
+        🔴 Саме пауза, а не зупинка: транскрибація файлу йде годинами, і вбитий
+        через перегрів прогін — це втрачена година. Місце вибране не випадково:
+        тут щойно закінчився шматок і ще не почався наступний, тож затримка не
+        ріже ані звук, ані текст. Ідея Льоші 11.09.2026."""
+        from . import thermal
+
+        gate = thermal.gate()
+        if not gate.enabled:
+            return True
+
+        def state(holding: bool, temp: float | None) -> None:
+            with contextlib.suppress(Exception):
+                if holding and temp is not None:
+                    self._on_phase(f"cool:{round(temp)}")
+                else:
+                    self._on_phase(phase_when_done)
+
+        return gate.wait(should_stop=self._cancel_event.is_set, on_state=state)
+
     def _diarize_result(self, md_path: Path, sidecar: Path, raw_path: str | None) -> None:
         """Другий файл поруч: той самий текст, розкладений по голосах.
 
@@ -281,8 +303,15 @@ class FileTranscriptionJob:
                 if not ok:
                     print(f"⚠️ diarization unavailable: {msg}")
                     return
+            # Розділення гріє мак СИЛЬНІШЕ за саму розшифровку: whisper рахує
+            # на відеоядрі, а цей рушій — на процесорі (помітив Льоша
+            # 11.09.2026), тож тут ворота потрібні навіть більше.
             out = _diar.label_transcript(
-                Path(sidecar), {None: Path(raw_path)}, progress=tick, speakers=self._speakers
+                Path(sidecar),
+                {None: Path(raw_path)},
+                progress=tick,
+                speakers=self._speakers,
+                gate=lambda: self._cool_down("diarize"),
             )
             print(f"🗣 speakers split → {out}")
         except Exception as e:
@@ -378,6 +407,12 @@ class FileTranscriptionJob:
                         if not self._pause_event.is_set():
                             self._on_paused()
                             self._pause_event.wait()
+                        if self._cancel_event.is_set():
+                            continue
+
+                        # Тепло — така сама причина зачекати, як і натиснута
+                        # людиною пауза, тому й стоїть поруч із нею.
+                        self._cool_down()
                         if self._cancel_event.is_set():
                             continue
 

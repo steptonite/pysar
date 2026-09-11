@@ -650,6 +650,12 @@ _TEMPLATE = r"""<!doctype html>
         <div class="help" id="ft-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="ft-diar-install"></button>
       </div>
+      <div class="row">
+        <div class="body"><div class="label" data-i18n="thermal.label">Protect the Mac from overheating</div>
+          <div class="help" style="white-space:normal" data-i18n="thermal.help">Work waits while the Mac
+            is hot and carries on once it cools down — nothing is lost, it just takes longer</div></div>
+        <select id="ft-thermal"></select>
+      </div>
     </section>
     <section id="ft-queue-sec" style="display:none">
       <div class="row" style="display:block">
@@ -1060,6 +1066,27 @@ $("back-enh").addEventListener("click", () => show("main"));
       if (window.renderDiar) window.renderDiar();
     });
   });
+  // ── Берегти мак ───────────────────────────────────────────────────────────
+  // Числа в підписах стоять свідомо: «бережно/звичайно» без градусів нічого не
+  // каже людині, яка вже бачила 105° на своєму маку.
+  const ftTh = $("ft-thermal");
+  if (ftTh) {
+    [["off",    T("thermal.off", "Off")],
+     ["gentle", T("thermal.gentle", "Gentle — pause at 88°")],
+     ["normal", T("thermal.normal", "Normal — pause at 95°")],
+     ["hot",    T("thermal.hot", "To the limit — pause at 101°")]].forEach(([val, label]) => {
+      const o = document.createElement("option");
+      o.value = val; o.textContent = label;
+      ftTh.appendChild(o);
+    });
+    ftTh.value = STATE.thermal_mode || "normal";
+    ftTh.addEventListener("change", () => {
+      // STATE — перед send(), інакше наступний перемальовок відкотить вибір
+      // і список виглядатиме захардкодженим (те саме, що ловили 06.09.2026).
+      STATE.thermal_mode = ftTh.value;
+      send("set_thermal_mode", ftTh.value);
+    });
+  }
   $("mt-diar-install").addEventListener("click", () => send("diar_install"));
   $("ft-diar-install").addEventListener("click", () => send("diar_install"));
   window.renderDiar = function(){
@@ -1070,6 +1097,7 @@ $("back-enh").addEventListener("click", () => show("main"));
     // порожня ручка на вимкненому режимі — це та сама плутанина, за яку 06.09
     // прилетіло за два «розділення» на одному екрані.
     spk.forEach(sel => { sel.value = String(STATE.diar_speakers || 0); });
+    if (ftTh) ftTh.value = STATE.thermal_mode || "normal";
     const spkRow = (pfx, on) => {
       const r = $(pfx + "-spk-row");
       if (r) r.style.display = on ? "" : "none";
@@ -1680,7 +1708,12 @@ function renderFt(){
   } else if (q.state === "running") {
     // Друга фаза має власне імʼя: шкала в хвості майже не рухається, і без
     // цього рядка «Транскрибую… 100%» читалось як «готово», поки мак ще гріється.
-    const label = (current && current.phase === "diarize")
+    // Пауза через тепло — не зупинка і не помилка, і людина мусить бачити
+    // САМЕ це, разом із градусами: інакше завмерла шкала читається як зависання.
+    const ph = (current && current.phase) || "";
+    const label = ph.startsWith("cool")
+      ? T("ft.cooling", "Letting the Mac cool down…").replace("{t}", ph.split(":")[1] || "")
+      : ph === "diarize"
       ? T("ft.diarizing", "Splitting speakers…") : T("ft.running", "Transcribing…");
     st.textContent = label + " " + counts + " · " + pct + "%";
   } else if (q.state === "pausing") {

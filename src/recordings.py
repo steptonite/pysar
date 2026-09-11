@@ -135,6 +135,11 @@ DEFAULTS = {
     "ft_diarize": False,
     #   diar_speakers — скільки голосів людина ПАМʼЯТАЄ (0 = хай рушій рахує сам)
     "diar_speakers": 0,
+    #   thermal_mode — коли ставити важку роботу на паузу через нагрів:
+    #   off / gentle (88°) / normal (95°) / hot (101°). Дефолт «Звичайно»:
+    #   мак, який пече сам себе годину, — гірший сценарій, ніж робота,
+    #   що триває довше.
+    "thermal_mode": "normal",
 }
 UI_THEMES = ("auto", "light", "dark")
 KEEP_LAST_OPTIONS = (5, 10, 20, 50, 100, 500)

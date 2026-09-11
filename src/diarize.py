@@ -367,24 +367,38 @@ def to_wav16k(src: Path, dest: Path) -> Path:
 
 
 # ── Кадрова діаризація ────────────────────────────────────────────────────────
-def diarize_wav(path: Path, progress=None, speakers: int = 0) -> list[tuple[float, float, int]]:
+def diarize_wav(
+    path: Path, progress=None, speakers: int = 0, gate=None
+) -> list[tuple[float, float, int]]:
     """(t0, t1, кластер) для одного файлу. Кластер −1 = «невпізнано»."""
-    return diarize_samples(load_audio(path), progress=progress, speakers=speakers)
+    return diarize_samples(load_audio(path), progress=progress, speakers=speakers, gate=gate)
 
 
-def diarize_samples(x, progress=None, speakers: int = 0) -> list[tuple[float, float, int]]:
+def diarize_samples(
+    x, progress=None, speakers: int = 0, gate=None
+) -> list[tuple[float, float, int]]:
+    """`gate` — функція, яку рушій питає між внутрішніми шматками: вона має
+    право затримати виклик (термо-пауза) і нічого не повертає."""
     import numpy as np
     import sherpa_onnx
+
+    threads = 4
+    if gate is None:
+        from . import thermal
+
+        g = thermal.gate()
+        threads = g.threads
+        gate = g.wait if g.enabled else None
 
     cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=str(seg_model())
             ),
-            num_threads=4,
+            num_threads=threads,
         ),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=str(emb_model()), num_threads=4
+            model=str(emb_model()), num_threads=threads
         ),
         clustering=sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=CLUSTER_THRESHOLD),
         min_duration_on=0.3,
@@ -399,7 +413,17 @@ def diarize_samples(x, progress=None, speakers: int = 0) -> list[tuple[float, fl
         if len(chunk) < SAMPLE_RATE * 2:
             continue
         off = wi * WINDOW_SEC
-        for s in sd.process(chunk).sort_by_start_time():
+
+        def _beat(_done: int, _total: int, _gate=gate) -> int:
+            # Рушій кличе це між своїми внутрішніми шматками — єдине місце
+            # всередині 30-хвилинного вікна, де можна перевести дух. Затримка
+            # тут нічого не ламає: повертаємо 0 = «працюй далі».
+            if _gate is not None:
+                with contextlib.suppress(Exception):
+                    _gate()
+            return 0
+
+        for s in sd.process(chunk, callback=_beat).sort_by_start_time():
             ivs.append([off + s.start, off + s.end, f"w{wi}_{s.speaker}"])
         if progress:
             with contextlib.suppress(Exception):
@@ -638,6 +662,7 @@ def label_transcript(
     labels: dict[str, str] | None = None,
     progress=None,
     speakers: int = 0,
+    gate=None,
 ) -> Path:
     """Прохід над готовим записом → окремий файл `<імʼя>.спікери.md`.
 
@@ -646,12 +671,12 @@ def label_transcript(
     if not _JOB_LOCK.acquire(blocking=False):
         raise RuntimeError("розділення спікерів уже виконується — зачекай, поки завершиться")
     try:
-        return _label_locked(sidecar, audio, out_path, labels, progress, speakers)
+        return _label_locked(sidecar, audio, out_path, labels, progress, speakers, gate)
     finally:
         _JOB_LOCK.release()
 
 
-def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0) -> Path:
+def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0, gate=None) -> Path:
     meta, rows = read_sidecar(sidecar)
     if not rows:
         raise ValueError("у сайдкарі немає сегментів")
@@ -671,7 +696,7 @@ def _label_locked(sidecar, audio, out_path, labels, progress, speakers=0) -> Pat
     per_source = speakers if len(live) == 1 else 0
     intervals = {}
     for src, path in live:
-        intervals[src] = diarize_wav(path, progress=progress, speakers=per_source)
+        intervals[src] = diarize_wav(path, progress=progress, speakers=per_source, gate=gate)
     if not intervals:
         raise ValueError("немає аудіо для розділення — запис не зберігся")
     rows = assign_speakers(rows, intervals)

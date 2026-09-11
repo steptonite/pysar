@@ -329,3 +329,33 @@ def test_dispatch_routes_the_speaker_count():
     seen = []
     dispatch({"action": "set_diar_speakers", "value": 4}, {"set_diar_speakers": seen.append})
     assert seen == [4]
+
+
+# ── Термо-сторож ──────────────────────────────────────────────────────────────
+
+
+def test_thermal_control_is_on_the_file_screen():
+    html = build_html(_state(thermal_mode="gentle"))
+    assert '<select id="ft-thermal">' in html
+    assert 'send("set_thermal_mode"' in html
+    assert '"thermal_mode": "gentle"' in html or '"thermal_mode":"gentle"' in html
+
+
+def test_thermal_change_updates_state_before_sending():
+    # Той самий клас баги, що 06.09.2026: якщо STATE не оновити ДО send(),
+    # наступний перемальовок відкотить вибір і список виглядатиме мертвим.
+    body = _handler_body(build_html(_state()), 'ftTh.addEventListener("change"')
+    assert body.index("STATE.thermal_mode") < body.index('send("set_thermal_mode"')
+
+
+def test_dispatch_routes_the_thermal_mode():
+    seen = []
+    dispatch({"action": "set_thermal_mode", "value": "gentle"}, {"set_thermal_mode": seen.append})
+    assert seen == ["gentle"]
+
+
+def test_cooling_phase_has_its_own_line_in_the_queue_status():
+    # Завмерла шкала без підпису читається як зависання застосунку.
+    html = build_html(_state())
+    assert "ft.cooling" in html
+    assert 'ph.startsWith("cool")' in html
