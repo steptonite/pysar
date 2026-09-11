@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 # ─────────────────────────────────────────────────────────────────────────────
 [project]
 name = "pysar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Voice translation in any direction, locally on Apple Silicon. Tap Caps Lock, speak any language, get any other."
 readme = "README.md"
 requires-python = ">=3.10"
