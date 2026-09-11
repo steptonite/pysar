@@ -133,15 +133,213 @@ def read_temps() -> dict[str, float]:
         return {}
 
 
-def hottest() -> tuple[str, float] | None:
-    """(назва, °C) найгарячішої точки кристала або None, якщо датчика немає.
+# ── SMC: ті самі градуси, що людина бачить у меню ─────────────────────────────
+# 🔴 11.09.2026. Льоша: «в мене 107 і воно жодного разу не спинилось». Замір у
+# ту саму секунду: у нього на екрані 95 °C, наш HID `tdie` — 77 °C; на спокої
+# 74,9 проти 60,9. Це не збій датчика, це ДВІ РІЗНІ ШКАЛИ. HID `PMU tdie` —
+# усереднена температура кластера кристала; менюшні монітори (Stats, iStat)
+# читають SMC-ключі `Tp**` — найгарячіше ЯДРО, а воно стабільно на 15-18 °C
+# вище. Пороги 88/95/101 складались із чисел, які Льоша й Катя називали З МЕНЮ,
+# тобто зі шкали SMC, — а код міряв нижчу. Тому сторож чесно мовчав: за його
+# шкалою до порога бракувало рівно цієї різниці.
+# Тепер міряємо те саме, що видно на екрані. HID лишається запасним шляхом.
+_SMC: dict = {"read": None, "broken": False}
 
-    🔴 Беремо максимум САМЕ серед `tdie` — це температура кристала. Сліпий
+
+def _smc_reader():
+    """Функція читання ключів SMC або None. Пароля не потребує.
+
+    Перелік ключів знімається ОДИН раз (1677 ключів — це помітна робота), далі
+    читаються тільки ядра."""
+    import ctypes
+    import ctypes.util
+    import struct
+
+    iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
+    class _Version(ctypes.Structure):
+        _fields_ = [
+            ("major", ctypes.c_ubyte),
+            ("minor", ctypes.c_ubyte),
+            ("build", ctypes.c_ubyte),
+            ("reserved", ctypes.c_ubyte),
+            ("release", ctypes.c_ushort),
+        ]
+
+    class _PLimit(ctypes.Structure):
+        _fields_ = [
+            ("version", ctypes.c_ushort),
+            ("length", ctypes.c_ushort),
+            ("cpuPLimit", ctypes.c_uint32),
+            ("gpuPLimit", ctypes.c_uint32),
+            ("memPLimit", ctypes.c_uint32),
+        ]
+
+    class _KeyInfo(ctypes.Structure):
+        _fields_ = [
+            ("dataSize", ctypes.c_uint32),
+            ("dataType", ctypes.c_uint32),
+            ("dataAttributes", ctypes.c_ubyte),
+        ]
+
+    class _KeyData(ctypes.Structure):
+        _fields_ = [
+            ("key", ctypes.c_uint32),
+            ("vers", _Version),
+            ("pLimitData", _PLimit),
+            ("keyInfo", _KeyInfo),
+            ("result", ctypes.c_ubyte),
+            ("status", ctypes.c_ubyte),
+            ("data8", ctypes.c_ubyte),
+            ("data32", ctypes.c_uint32),
+            ("bytes", ctypes.c_ubyte * 32),
+        ]
+
+    iokit.IOServiceMatching.restype = ctypes.c_void_p
+    iokit.IOServiceGetMatchingService.restype = ctypes.c_uint
+    iokit.IOServiceGetMatchingService.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    iokit.IOServiceOpen.argtypes = [
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    iokit.IOConnectCallStructMethod.argtypes = [
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    libc.mach_task_self.restype = ctypes.c_uint
+
+    service = iokit.IOServiceGetMatchingService(0, iokit.IOServiceMatching(b"AppleSMC"))
+    if not service:
+        return None
+    conn = ctypes.c_uint(0)
+    if iokit.IOServiceOpen(service, libc.mach_task_self(), 0, ctypes.byref(conn)) != 0:
+        return None
+
+    def call(payload):
+        out = _KeyData()
+        size = ctypes.c_size_t(ctypes.sizeof(_KeyData))
+        rc = iokit.IOConnectCallStructMethod(
+            conn,
+            2,  # kSMCHandleYPCEvent
+            ctypes.byref(payload),
+            ctypes.sizeof(payload),
+            ctypes.byref(out),
+            ctypes.byref(size),
+        )
+        return out if rc == 0 and out.result == 0 else None
+
+    def as_key(text: str) -> int:
+        return struct.unpack(">I", text.encode())[0]
+
+    def as_text(num: int) -> str:
+        return struct.pack(">I", num).decode(errors="replace")
+
+    def read(name: str):
+        info = _KeyData()
+        info.key, info.data8 = as_key(name), 9  # kSMCGetKeyInfo
+        got = call(info)
+        if got is None:
+            return None
+        size, dtype = got.keyInfo.dataSize, as_text(got.keyInfo.dataType)
+        payload = _KeyData()
+        payload.key, payload.data8 = as_key(name), 5  # kSMCReadKey
+        payload.keyInfo.dataSize = size
+        got = call(payload)
+        if got is None:
+            return None
+        raw = bytes(got.bytes[:size])
+        if dtype == "flt " and size == 4:
+            return struct.unpack("<f", raw)[0]
+        if dtype == "sp78" and size == 2:
+            return struct.unpack(">h", raw)[0] / 256.0
+        if dtype == "ioft" and size == 8:
+            return struct.unpack("<Q", raw)[0] / 65536.0
+        return None
+
+    # Скільки всього ключів → пройтись по індексах і відібрати ядра `Tp**`.
+    info = _KeyData()
+    info.key, info.data8 = as_key("#KEY"), 9
+    got = call(info)
+    if got is None:
+        return None
+    payload = _KeyData()
+    payload.key, payload.data8 = as_key("#KEY"), 5
+    payload.keyInfo.dataSize = got.keyInfo.dataSize
+    got = call(payload)
+    if got is None:
+        return None
+    total = struct.unpack(">I", bytes(got.bytes[:4]))[0]
+
+    cores: list[str] = []
+    for i in range(total):
+        payload = _KeyData()
+        payload.data8, payload.data32 = 8, i  # kSMCGetKeyFromIndex
+        got = call(payload)
+        if got is None:
+            continue
+        name = as_text(got.key)
+        # `Tp**` — ядра процесора. Саме їх показує «Hottest CPU» у Stats.
+        if name.startswith("Tp") and read(name) is not None:
+            cores.append(name)
+    if not cores:
+        return None
+
+    def read_cores() -> dict[str, float]:
+        out: dict[str, float] = {}
+        for name in cores:
+            value = read(name)
+            # Відкинуті нулі й дурні числа: непідключений сенсор віддає 0 або
+            # -127, і сліпий максимум по них зробив би «холодно» з гарячого маку.
+            if value is not None and 10.0 < value < 130.0:
+                out[name] = round(float(value), 1)
+        return out
+
+    return read_cores
+
+
+def read_cores() -> dict[str, float]:
+    """{ключ_ядра: °C} з SMC. Порожньо — читати не вдалося."""
+    if _SMC["broken"]:
+        return {}
+    try:
+        if _SMC["read"] is None:
+            with _sensor_lock:
+                if _SMC["read"] is None:
+                    _SMC["read"] = _smc_reader()
+            if _SMC["read"] is None:
+                _SMC["broken"] = True
+                return {}
+        return _SMC["read"]()
+    except Exception:
+        _SMC["broken"] = True
+        return {}
+
+
+def hottest() -> tuple[str, float] | None:
+    """(назва, °C) найгарячішої точки або None, якщо датчика немає.
+
+    🔴 Порядок джерел має значення. СПЕРШУ SMC-ядра `Tp**` — рівно те число,
+    що людина бачить у своєму меню (див. коментар до `_SMC` вище): сторож і
+    людина мусять говорити про одні градуси, інакше «в мене 107, а воно не
+    спиняється» — і обидва мають рацію.
+
+    Запасний шлях — HID, і там беремо максимум САМЕ серед `tdie`. Сліпий
     максимум по всіх 33 сенсорах небезпечний: поруч лежать `PMU tcal` /
     `PMU2 tcal`, і це не тепло, а калібрування — на M2 Air вони на спокої вищі
     за всі tdie (51,9 проти 50,2). Якби чиясь машина тримала tcal на високому
     числі постійно, робота стала б у вічну паузу, якої ніхто не міг би пояснити.
     Якщо tdie немає взагалі — чесний максимум по тому, що є."""
+    cores = read_cores()
+    if cores:
+        name, value = max(cores.items(), key=lambda kv: kv[1])
+        return f"ядро {name}", float(value)
     temps = read_temps()
     if not temps:
         return None

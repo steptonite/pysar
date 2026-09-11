@@ -166,7 +166,8 @@ def _stub_decode(monkeypatch, pcm: bytes, duration: float, tmp_path: Path):
 def test_job_end_to_end(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _voiced_pcm(2.5), 2.5, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("hello world", None)
+        "src.file_transcriber.transcribe_meeting",
+        lambda wav, mode, prompt="": ("hello world", {}, None),
     )
 
     progress, done, errors = [], [], []
@@ -187,7 +188,7 @@ def test_job_end_to_end(monkeypatch, tmp_path):
 def test_job_digital_silence_never_calls_whisper(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _silent_pcm(2.5), 2.5, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe",
+        "src.file_transcriber.transcribe_meeting",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("silence reached Whisper")),
     )
     done = []
@@ -208,9 +209,9 @@ def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
 
     def fake_transcribe(wav, mode, prompt=""):
         job.cancel()  # cancel mid-run: flag is checked before the next chunk
-        return "some text", None
+        return "some text", {}, None
 
-    monkeypatch.setattr("src.file_transcriber.transcribe", fake_transcribe)
+    monkeypatch.setattr("src.file_transcriber.transcribe_meeting", fake_transcribe)
 
     progress, done, errors = [], [], []
     job = FileTranscriptionJob("cancel.mp4", "ru", progress.append, done.append, errors.append)
@@ -226,7 +227,7 @@ def test_job_cancel_keeps_partial(monkeypatch, tmp_path):
 def test_job_transcribe_error(monkeypatch, tmp_path):
     _stub_decode(monkeypatch, _voiced_pcm(10.0), 10.0, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": (None, "boom")
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": (None, {}, "boom")
     )
 
     progress, done, errors = [], [], []
@@ -245,9 +246,9 @@ def test_job_forwards_prompt_to_transcribe(monkeypatch, tmp_path):
 
     def fake_transcribe(wav, mode, prompt=""):
         seen_prompts.append(prompt)
-        return "ok", None
+        return "ok", {}, None
 
-    monkeypatch.setattr("src.file_transcriber.transcribe", fake_transcribe)
+    monkeypatch.setattr("src.file_transcriber.transcribe_meeting", fake_transcribe)
 
     job = FileTranscriptionJob(
         "hinted.mp3",
@@ -265,7 +266,7 @@ def test_job_shorter_decode_than_probe_terminates(monkeypatch, tmp_path):
     # ffprobe over-reports duration; the loop must end on real EOF, not spin.
     _stub_decode(monkeypatch, _voiced_pcm(1.0), 5.0, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("ok", {}, None)
     )
 
     progress, done, errors = [], [], []
@@ -283,7 +284,7 @@ def test_temp_raw_file_removed(monkeypatch, tmp_path):
     monkeypatch.setattr("src.file_transcriber.ffmpeg_path", lambda: "/fake/ffmpeg")
     monkeypatch.setattr("src.file_transcriber.transcripts_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("ok", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("ok", {}, None)
     )
 
     def fake_run(cmd, **kw):
@@ -353,9 +354,9 @@ def _gated_transcribe(monkeypatch):
     def fake(wav, mode, prompt=""):
         started.set()
         release.wait(timeout=5)
-        return ("text", None)
+        return ("text", {}, None)
 
-    monkeypatch.setattr("src.file_transcriber.transcribe", fake)
+    monkeypatch.setattr("src.file_transcriber.transcribe_meeting", fake)
     return started, release
 
 
@@ -402,7 +403,7 @@ def test_queue_prefilter_skips_with_reason(monkeypatch, tmp_path):
         lambda p: (None, "no audio track") if "bad" in p else (2.5, None),
     )
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("text", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("text", {}, None)
     )
 
     q = FileTranscriptionQueue([str(good), str(bad)], "uk", "", on_change=lambda s: None)
@@ -422,7 +423,8 @@ def test_queue_two_files_sequential(monkeypatch, tmp_path):
     f2.touch()
     _queue_env(monkeypatch, tmp_path, duration=2.5)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("hello words", None)
+        "src.file_transcriber.transcribe_meeting",
+        lambda wav, mode, prompt="": ("hello words", {}, None),
     )
 
     changes = []
@@ -493,7 +495,7 @@ def test_queue_remove_pending(monkeypatch, tmp_path):
     f2.touch()
     _queue_env(monkeypatch, tmp_path, duration=2.5)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("text", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("text", {}, None)
     )
 
     q = FileTranscriptionQueue([str(f1), str(f2)], "uk", "", on_change=lambda s: None)
@@ -581,7 +583,7 @@ def test_queue_transcribe_error_marks_item_and_continues(monkeypatch, tmp_path):
     _queue_env(monkeypatch, tmp_path, duration=2.5)
 
     def fake_transcribe(wav, mode, prompt=""):
-        return (None, "server down") if fake_transcribe.calls == 0 else ("text", None)
+        return (None, {}, "server down") if fake_transcribe.calls == 0 else ("text", {}, None)
 
     fake_transcribe.calls = 0
     real = fake_transcribe
@@ -591,7 +593,7 @@ def test_queue_transcribe_error_marks_item_and_continues(monkeypatch, tmp_path):
         real.calls += 1
         return result
 
-    monkeypatch.setattr("src.file_transcriber.transcribe", counting)
+    monkeypatch.setattr("src.file_transcriber.transcribe_meeting", counting)
 
     q = FileTranscriptionQueue([str(f1), str(f2)], "uk", "", on_change=lambda s: None)
     q.start()
@@ -658,7 +660,9 @@ def test_queue_add_revives_a_finished_queue(monkeypatch, tmp_path):
     first.touch()
     second.touch()
     _queue_env(monkeypatch, tmp_path, duration=2.5)
-    monkeypatch.setattr("src.file_transcriber.transcribe", lambda w, m, p="": ("text", None))
+    monkeypatch.setattr(
+        "src.file_transcriber.transcribe_meeting", lambda w, m, p="": ("text", {}, None)
+    )
 
     q = FileTranscriptionQueue([str(first)], "uk", "", on_change=lambda s: None)
     q.start()
@@ -725,7 +729,7 @@ def test_job_writes_time_spans_sidecar(monkeypatch, tmp_path):
 
     _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC * 2 + 5), CHUNK_SEC * 2 + 5, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("текст", {}, None)
     )
 
     done, errors = [], []
@@ -755,7 +759,7 @@ def test_job_splits_speakers_only_when_asked(monkeypatch, tmp_path):
     """Вимкнений перемикач = жодного дотику до важкого проходу."""
     _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC + 2), CHUNK_SEC + 2, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("текст", {}, None)
     )
     calls = []
     monkeypatch.setattr(FileTranscriptionJob, "_diarize_result", lambda self, *a: calls.append(a))
@@ -776,7 +780,7 @@ def test_cancelled_job_is_not_split_by_speakers(monkeypatch, tmp_path):
     розпізнавання, а не як скасування."""
     _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC * 3), CHUNK_SEC * 3, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("текст", {}, None)
     )
     calls = []
     monkeypatch.setattr(FileTranscriptionJob, "_diarize_result", lambda self, *a: calls.append(a))
@@ -794,7 +798,7 @@ def test_diarization_failure_never_kills_the_transcript(monkeypatch, tmp_path):
     права його відібрати."""
     _stub_decode(monkeypatch, _voiced_pcm(CHUNK_SEC + 2), CHUNK_SEC + 2, tmp_path)
     monkeypatch.setattr(
-        "src.file_transcriber.transcribe", lambda wav, mode, prompt="": ("текст", None)
+        "src.file_transcriber.transcribe_meeting", lambda wav, mode, prompt="": ("текст", {}, None)
     )
     monkeypatch.setattr("src.diarize.is_ready", lambda: True)
 

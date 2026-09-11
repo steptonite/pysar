@@ -111,6 +111,38 @@ def transcribe_meeting(
         meta["lang"], meta["lang_prob"] = lang, float(prob)
     segs = result.get("segments")
     if isinstance(segs, list) and segs:
+        # 🔴 11.09.2026. Раніше межі сегментів тут помирали: у сайдкар лягав
+        # ОДИН рядок на цілий шматок (12-18 с), і розділення голосів фізично не
+        # могло розвести «— Як вас звати? — Марина» — це один рядок, один мовець.
+        # А whisper віддає їх двома сегментами (0,0-1,0 і 1,0-2,0). Тепер несемо.
+        parts = []
+        for seg in segs:
+            try:
+                t0, t1 = float(seg.get("start")), float(seg.get("end"))
+            except (TypeError, ValueError):
+                continue
+            body = _clean(str(seg.get("text", "")))
+            if not body or t1 <= t0:
+                continue
+            part = {"t0": t0, "t1": t1, "text": body}
+            # Слова з часом — щоб розділення голосів могло різати репліку ТАМ,
+            # де змінився голос, а не там, де whisper поставив крапку. Його межі
+            # сегментів на діалог не зважають: «— Як вас звати? — Марина» він
+            # інколи віддає одним куском, і без слів розвести це неможливо.
+            words = []
+            for w in seg.get("words") or []:
+                try:
+                    wt0, wt1 = float(w.get("start")), float(w.get("end"))
+                except (TypeError, ValueError):
+                    continue
+                wtext = str(w.get("word", ""))
+                if wtext.strip():
+                    words.append([round(wt0, 2), round(wt1, 2), wtext])
+            if words:
+                part["w"] = words
+            parts.append(part)
+        if parts:
+            meta["segments"] = parts
         try:
             durs = [max(float(s.get("end", 0)) - float(s.get("start", 0)), 0.01) for s in segs]
             total = sum(durs)

@@ -29,6 +29,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import shutil
 import site
 import subprocess
@@ -595,31 +596,115 @@ def read_sidecar(path: Path) -> tuple[dict, list[dict]]:
     return meta, rows
 
 
+def _cluster_at(cand: list, t: float):
+    """Хто говорить у момент `t`: (джерело, кластер) або None."""
+    for src, (a, b, g) in cand:
+        if a <= t <= b:
+            return (src, g)
+    return None
+
+
+def _best_overlap(cand: list, t0: float, t1: float):
+    best, share = None, 0.0
+    for src, (a, b, g) in cand:
+        ov = min(t1, b) - max(t0, a)
+        if ov > share:
+            best, share = (src, g), ov
+    return best if share > 0 else None
+
+
+def _split_row_by_words(row: dict, cand: list) -> list[dict]:
+    """Порізати рядок там, де МІНЯЄТЬСЯ ГОЛОС, а не там, де whisper поставив крапку.
+
+    🔴 11.09.2026, зауваження Льоші: «сам віспер в цьому не надійний і далеко не
+    завжди сам розділяє». Так і є — межі сегментів whisper ставить за паузами й
+    розділовими знаками, а не за тим, хто говорить. Тому кожному СЛОВУ (whisper
+    віддає їх з часом) шукаємо голос за серединою слова, а сусідні слова одного
+    голосу збираємо назад у репліку. Слів немає — повертаємо рядок як є.
+
+    Дрібні прошарки (одне-два слова чужим голосом усередині чужої фрази) не
+    ріжемо: це майже завжди похибка кластеризації на 0,2 с, а не перебивання."""
+    words = row.get("w") or []
+    if len(words) < 2:
+        return []
+    runs: list[tuple] = []
+    for w in words:
+        try:
+            a, b, text = float(w[0]), float(w[1]), str(w[2])
+        except (TypeError, ValueError, IndexError):
+            return []
+        who = _cluster_at(cand, (a + b) / 2.0) or _best_overlap(cand, a, b)
+        if runs and runs[-1][0] == who:
+            runs[-1][3].append(text)
+            runs[-1][2] = b
+        else:
+            runs.append([who, a, b, [text]])
+    if len(runs) < 2:
+        return []
+    # Склеюємо назад прошарки, коротші за пів секунди й одне слово: вони частіше
+    # похибка межі кластера, ніж справжня репліка.
+    merged: list[list] = []
+    for run in runs:
+        who, a, b, text = run
+        tiny = (b - a) < 0.5 and len(text) <= 1
+        if merged and (tiny or merged[-1][0] == who):
+            merged[-1][2] = b
+            merged[-1][3].extend(text)
+        else:
+            merged.append([who, a, b, list(text)])
+    if len(merged) < 2:
+        return []
+    out = []
+    for who, a, b, text in merged:
+        body = " ".join(t.strip() for t in text if t.strip()).strip()
+        body = re.sub(r"\s+([,.!?…:;])", r"\1", body)
+        if not body:
+            continue
+        out.append(
+            {
+                **{k: v for k, v in row.items() if k != "w"},
+                "t0": a,
+                "t1": b,
+                "text": body,
+                "speaker": f"{(who[0] if who else None) or 'mix'}#{who[1]}" if who else None,
+            }
+        )
+    return out if len(out) > 1 else []
+
+
 def assign_speakers(rows: list[dict], intervals: dict[str, list]) -> list[dict]:
     """Кожному рядку сайдкара — мовця, за перекриттям у часі.
 
     `intervals` — {джерело: [(t0, t1, кластер)]}; ключ None означає «джерело
     невідоме» (режим без розділення каналів), і тоді дивимось усі доріжки.
-    Рядок без міток часу лишається без мовця — це чесніше, ніж вгадати."""
+    Рядок без міток часу лишається без мовця — це чесніше, ніж вгадати.
+
+    Якщо в рядку встигли поговорити ДВОЄ, а слова з часом є — рядок ріжеться
+    по словах (див. `_split_row_by_words`), бо інакше вся репліка дістається
+    тому, хто перекрив її більше, і діалог злипається в монолог."""
     out = []
     for r in rows:
         t0, t1, src = r.get("t0"), r.get("t1"), r.get("src")
-        spk = None
-        if t0 is not None and t1 is not None:
-            pool = intervals.get(src) if src in intervals else None
-            cand = (
-                [(src, iv) for iv in pool]
-                if pool is not None
-                else [(s, iv) for s, lst in intervals.items() for iv in lst]
-            )
-            best, share = None, 0.0
-            for s, (a, b, g) in cand:
-                ov = min(t1, b) - max(t0, a)
-                if ov > share:
-                    best, share = (s, g), ov
-            if best is not None and share > 0:
-                spk = f"{best[0] or 'mix'}#{best[1]}"
-        out.append({**r, "speaker": spk})
+        if t0 is None or t1 is None:
+            out.append({**{k: v for k, v in r.items() if k != "w"}, "speaker": None})
+            continue
+        pool = intervals.get(src) if src in intervals else None
+        cand = (
+            [(src, iv) for iv in pool]
+            if pool is not None
+            else [(s, iv) for s, lst in intervals.items() for iv in lst]
+        )
+        pieces = _split_row_by_words(r, cand)
+        if pieces:
+            out.extend(pieces)
+            continue
+        best = _best_overlap(cand, t0, t1)
+        out.append(
+            {
+                **{k: v for k, v in r.items() if k != "w"},
+                "speaker": f"{best[0] or 'mix'}#{best[1]}" if best else None,
+            }
+        )
     return out
 
 

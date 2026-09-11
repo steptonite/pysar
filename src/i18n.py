@@ -64,6 +64,12 @@ _UK = {
     "ft.diarizing": "Розділяю спікерів…",
     "ft.cooling": "Даю маку охолонути… {t}°",
     "thermal.label": "Берегти мак від перегріву",
+    # 🔴 11.09.2026, слова Льоші: живий запис зустрічі чіпати НЕ МОЖНА — це
+    # робота, яку не перезапишеш. Пауза дозволена лише на розділенні голосів
+    # ПІСЛЯ «Стоп»; підпис мусить казати це прямо, інакше людина думає, що
+    # сторож може обрубати їй зустріч.
+    "thermal.meetingScope": "Тільки на розділенні голосів після «Стоп» — живий запис не паузиться ніколи",
+    "thermal.filesScope": "Транскрибація файлу може стати на паузу будь-коли",
     "thermal.level": "Коли робити паузу",
     "thermal.shared": "Поріг спільний для зустрічей і файлів",
     "thermal.help": "Гаряче — робота чекає, охололо — сама продовжує. Нічого не "
@@ -436,6 +442,8 @@ _EN = {
     "ft.diarizing": "Splitting speakers…",
     "ft.cooling": "Letting the Mac cool down… {t}°",
     "thermal.label": "Protect the Mac from overheating",
+    "thermal.meetingScope": "Only while splitting voices after Stop — a live recording is never paused",
+    "thermal.filesScope": "File transcription may pause at any moment",
     "thermal.level": "When to pause",
     "thermal.shared": "The threshold is shared by meetings and files",
     "thermal.help": "When it gets hot the work waits, and carries on by itself once it cools. "

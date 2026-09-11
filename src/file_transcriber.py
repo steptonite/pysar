@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .transcriber import transcribe
+from .transcriber import transcribe_meeting
 from .transcripts import SegmentSidecar, transcripts_dir
 
 SAMPLE_RATE = 16000  # whisper.cpp expects 16 kHz mono s16le
@@ -431,9 +431,12 @@ class FileTranscriptionJob:
                             to_transcribe, carry = chunk, b""
 
                         if is_clearly_silent(to_transcribe):
-                            text, err = None, None
+                            text, meta, err = None, {}, None
                         else:
-                            text, err = transcribe(
+                            # 🔴 11.09.2026: verbose_json замість простого тексту —
+                            # заради меж сегментів і слів із часом. Модель, мова й
+                            # промт ті самі, змінюється лише формат відповіді.
+                            text, meta, err = transcribe_meeting(
                                 pcm_to_wav(to_transcribe), self._mode, self._prompt
                             )
                         if err is not None:
@@ -449,11 +452,12 @@ class FileTranscriptionJob:
                             md.write(f"**[{h}:{m:02d}:{s:02d}]**\n\n{text.strip()}\n\n")
                             md.flush()
                             end_sec = (consumed + len(to_transcribe)) / (SAMPLE_RATE * 2)
-                            side.write(
+                            side.write_parts(
                                 text.strip(),
                                 None,
                                 f"{h}:{m:02d}:{s:02d}",
                                 (round(start_sec, 2), round(end_sec, 2)),
+                                (meta or {}).get("segments"),
                             )
 
                         consumed += len(to_transcribe)

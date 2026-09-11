@@ -73,7 +73,7 @@ class SegmentSidecar:
             self._fh.write(json.dumps({"_meta": head}, ensure_ascii=False) + "\n")
             self._fh.flush()
 
-    def write(self, text: str, src: str | None, clock: str, span) -> None:
+    def write(self, text: str, src: str | None, clock: str, span, words=None) -> None:
         if self._fh is None:
             return
         row = {
@@ -84,10 +84,46 @@ class SegmentSidecar:
             "clock": clock,
             "text": text,
         }
+        if words:
+            # [[початок, кінець, слово], …] в АБСОЛЮТНИХ секундах запису.
+            row["w"] = words
         self._i += 1
         with contextlib.suppress(Exception):
             self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             self._fh.flush()
+
+    def write_parts(self, text: str, src: str | None, clock: str, span, parts) -> None:
+        """Рядок на КОЖЕН сегмент whisper усередині шматка (якщо вони є).
+
+        `parts` — [{"t0","t1","text","w"}], час у секундах ВІД ПОЧАТКУ шматка.
+        Один рядок на 12-18 секунд аудіо (як було до 11.09.2026) не дає
+        розділенню голосів жодного шансу на діалог: «— Як вас звати? — Марина»
+        це один рядок і один мовець."""
+        if self._fh is None:
+            return
+        if not parts or not span:
+            self.write(text, src, clock, span)
+            return
+        base = span[0]
+        wrote = False
+        for part in parts:
+            try:
+                t0 = base + float(part["t0"])
+                t1 = min(base + float(part["t1"]), span[1])
+                body = str(part["text"]).strip()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not body:
+                continue
+            words = [
+                [round(base + float(w[0]), 2), round(base + float(w[1]), 2), str(w[2])]
+                for w in (part.get("w") or [])
+                if len(w) >= 3
+            ]
+            self.write(body, src, clock, (round(t0, 2), round(t1, 2)), words)
+            wrote = True
+        if not wrote:
+            self.write(text, src, clock, span)
 
     def close(self) -> None:
         if self._fh is not None:
@@ -149,6 +185,7 @@ class TranscriptFile:
         source: str | None = None,
         ts: datetime | None = None,
         span: tuple[float, float] | None = None,
+        parts: list[dict] | None = None,
     ) -> None:
         text = (text or "").strip()
         if not text or self._fh is None:
@@ -164,7 +201,7 @@ class TranscriptFile:
         self._last_source = source
         self._fh.write(text + "\n\n")
         self._fh.flush()
-        self._write_segment(text, source, ts, span)
+        self._write_segment(text, source, ts, span, parts)
 
     def _write_segment(
         self,
@@ -172,10 +209,17 @@ class TranscriptFile:
         source: str | None,
         ts: datetime | None,
         span: tuple[float, float] | None,
+        parts: list[dict] | None = None,
     ) -> None:
-        """Один рядок у сайдкар, одразу на диск. Ніколи не валить транскрипт."""
-        if self._side is not None:
-            self._side.write(text, source, (ts or datetime.now()).strftime("%H:%M:%S"), span)
+        """Рядки в сайдкар, одразу на диск. Ніколи не валить транскрипт.
+
+        Дрібні межі (`parts`) кладуться окремими рядками — див.
+        `SegmentSidecar.write_parts`. У самому транскрипті (.md) блок лишається
+        один: людині кришиво по дві секунди читати незручно."""
+        if self._side is None:
+            return
+        clock = (ts or datetime.now()).strftime("%H:%M:%S")
+        self._side.write_parts(text, source, clock, span, parts)
 
     def close(self) -> None:
         if self._fh is None:

@@ -113,7 +113,23 @@ def test_gate_is_one_per_process():
     assert thermal.gate() is thermal.gate()
 
 
+def test_hottest_prefers_the_core_the_user_sees_in_the_menu(monkeypatch):
+    # 🔴 11.09.2026. Людина дивиться на SMC-ядра (Stats, iStat), а HID `tdie` на
+    # 15-18 °C нижчий. Сторож мусить рахувати ТЕ САМЕ число, інакше «в мене 107,
+    # а воно не спиняється» — і людина, і сторож мають рацію одночасно.
+    monkeypatch.setattr(thermal, "read_cores", lambda: {"Tp02": 95.1, "Tp0A": 91.0})
+    monkeypatch.setattr(thermal, "read_temps", lambda: {"PMU tdie1": 77.0})
+    assert thermal.hottest() == ("ядро Tp02", 95.1)
+
+
+def test_hottest_falls_back_to_hid_when_smc_is_silent(monkeypatch):
+    monkeypatch.setattr(thermal, "read_cores", lambda: {})
+    monkeypatch.setattr(thermal, "read_temps", lambda: {"PMU tdie1": 77.0})
+    assert thermal.hottest() == ("PMU tdie1", 77.0)
+
+
 def test_hottest_prefers_the_die_over_calibration_sensors(monkeypatch):
+    monkeypatch.setattr(thermal, "read_cores", lambda: {})
     # На M2 Air «PMU tcal» на спокої ВИЩИЙ за всі tdie — і це не тепло.
     monkeypatch.setattr(
         thermal, "read_temps", lambda: {"PMU tcal": 51.9, "PMU tdie1": 50.2, "PMU tdie2": 48.9}
@@ -122,11 +138,13 @@ def test_hottest_prefers_the_die_over_calibration_sensors(monkeypatch):
 
 
 def test_hottest_falls_back_to_any_sensor_when_there_is_no_die(monkeypatch):
+    monkeypatch.setattr(thermal, "read_cores", lambda: {})
     monkeypatch.setattr(thermal, "read_temps", lambda: {"battery": 33.0, "case": 41.0})
     assert thermal.hottest() == ("case", 41.0)
 
 
 def test_hottest_is_none_when_the_machine_has_no_sensors(monkeypatch):
+    monkeypatch.setattr(thermal, "read_cores", lambda: {})
     monkeypatch.setattr(thermal, "read_temps", lambda: {})
     assert thermal.hottest() is None
 

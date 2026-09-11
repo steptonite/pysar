@@ -505,8 +505,8 @@ _TEMPLATE = r"""<!doctype html>
       </div>
       <div class="row">
         <div class="body"><div class="label" data-i18n="thermal.label">Protect the Mac from overheating</div>
-          <div class="help" style="white-space:normal" data-i18n="thermal.help">Work waits while the Mac
-            is hot and carries on once it cools down — nothing is lost, it just takes longer</div></div>
+          <div class="help" style="white-space:normal" data-i18n="thermal.meetingScope">Only while
+            splitting voices after Stop — a live recording is never paused</div></div>
         <label class="toggle"><input type="checkbox" id="mt-thermal-on">
           <span class="track"></span><span class="knob"></span></label>
       </div>
@@ -664,8 +664,8 @@ _TEMPLATE = r"""<!doctype html>
       </div>
       <div class="row">
         <div class="body"><div class="label" data-i18n="thermal.label">Protect the Mac from overheating</div>
-          <div class="help" style="white-space:normal" data-i18n="thermal.help">Work waits while the Mac
-            is hot and carries on once it cools down — nothing is lost, it just takes longer</div></div>
+          <div class="help" style="white-space:normal" data-i18n="thermal.filesScope">File
+            transcription may pause at any moment</div></div>
         <label class="toggle"><input type="checkbox" id="ft-thermal-on">
           <span class="track"></span><span class="knob"></span></label>
       </div>

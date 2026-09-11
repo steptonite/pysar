@@ -291,3 +291,63 @@ def test_merge_never_invents_more_voices_than_found():
     cents = [_unit(np, 1.0, 0.0)]
     out, cents2 = diarize._merge_to({"a": 0}, cents, 3, np, {0: 10.0})
     assert len(cents2) == 1 and out == {"a": 0}
+
+
+# ── 11.09.2026: різання рядка по словах там, де змінився голос ────────────────
+# Льоша: «сам віспер в цьому не надійний і далеко не завжди сам розділяє».
+# Саме так: whisper ставить межі за паузами, а не за мовцями.
+
+
+def _row_with_words(words):
+    return {
+        "i": 0,
+        "t0": words[0][0],
+        "t1": words[-1][1],
+        "src": "sys",
+        "clock": "21:05:20",
+        "text": " ".join(w[2].strip() for w in words),
+        "w": [list(w) for w in words],
+    }
+
+
+def test_one_row_with_two_voices_is_cut_at_the_word_where_the_voice_changes():
+    row = _row_with_words(
+        [
+            (0.0, 0.2, " Як"),
+            (0.2, 0.5, " вас"),
+            (0.5, 0.9, " звати"),
+            (0.9, 1.0, "?"),
+            (1.0, 1.5, " Марина"),
+            (1.5, 2.0, "."),
+        ]
+    )
+    intervals = {"sys": [(0.0, 0.99, 0), (1.0, 2.0, 1)]}
+    out = diarize.assign_speakers([row], intervals)
+    assert [r["text"] for r in out] == ["Як вас звати?", "Марина."]
+    assert [r["speaker"] for r in out] == ["sys#0", "sys#1"]
+
+
+def test_a_row_in_one_voice_stays_one_row():
+    row = _row_with_words([(0.0, 0.4, " Друзі"), (0.4, 0.9, " привіт"), (0.9, 1.2, ".")])
+    out = diarize.assign_speakers([row], {"sys": [(0.0, 5.0, 0)]})
+    assert len(out) == 1
+    assert out[0]["speaker"] == "sys#0"
+    assert "w" not in out[0]  # службові слова не тягнемо в результат
+
+
+def test_a_single_stray_word_does_not_cut_the_line():
+    # Одне слово чужим кластером на 0,2 с — це майже завжди похибка межі,
+    # а не перебивання; різати на цьому не можна, бо репліки розсиплються.
+    row = _row_with_words(
+        [(0.0, 0.4, " Я"), (0.4, 0.6, " мала"), (0.6, 0.8, " йти"), (0.8, 1.4, " далі")]
+    )
+    intervals = {"sys": [(0.0, 0.45, 0), (0.45, 0.62, 1), (0.62, 2.0, 0)]}
+    out = diarize.assign_speakers([row], intervals)
+    assert len(out) == 1
+    assert out[0]["text"] == "Я мала йти далі"
+
+
+def test_rows_without_words_keep_the_old_behaviour():
+    row = {"i": 0, "t0": 0.0, "t1": 2.0, "src": "sys", "clock": "21:05:20", "text": "текст"}
+    out = diarize.assign_speakers([row], {"sys": [(0.0, 1.9, 3)]})
+    assert out == [{**row, "speaker": "sys#3"}]

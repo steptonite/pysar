@@ -1064,7 +1064,8 @@ class VoiceTyper:
             self._transcript_window.append(text, source, ts)
         if self._transcript_file is not None:
             with contextlib.suppress(Exception):
-                self._transcript_file.append(text, source, ts, span)
+                parts = meta.get("segments") if isinstance(meta, dict) else None
+                self._transcript_file.append(text, source, ts, span, parts)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))
 
