@@ -202,6 +202,8 @@ class VoiceTyper:
             on_set_ft_diarize=self._on_set_ft_diarize,
             diar_speakers=self._settings.get("diar_speakers", 0),
             on_set_diar_speakers=self._on_set_diar_speakers,
+            diar_mic=bool(self._settings.get("diar_mic", False)),
+            on_set_diar_mic=self._on_set_diar_mic,
             thermal_mode=self._settings.get("thermal_mode", "normal"),
             on_set_thermal_mode=self._on_set_thermal_mode,
             thermal_meeting=bool(self._settings.get("thermal_meeting", True)),
@@ -1341,6 +1343,7 @@ class VoiceTyper:
                 labels=labels,
                 speakers=int(self._settings.get("diar_speakers", 0) or 0),
                 gate=self._meeting_cool_gate,
+                diarize_mic=bool(self._settings.get("diar_mic", False)),
             )
         except Exception as e:
             print(f"⚠️ diarization failed: {e}")
@@ -1593,6 +1596,13 @@ class VoiceTyper:
         self._settings["thermal_mode"] = m
         save_settings(self._settings)
         thermal.gate().set_mode(m)
+
+    def _on_set_diar_mic(self, on: bool) -> None:
+        # Дефолт — ні: доріжка мікрофона має одного власника, і 12.09.2026 саме
+        # кластеризація по ній намалювала «❓ Невпізнаних». Але буває й друга
+        # людина в тій самій кімнаті — тоді вимикач тут.
+        self._settings["diar_mic"] = bool(on)
+        save_settings(self._settings)
 
     def _on_set_thermal_meeting(self, on: bool) -> None:
         """Вмикач сторожа на розділенні голосів після зустрічі."""

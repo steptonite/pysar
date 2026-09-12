@@ -810,6 +810,7 @@ def label_transcript(
     speakers: int = 0,
     gate=None,
     originals: Path | None = None,
+    diarize_mic: bool = False,
 ) -> Path:
     """Прохід над готовим записом → мовці вписуються в сам транскрипт.
 
@@ -820,13 +821,23 @@ def label_transcript(
     if not _JOB_LOCK.acquire(blocking=False):
         raise RuntimeError("розділення спікерів уже виконується — зачекай, поки завершиться")
     try:
-        return _label_locked(sidecar, audio, out_path, labels, progress, speakers, gate, originals)
+        return _label_locked(
+            sidecar, audio, out_path, labels, progress, speakers, gate, originals, diarize_mic
+        )
     finally:
         _JOB_LOCK.release()
 
 
 def _label_locked(
-    sidecar, audio, out_path, labels, progress, speakers=0, gate=None, originals=None
+    sidecar,
+    audio,
+    out_path,
+    labels,
+    progress,
+    speakers=0,
+    gate=None,
+    originals=None,
+    diarize_mic=False,
 ) -> Path:
     meta, rows = read_sidecar(sidecar)
     if not rows:
@@ -847,7 +858,7 @@ def _label_locked(
     per_source = speakers if len(live) == 1 else 0
     intervals = {}
     for src, path in live:
-        if src == "mic":
+        if src == "mic" and not diarize_mic:
             # 🔴 12.09.2026, з тесту Льоші: «діаризатор нахуячив невпізнаваних
             # спікерів». Мікрофон — це ОДИН власник мака, і це відомо з фізики
             # запису, а не з кластеризації. Гнати по ньому ембединги означало
@@ -856,6 +867,8 @@ def _label_locked(
             # ставали «❓ Невпізнаний». Тому доріжку мікрофона не кластеризуємо
             # взагалі — одна суцільна репліка на весь запис. Заодно вдвічі
             # менше роботи для 8 ГБ і для тепла.
+            # Вмикач `diar_mic` лишає вихід на випадок, коли в один мікрофон
+            # справді говорили двоє — одна кімната, один ноут на столі.
             intervals[src] = [(0.0, _track_seconds(path), 0)]
             continue
         intervals[src] = diarize_wav(path, progress=progress, speakers=per_source, gate=gate)

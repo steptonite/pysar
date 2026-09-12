@@ -910,6 +910,8 @@ class Tray:
         on_set_diar_speakers: Callable[[int], None] | None = None,
         thermal_mode: str = "normal",
         on_set_thermal_mode: Callable[[str], None] | None = None,
+        diar_mic: bool = False,
+        on_set_diar_mic: Callable[[bool], None] | None = None,
         thermal_meeting: bool = True,
         on_set_thermal_meeting: Callable[[bool], None] | None = None,
         thermal_ft: bool = True,
@@ -1016,6 +1018,8 @@ class Tray:
         self._on_set_diar_speakers = on_set_diar_speakers
         self._thermal_mode = str(thermal_mode or "normal")
         self._on_set_thermal_mode = on_set_thermal_mode
+        self._diar_mic = bool(diar_mic)
+        self._on_set_diar_mic = on_set_diar_mic
         self._thermal_meeting = bool(thermal_meeting)
         self._on_set_thermal_meeting = on_set_thermal_meeting
         self._thermal_ft = bool(thermal_ft)
@@ -1228,6 +1232,7 @@ class Tray:
                         "set_ft_diarize": self._set_ft_diarize,
                         "set_diar_speakers": self._set_diar_speakers,
                         "set_thermal_mode": self._set_thermal_mode,
+                        "set_diar_mic": self._set_diar_mic,
                         "set_thermal_meeting": self._set_thermal_meeting,
                         "set_thermal_ft": self._set_thermal_ft,
                         "diar_install": self._diar_install,
@@ -1300,6 +1305,7 @@ class Tray:
             "ft_diarize": self._ft_diarize,
             "diar_speakers": self._diar_speakers,
             "thermal_mode": self._thermal_mode,
+            "diar_mic": self._diar_mic,
             "thermal_meeting": self._thermal_meeting,
             "thermal_ft": self._thermal_ft,
             "diar_status": self._diar_status(),
@@ -1550,6 +1556,11 @@ class Tray:
         self._thermal_mode = str(mode or "normal")
         if self._on_set_thermal_mode:
             self._on_set_thermal_mode(self._thermal_mode)
+
+    def _set_diar_mic(self, on) -> None:
+        self._diar_mic = bool(on)
+        if self._on_set_diar_mic:
+            self._on_set_diar_mic(self._diar_mic)
 
     def _set_thermal_meeting(self, on) -> None:
         self._thermal_meeting = bool(on)

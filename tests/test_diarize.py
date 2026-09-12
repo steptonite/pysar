@@ -492,6 +492,27 @@ class TestMicTrackIsOneVoice:
         assert names["sys#0"] == "Система · Спікер 1"
         assert names["sys#1"] == "Система · Спікер 2"
 
+    def test_toggle_lets_the_mic_be_clustered_after_all(self, tmp_path, monkeypatch):
+        """Вимикач для рідкого випадку: двоє говорили в один мікрофон.
+
+        Дефолт лишається «ні» — але коли людина каже, що в кімнаті був другий,
+        доріжку треба слухати, а не вірити конструкції."""
+        called: list = []
+        monkeypatch.setattr(
+            diarize, "diarize_wav", lambda path, **kw: called.append(path) or [(0.0, 30.0, 0)]
+        )
+        sidecar = self._sidecar(
+            tmp_path, [{"t0": 1.0, "t1": 3.0, "src": "mic", "text": "ми вдвох"}]
+        )
+        diarize.label_transcript(
+            sidecar,
+            {"mic": self._wav(tmp_path / "з-mic.wav")},
+            out_path=tmp_path / "готово.md",
+            labels={"mic": "Ви"},
+            diarize_mic=True,
+        )
+        assert [p.name for p in called] == ["з-mic.wav"]
+
     def test_track_seconds_from_file_size(self, tmp_path):
         assert diarize._track_seconds(self._wav(tmp_path / "a.wav", 12.5)) == 12.5
         assert diarize._track_seconds(tmp_path / "нема.wav") == 0.0

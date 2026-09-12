@@ -111,6 +111,11 @@ DEFAULTS = {
     #                     Вимкнено за замовчуванням: прохід коштує часу й тягне
     #                     ~110 МБ моделей, які качаються на першу вимогу.
     "meeting_diarize": False,
+    #   diar_mic — шукати голоси і в доріжці мікрофона. За замовчуванням ні:
+    #             мікрофон — це власник мака, і кластеризація там знаходить
+    #             дихання та уривки, а не людей. Вмикати, коли в мікрофон
+    #             справді говорили двоє — одна кімната, один ноут.
+    "diar_mic": False,
     #   meeting_island_frame — last position/size of the floating transcript island
     #                          ({x,y,w,h}); None = default (top-right of the screen)
     "meeting_island_frame": None,

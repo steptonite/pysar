@@ -499,6 +499,13 @@ _TEMPLATE = r"""<!doctype html>
             the number, say it — the split will hold to it</div></div>
         <select id="mt-spk"></select>
       </div>
+      <div class="row" id="mt-diarmic-row">
+        <div class="body"><div class="label" data-i18n="diar.mic.label">Look for voices in the mic too</div>
+          <div class="help" style="white-space:normal" data-i18n="diar.mic.help">Off: everything from
+            your mic is you. On: when two people spoke into the same mic</div></div>
+        <label class="toggle"><input type="checkbox" id="mt-diarmic">
+          <span class="track"></span><span class="knob"></span></label>
+      </div>
       <div class="row" id="mt-diar-box" style="display:block">
         <div class="help" id="mt-diar-status" style="white-space:normal; margin:0 2px 8px"></div>
         <button id="mt-diar-install"></button>
@@ -1120,6 +1127,15 @@ $("back-enh").addEventListener("click", () => show("main"));
       if (window.renderDiar) window.renderDiar();
     });
   });
+  // Дефолт тут ВИМКНЕНО, тому перевірка на === true, а не !== false.
+  const diarMic = $("mt-diarmic");
+  if (diarMic) {
+    diarMic.checked = STATE.diar_mic === true;
+    diarMic.addEventListener("change", () => {
+      STATE.diar_mic = diarMic.checked;
+      send("set_diar_mic", diarMic.checked);
+    });
+  }
   $("mt-diar-install").addEventListener("click", () => send("diar_install"));
   $("ft-diar-install").addEventListener("click", () => send("diar_install"));
   window.renderDiar = function(){
@@ -1143,6 +1159,9 @@ $("back-enh").addEventListener("click", () => show("main"));
       if (r) r.style.display = on ? "" : "none";
     };
     spkRow("mt", !!STATE.meeting_diarize);
+    const dmRow = $("mt-diarmic-row");
+    if (dmRow) dmRow.style.display = STATE.meeting_diarize ? "" : "none";
+    if (diarMic) diarMic.checked = STATE.diar_mic === true;
     spkRow("ft", !!STATE.ft_diarize);
     const mb = st.download_mb || 110;
     const line = busy ? (STATE.diar_progress || T("diar.working", "Завантажую…"))
