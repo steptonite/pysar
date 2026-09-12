@@ -770,7 +770,8 @@ class VoiceTyper:
         # restarts capture mid-session, so nothing already saved gets truncated.
         self._meeting_stem = time.strftime("%Y-%m-%d_%H-%M-%S")
         mic_uid = _mic_uid_for_name(self._settings.get("mic"))
-        self._warn_if_mic_not_pinned(capture_mic, mic_uid)
+        mic_aec = bool(self._settings.get("meeting_mic_aec", True))
+        self._warn_if_mic_not_pinned(capture_mic, None if mic_aec else mic_uid)
         # 🔴 Before 24.08.2026 the recorder was built without either of these:
         # the chosen mic never reached SCK, and audio never reached the disk.
         self._sysrec = SystemAudioRecorder(
@@ -779,6 +780,7 @@ class VoiceTyper:
             raw_dump_dir=meetings_dir(),
             raw_dump_stem=self._meeting_stem,
             mic_device_uid=mic_uid,
+            mic_aec=mic_aec,
         )
         self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
         # Baseline for the output-switch check. Taken here, not in the watchdog:
@@ -814,6 +816,10 @@ class VoiceTyper:
             return False  # system default was the explicit choice — nothing to pin
         if mic_uid and mic_pinning_supported():
             return False
+        # 🔴 12.09.2026. З апаратним AEC мік закріпити НЕМА чим: VPIO слухає
+        # системний вхід, тому вибір у меню тут — обіцянка, якої шлях не тримає.
+        # Краще сказати те саме попередження, ніж дати людині думати, що пишемо
+        # вбудований мікрофон, поки насправді пишемо AirPods.
         with contextlib.suppress(Exception):
             self._tray.notify(
                 "Pysar",
@@ -970,6 +976,7 @@ class VoiceTyper:
                 raw_dump_dir=meetings_dir(),
                 raw_dump_stem=getattr(self, "_meeting_stem", "") or "",
                 mic_device_uid=_mic_uid_for_name(self._settings.get("mic")),
+                mic_aec=bool(self._settings.get("meeting_mic_aec", True)),
             )
             self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
             # The fresh stream is built on whatever device is current NOW — rebase,

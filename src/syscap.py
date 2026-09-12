@@ -44,6 +44,7 @@ from .config import (
     SILENCE_MARGIN,
     SOFT_SEG_SEC,
 )
+from .micvpio import VoiceProcessingMic
 from .recorder import pcm_to_wav
 from .segmenter import Segmenter
 
@@ -253,8 +254,18 @@ class SystemAudioRecorder:
         raw_dump_dir: "Path | str | None" = None,
         raw_dump_stem: str = "",
         mic_device_uid: str | None = None,
+        mic_aec: bool = False,
     ):
         self._capture_mic = capture_mic
+        # 🔴 12.09.2026. Мікрофон через VPIO замість SCK: апаратний AEC знімає
+        # ехо динаміків ДО віспера (заміряно −22 dB). Системна доріжка лишається
+        # на ScreenCaptureKit — VPIO її лише приглушує, і те лікується.
+        self._mic_aec = bool(mic_aec)
+        self._vpio: VoiceProcessingMic | None = None
+        # Чи мікрофон цієї сесії справді пішов через VPIO. Ставиться в start():
+        # якщо AEC не піднявся, вертаємось на мік SCK — без мікрофона зустріч
+        # гірша, ніж із ехом, — але кажемо про це вголос, а не тихо.
+        self._mic_from_vpio = False
         # Raw recovery buffer (see _RawDump) and the mic SCK must capture from.
         self._raw_dump_dir = Path(raw_dump_dir) if raw_dump_dir else None
         self._raw_dump_stem = raw_dump_stem
@@ -456,6 +467,26 @@ class SystemAudioRecorder:
             self._seg_sys = None
             self._seg_mic = None
 
+        # Мікрофон з AEC підіймаємо ТУТ, до SCK: у _on_content уже треба знати,
+        # просити в ScreenCaptureKit мікрофон чи ні.
+        self._mic_from_vpio = False
+        if self._vpio is not None:
+            with contextlib.suppress(Exception):
+                self._vpio.stop()
+            self._vpio = None
+        if self._capture_mic and self._mic_aec:
+            vpio = VoiceProcessingMic(
+                on_block=lambda mono, sr: self._ingest_pcm(1, mono, sr, heartbeat=False),
+            )
+            err = vpio.start()
+            if err is None:
+                self._vpio = vpio
+                self._mic_from_vpio = True
+                print(f"🎧 мік з апаратним AEC, каналів {vpio.channels}")
+            else:
+                # Чесна відмова: мік лишається, але з ехом — і про це кажемо.
+                self._fail(f"ехо не ріжеться ({err}) — мікрофон пише як раніше")
+
         # SCShareableContent.getShareable…Handler runs its completion on the main
         # queue; the app's run loop (rumps) drives it, so just kick it off here.
         with contextlib.suppress(Exception):
@@ -470,6 +501,10 @@ class SystemAudioRecorder:
         holds a reference to — which was leaving the mic open (AirPods dropped to
         hands-free) until a reboot."""
         self._stopped.set()  # FIRST — closes the start-after-stop race
+        vpio, self._vpio = self._vpio, None
+        if vpio is not None:
+            with contextlib.suppress(Exception):
+                vpio.stop()
         stream, self._stream = self._stream, None
         if stream is not None:
             done = threading.Event()
@@ -528,12 +563,12 @@ class SystemAudioRecorder:
             cfg = SC.SCStreamConfiguration.alloc().init()
             cfg.setCapturesAudio_(True)
             cfg.setExcludesCurrentProcessAudio_(True)  # never capture Pysar's own output
-            cfg.setCaptureMicrophone_(bool(self._capture_mic))
+            cfg.setCaptureMicrophone_(bool(self._capture_mic and not self._mic_from_vpio))
             # 24.08.2026 — the mic chosen in the menu never reached this stream:
             # SCK silently used the system default, so picking "MacBook Air mic"
             # to dodge a dead AirPods link changed nothing. macOS 15 exposes the
             # device explicitly; older systems keep the old (default) behaviour.
-            if self._capture_mic and self._mic_device_uid:
+            if self._capture_mic and not self._mic_from_vpio and self._mic_device_uid:
                 if hasattr(cfg, "setMicrophoneCaptureDeviceID_"):
                     with contextlib.suppress(Exception):
                         cfg.setMicrophoneCaptureDeviceID_(self._mic_device_uid)
@@ -599,10 +634,21 @@ class SystemAudioRecorder:
         mono, sr = _pcm_mono(sbuf)
         if mono.size == 0:
             return
+        self._ingest_pcm(source, mono, int(sr))
+
+    def _ingest_pcm(self, source: int, mono: np.ndarray, sr: int, heartbeat: bool = True) -> None:
+        """Спільний шлях для обох джерел мікрофона (SCK і VPIO) та системи.
+
+        🔴 12.09.2026. `heartbeat=False` для мікрофона з VPIO — і це не деталь.
+        Доки мік їхав тим самим потоком SCK, його буфери ДОКАЗУВАЛИ, що потік
+        живий. Тепер мік — окремий рушій: якщо він стукає в серце, сторож
+        ніколи не побачить, що системне захоплення вмерло (SCStreamError
+        -3817 у Каті), і зустріч дописуватиметься без звуку співрозмовника."""
         # Heartbeat: a delivered buffer proves the stream is alive. Ambient mic
         # data keeps flowing even in silence — only a dead stream yields zero
         # buffers, so the watchdog can tell a stall from a legitimate pause.
-        self._last_audio_monotonic = time.monotonic()
+        if heartbeat:
+            self._last_audio_monotonic = time.monotonic()
         if source == 0:
             # Sound heartbeat, system source only: the mic floor is never exactly
             # zero, so mic buffers would mask a dead system tap (bug 26.08.2026).
@@ -610,7 +656,7 @@ class SystemAudioRecorder:
                 self._first_buffer_monotonic = self._last_audio_monotonic
             if mono.any():
                 self._last_sound_monotonic = self._last_audio_monotonic
-        x = _to_16k(mono, int(sr))
+        x = _to_16k(mono, sr)
         # Recovery buffer first: it must survive even if everything downstream
         # (segmenter, whisper, transcript file) fails.
         dump = self._dump_sys if source == 0 else self._dump_mic

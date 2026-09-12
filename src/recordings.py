@@ -82,6 +82,12 @@ DEFAULTS = {
     #   meeting_prompt      — custom names/jargon to bias decoding (our edge; empty
     #                         falls back to the active speech profiles, as before)
     "meeting_capture_mic": True,
+    #   meeting_mic_aec — мікрофон через Voice Processing IO Apple: апаратний AEC
+    #                     ріже ехо власних динаміків ДО віспера (заміряно −22 dB
+    #                     12.09.2026), тому зустріч можна писати без навушників.
+    #                     🔴 Ціна: VPIO бере СИСТЕМНИЙ мікрофон за замовчуванням —
+    #                     мік, вибраний у меню, цей шлях не закріплює.
+    "meeting_mic_aec": True,
     "meeting_save_file": True,
     "meeting_on_top": False,
     "meeting_mode": None,
