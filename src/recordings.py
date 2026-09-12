@@ -108,14 +108,23 @@ DEFAULTS = {
     "meeting_source_mode": "off",
     #   meeting_diarize — після Стоп пройтись по запису й розділити спікерів
     #                     УСЕРЕДИНІ каналу (кілька людей в одній доріжці).
-    #                     Вимкнено за замовчуванням: прохід коштує часу й тягне
-    #                     ~110 МБ моделей, які качаються на першу вимогу.
-    "meeting_diarize": False,
+    #                     🔴 12.09.2026. Було вимкнено — і в чужій установці
+    #                     (Катя) це означало просто «спікерів немає»: людина не
+    #                     знала, що є режим, а моделі не качались, бо їх тягне
+    #                     саме вмикач. Тепер увімкнено з коробки, а ~110 МБ
+    #                     моделей приїжджають фоном на старті (_prefetch_diar).
+    "meeting_diarize": True,
     #   diar_mic — шукати голоси і в доріжці мікрофона. За замовчуванням ні:
     #             мікрофон — це власник мака, і кластеризація там знаходить
     #             дихання та уривки, а не людей. Вмикати, коли в мікрофон
     #             справді говорили двоє — одна кімната, один ноут.
     "diar_mic": False,
+    #   diar_on_migrated — службовий прапорець разового переходу на «увімкнено».
+    #                     Оновлення не має тихо лишати стару установку без
+    #                     розділення лише тому, що ключ у файлі вже лежав як
+    #                     false. Прапорець ставиться один раз; далі рішення
+    #                     людини (вимкнула — значить вимкнено) поважається.
+    "diar_on_migrated": False,
     #   meeting_island_frame — last position/size of the floating transcript island
     #                          ({x,y,w,h}); None = default (top-right of the screen)
     "meeting_island_frame": None,
@@ -334,6 +343,12 @@ def load_settings() -> dict:
             merged["ui_lang"] = DEFAULTS["ui_lang"]
         if merged["dictation_mode"] not in ("batch", "streaming"):
             merged["dictation_mode"] = DEFAULTS["dictation_mode"]
+        # 🔴 12.09.2026. Разовий перехід: розділення спікерів стало дефолтом, і
+        # вже наявні установки теж мають його отримати — інакше «оновив, а нічого
+        # не змінилось». Далі прапорець стоїть, і вимкнення руками не відкотиться.
+        if not merged.get("diar_on_migrated"):
+            merged["meeting_diarize"] = True
+            merged["diar_on_migrated"] = True
     except Exception:
         pass  # missing/invalid settings file → fall back to defaults
     # Normalise hotkeys into fresh dicts (also migrates the legacy int keycode).

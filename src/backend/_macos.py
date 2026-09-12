@@ -901,7 +901,7 @@ class Tray:
         on_set_meeting_prompt: Callable[[str], None] | None = None,
         on_set_meeting_prompt_source: Callable[[str], None] | None = None,
         on_set_meeting_source_mode: Callable[[str], None] | None = None,
-        meeting_diarize: bool = False,
+        meeting_diarize: bool = True,
         ft_diarize: bool = False,
         diar_status_provider: Callable[[], dict] | None = None,
         on_set_meeting_diarize: Callable[[bool], None] | None = None,

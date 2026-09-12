@@ -195,7 +195,7 @@ class VoiceTyper:
             meeting_prompt=self._settings.get("meeting_prompt", ""),
             meeting_prompt_source=self._settings.get("meeting_prompt_source", "custom"),
             meeting_source_mode=self._settings.get("meeting_source_mode", "off"),
-            meeting_diarize=self._settings.get("meeting_diarize", False),
+            meeting_diarize=self._settings.get("meeting_diarize", True),
             ft_diarize=self._settings.get("ft_diarize", False),
             diar_status_provider=diarize.status,
             on_set_meeting_diarize=self._on_set_meeting_diarize,
@@ -264,6 +264,9 @@ class VoiceTyper:
 
         # Whisper-server health check at startup.
         threading.Thread(target=self._check_whisper, daemon=True).start()
+
+        # Моделі розділення спікерів — фоном, ще до першої зустрічі.
+        threading.Thread(target=self._prefetch_diar, daemon=True).start()
 
         # Show the active language in the menu bar from the start.
         self._tray.set_title(self._idle_title())
@@ -1267,7 +1270,7 @@ class VoiceTyper:
             # збережений і про нього вже сказано, тож будь-який збій тут не може
             # відібрати в користувача результат зустрічі.
             diar_on = bool(
-                sidecar_path and dump_paths and self._settings.get("meeting_diarize", False)
+                sidecar_path and dump_paths and self._settings.get("meeting_diarize", True)
             )
             if late or diar_on:
                 threading.Thread(
@@ -1836,6 +1839,28 @@ class VoiceTyper:
         if not is_alive():
             self._tray.set_status(self._t("st.whisperDown"))
             self._tray.set_title("⚠️")
+
+    def _prefetch_diar(self) -> None:
+        """Докачати рушій і моделі розділення спікерів мовчки, до першої зустрічі.
+
+        🔴 12.09.2026, урок із чужої установки: режим був вимкнений дефолтом, а
+        моделі качались рівно на вмикання — тож у Каті не сталось ні першого, ні
+        другого, і в звіті це виглядало як «розділення не працює». Тепер режим
+        увімкнений, отже ~110 МБ мусять приїхати ЗАЗДАЛЕГІДЬ: докачка на «Стоп»
+        — це хвилини очікування на вже готовому записі.
+
+        Тихо тільки доти, доки все добре: про невдачу кажемо вголос, бо мовчазний
+        провал — це рівно той клас, на якому ми щойно спіймались."""
+        time.sleep(5.0)  # не змагатися за мережу й диск зі стартом віспера
+        if not self._settings.get("meeting_diarize", True) or diarize.is_ready():
+            return
+        ok, msg = diarize.ensure_ready()
+        if ok:
+            self._tray.notify(
+                "Pysar", self._t("notif.diarReadyTitle"), self._t("notif.diarReadyMsg")
+            )
+        else:
+            self._tray.notify("Pysar", self._t("notif.diarFailTitle"), msg)
 
     def _warm_whisper(self) -> None:
         """If the server is down (jetsam reaped it during standby), bring it back
