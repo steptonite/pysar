@@ -562,6 +562,16 @@ def _merge_to(glob: dict, gcent: list, k: int, np, dur: dict | None = None):
 
 
 # ── Накладання на текст (чисті функції — тестуються без моделей) ──────────────
+def _track_seconds(path: Path) -> float:
+    """Довжина доріжки в секундах із РОЗМІРУ файлу, без декодування.
+
+    Дампи зустрічі — s16le 16 кГц моно з 44-байтовим заголовком. Точність тут
+    не критична: число потрібне лише як правий край інтервалу «весь запис»."""
+    with contextlib.suppress(Exception):
+        return max(0.0, (Path(path).stat().st_size - 44) / 2 / SAMPLE_RATE)
+    return 0.0
+
+
 def audio_map(paths) -> dict[str, Path]:
     """Файли дампів зустрічі → {джерело: шлях}. Джерело читається з імені, яке
     дає `syscap` (`…-sys.wav` / `…-mic.wav`); чуже імʼя ігнорується мовчки."""
@@ -736,6 +746,14 @@ def speaker_names(rows: list[dict], labels: dict[str, str] | None = None) -> dic
         s = r.get("speaker")
         if s and s not in order:
             order.append(s)
+    # Скільком голосам належить кожна доріжка. Один голос у доріжці ⇒ номер
+    # зайвий: «Ви · Спікер 2» на власному мікрофоні читається як загадка, хоча
+    # там нікого, крім власника мака, і бути не може.
+    per_src: dict[str, set] = {}
+    for key in order:
+        src, _, cl = key.partition("#")
+        if cl != "-1":
+            per_src.setdefault(src, set()).add(cl)
     names = {}
     for i, key in enumerate(order, 1):
         src = key.split("#", 1)[0]
@@ -743,6 +761,9 @@ def speaker_names(rows: list[dict], labels: dict[str, str] | None = None) -> dic
             names[key] = "❓ Невпізнаний"
             continue
         prefix = labels.get(src)
+        if prefix and len(per_src.get(src, ())) == 1:
+            names[key] = prefix
+            continue
         names[key] = f"{prefix} · Спікер {i}" if prefix else f"Спікер {i}"
     return names
 
@@ -826,6 +847,17 @@ def _label_locked(
     per_source = speakers if len(live) == 1 else 0
     intervals = {}
     for src, path in live:
+        if src == "mic":
+            # 🔴 12.09.2026, з тесту Льоші: «діаризатор нахуячив невпізнаваних
+            # спікерів». Мікрофон — це ОДИН власник мака, і це відомо з фізики
+            # запису, а не з кластеризації. Гнати по ньому ембединги означало
+            # шукати те, чого там немає: рушій знаходив «другий голос» у ехі,
+            # у диханні й у 0,3-секундних уривках, а короткі кластери потім
+            # ставали «❓ Невпізнаний». Тому доріжку мікрофона не кластеризуємо
+            # взагалі — одна суцільна репліка на весь запис. Заодно вдвічі
+            # менше роботи для 8 ГБ і для тепла.
+            intervals[src] = [(0.0, _track_seconds(path), 0)]
+            continue
         intervals[src] = diarize_wav(path, progress=progress, speakers=per_source, gate=gate)
     if not intervals:
         raise ValueError("немає аудіо для розділення — запис не зберігся")

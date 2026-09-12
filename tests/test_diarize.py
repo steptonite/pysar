@@ -143,8 +143,14 @@ def test_unrecognized_cluster_is_marked_not_merged():
 
 
 def test_channel_label_survives_into_the_name():
-    names = diarize.speaker_names([{"speaker": "mic#0"}], {"mic": "Ти"})
+    """Два голоси в доріжці — імʼя доріжки плюс номер.
+
+    🔴 12.09.2026: раніше номер стояв і на одному голосі («Ти · Спікер 1»).
+    Тепер одинак називається самою доріжкою — див.
+    TestMicTrackIsOneVoice.test_single_voice_track_keeps_its_own_name."""
+    names = diarize.speaker_names([{"speaker": "mic#0"}, {"speaker": "mic#1"}], {"mic": "Ти"})
     assert names["mic#0"] == "Ти · Спікер 1"
+    assert names["mic#1"] == "Ти · Спікер 2"
 
 
 def test_consecutive_turns_of_one_voice_merge_into_one_block():
@@ -423,3 +429,69 @@ def test_whisper_tokens_are_glued_back_into_words_before_cutting():
     got = _tokens_to_words(w)
     assert [t.strip() for _, _, t in got] == ["Де,", "братик,", "здорова."]
     assert got[1][:2] == (0.95, 1.53)
+
+
+# ── мікрофон — один голос за конструкцією (12.09.2026) ────────────────────────
+class TestMicTrackIsOneVoice:
+    """🔴 З тесту Льоші 12.09.2026: «діаризатор нахуячив невпізнаваних спікерів».
+
+    Доріжка мікрофона фізично містить одного мовця — власника мака. Шукати в
+    ній голоси кластеризацією означає знаходити дихання, ехо й 0,3-секундні
+    уривки, які потім стають «❓ Невпізнаний» просто тому, що короткі."""
+
+    def _sidecar(self, tmp_path, rows):
+        p = tmp_path / "зустріч.сегменти.jsonl"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"_meta": {"transcript": "зустріч"}}, ensure_ascii=False) + "\n")
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        return p
+
+    def _wav(self, path, seconds=30.0):
+        path.write_bytes(b"\0" * 44 + b"\1\0" * int(16000 * seconds))
+        return path
+
+    def test_mic_track_is_never_clustered(self, tmp_path, monkeypatch):
+        """Рушій не має права навіть запуститись на мікрофоні: це і хибні
+        спікери, і дарма витрачений прохід по аудіо на 8 ГБ."""
+        called: list = []
+        monkeypatch.setattr(
+            diarize, "diarize_wav", lambda path, **kw: called.append(path) or [(0.0, 30.0, 0)]
+        )
+        sidecar = self._sidecar(
+            tmp_path,
+            [
+                {"t0": 1.0, "t1": 3.0, "src": "mic", "text": "це я кажу"},
+                {"t0": 4.0, "t1": 6.0, "src": "mic", "text": "і це теж я"},
+                {"t0": 7.0, "t1": 9.0, "src": "sys", "text": "а це співрозмовник"},
+            ],
+        )
+        out = diarize.label_transcript(
+            sidecar,
+            {
+                "mic": self._wav(tmp_path / "з-mic.wav"),
+                "sys": self._wav(tmp_path / "з-sys.wav"),
+            },
+            out_path=tmp_path / "готово.md",
+            labels={"mic": "Ви", "sys": "Система"},
+        )
+        assert [p.name for p in called] == ["з-sys.wav"], "мікрофон пішов у кластеризацію"
+        text = out.read_text(encoding="utf-8")
+        assert "❓" not in text, "на мікрофоні з'явився невпізнаний спікер"
+        assert "це я кажу" in text and "і це теж я" in text
+
+    def test_single_voice_track_keeps_its_own_name(self):
+        """Один голос у доріжці ⇒ без номера: «Ви», а не «Ви · Спікер 2»."""
+        rows = [
+            {"speaker": "sys#0"},
+            {"speaker": "sys#1"},
+            {"speaker": "mic#0"},
+        ]
+        names = diarize.speaker_names(rows, {"sys": "Система", "mic": "Ви"})
+        assert names["mic#0"] == "Ви"
+        assert names["sys#0"] == "Система · Спікер 1"
+        assert names["sys#1"] == "Система · Спікер 2"
+
+    def test_track_seconds_from_file_size(self, tmp_path):
+        assert diarize._track_seconds(self._wav(tmp_path / "a.wav", 12.5)) == 12.5
+        assert diarize._track_seconds(tmp_path / "нема.wav") == 0.0
