@@ -126,3 +126,81 @@ class TestLangOutlier:
     def test_no_dominant_before_votes(self):
         f = MeetingFilter(auto_lang=True)
         assert _keep(f, "Obrigada muito boa", "sys", {"lang": "pt", "lang_prob": 0.6}, now=0)
+
+
+class TestEchoDirection:
+    """🔴 12.09.2026, лог Каті. Ехо однонапрямлене: динаміки → мікрофон.
+    Раніше фільтр був симетричний і викидав те, що прийшло другим у чергу,
+    тому в неї полетіла системна доріжка, а ехо в мікрофоні лишилось жити."""
+
+    def test_system_channel_is_never_dropped_as_echo(self):
+        f = MeetingFilter()
+        assert _keep(f, "надроченный скилл в плане чего находить выход", "mic", now=0)
+        # The same words arriving on the system channel are the ORIGINAL.
+        assert _keep(f, "надроченный скилл в плане чего находить выход", "sys", now=2)
+
+    def test_mic_echo_of_system_still_dropped(self):
+        f = MeetingFilter()
+        assert _keep(f, "надроченный скилл в плане чего находить выход", "sys", now=0)
+        assert not _keep(f, "надроченный скилл в плане чего находить выход", "mic", now=2)
+
+
+class TestEchoCutWithinBlock:
+    """Ехо буває лише ЧАСТИНОЮ блоку — тоді ріжемо сегменти, а не блок."""
+
+    def _seg(self, text, t0=0.0):
+        return {"t0": t0, "t1": t0 + 1.0, "text": text}
+
+    def _block(self, f, segs, source="mic", now=0.0):
+        """whisper віддає блок як склейку своїх сегментів — так і подаємо."""
+        text = " ".join(s["text"] for s in segs)
+        return f.review(text, source, {"segments": segs}, now=now)
+
+    def test_echo_segment_cut_and_own_speech_kept(self):
+        f = MeetingFilter()
+        f.verdict("невозможно взять и применить один и тот же подход ко всем", "sys", {}, now=0)
+        text, parts, reason = self._block(
+            f,
+            [
+                self._seg("Типа применить один и тот же подход ко всем.", 12.2),
+                self._seg("Надроченный скилл в плане чего?", 16.9),
+                self._seg("Типа находить выход из любой ситуации?", 19.4),
+            ],
+            now=3,
+        )
+        assert reason is None
+        assert len(parts) == 2
+        assert "подход ко всем" not in text
+        assert "Надроченный скилл" in text
+
+    def test_block_that_is_all_echo_still_dropped_whole(self):
+        f = MeetingFilter()
+        f.verdict("обходить все возможные и невозможные ограничения", "sys", {}, now=0)
+        segs = [self._seg("Обходить все возможные и невозможные ограничения?")]
+        assert self._block(f, segs, now=2)[2] == "cross-channel echo"
+
+    def test_short_tail_segment_follows_its_neighbour(self):
+        # "проекту." alone is too short to judge; it must follow the echo
+        # segment it was cut from instead of surviving on its own.
+        f = MeetingFilter()
+        f.verdict(
+            "не с первого раза но когда я нахожу подход к определенному проекту",
+            "sys",
+            now=0,
+            meta={},
+        )
+        segs = [
+            self._seg("Не с первого раза, но когда я нахожу подход к определенному"),
+            self._seg("проекту."),
+        ]
+        assert self._block(f, segs, now=2)[2] == "cross-channel echo"
+
+    def test_clean_mic_block_passes_untouched(self):
+        f = MeetingFilter()
+        f.verdict("покажи мне пожалуйста свой экран сейчас", "sys", {}, now=0)
+        meta = {"segments": [self._seg("У меня два монитора и я не понимаю какой из них.")]}
+        text, parts, reason = f.review(
+            "У меня два монитора и я не понимаю какой из них.", "mic", meta, now=2
+        )
+        assert reason is None and len(parts) == 1
+        assert text == "У меня два монитора и я не понимаю какой из них."

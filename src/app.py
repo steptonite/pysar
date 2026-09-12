@@ -1050,7 +1050,9 @@ class VoiceTyper:
         if not text:
             return
         self._meeting_server_down = False
-        drop = mfilter.verdict(text, source, meta)
+        # review() also TRIMS: when only part of a mic block is echo of the
+        # system channel, the echo segments go and her own words stay (12.09).
+        text, parts, drop = mfilter.review(text, source, meta)
         if drop is not None:
             # Dropped lines also stay out of the rolling tail: a mic-bleed echo
             # would otherwise prime this channel's decoder with the other
@@ -1064,7 +1066,6 @@ class VoiceTyper:
             self._transcript_window.append(text, source, ts)
         if self._transcript_file is not None:
             with contextlib.suppress(Exception):
-                parts = meta.get("segments") if isinstance(meta, dict) else None
                 self._transcript_file.append(text, source, ts, span, parts)
         preview = text[:40] + ("…" if len(text) > 40 else "")
         self._tray.set_status(self._t("st.meetingLine", preview=preview))

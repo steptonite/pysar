@@ -37,6 +37,13 @@ ECHO_MATCH_RATIO = 0.55
 # Phrases shorter than this (words) are never deduped — "да"/"угу"
 # legitimately occur on both sides of a call.
 ECHO_MIN_WORDS = 4
+# 🔴 12.09.2026, з логу Каті: фільтр спрацював 199 разів, а ехо все одно стояло
+# в транскрипті — бо він був СИМЕТРИЧНИЙ і викидав те, що прийшло другим у
+# черзі обробки. Черга не збігається з часом аудіо (у неї sys 25.79 с обробився
+# ПІСЛЯ mic 26.29 с), тож половину часу летів оригінал, а ехо лишалось жити.
+# Фізично ехо однонапрямлене: звук мака → динаміки → мікрофон. Назад ніколи.
+# Тому під підозрою лише мікрофон, а системну доріжку не чіпаємо в принципі.
+ECHO_SOURCE = "mic"
 # Per-source history kept for matching, words (concatenated tail).
 ECHO_TAIL_WORDS = 120
 
@@ -76,6 +83,45 @@ class MeetingFilter:
         self._lang_votes: dict[str, float] = {}
 
     # ── public ────────────────────────────────────────────────────────────────
+    def review(
+        self,
+        text: str,
+        source: str | None,
+        meta: dict | None,
+        now: float | None = None,
+    ) -> tuple[str, list[dict] | None, str | None]:
+        """Return ``(text, segments, reason)``: the block trimmed of cross-channel
+        echo, its surviving segments, and a drop reason when nothing survives.
+
+        Only the microphone is ever trimmed — see ``ECHO_SOURCE``."""
+        meta = meta or {}
+        now = time.monotonic() if now is None else now
+        parts = meta.get("segments")
+        parts = parts if isinstance(parts, list) and parts else None
+        norm = _norm(text)
+        if not norm:
+            return text, parts, "empty"
+
+        reason = self._check_hum(norm, meta) or self._check_lang(norm, meta)
+        if reason is not None:
+            return text, parts, reason
+
+        if source == ECHO_SOURCE:
+            if parts is not None:
+                kept = self._cut_echo(parts, source, now)
+                if not kept:
+                    return text, parts, "cross-channel echo"
+                if len(kept) != len(parts):
+                    parts = kept
+                    text = " ".join(str(p.get("text", "")).strip() for p in kept).strip()
+                    norm = _norm(text)
+            elif (reason := self._check_echo(norm, source, now)) is not None:
+                return text, parts, reason
+
+        self._remember(norm, source, now)
+        self._vote(norm, meta)
+        return text, parts, None
+
     def verdict(
         self,
         text: str,
@@ -83,21 +129,9 @@ class MeetingFilter:
         meta: dict | None,
         now: float | None = None,
     ) -> str | None:
-        meta = meta or {}
-        now = time.monotonic() if now is None else now
-        norm = _norm(text)
-        if not norm:
-            return "empty"
-
-        reason = self._check_hum(norm, meta) or self._check_lang(norm, meta)
-        if reason is None and source is not None:
-            reason = self._check_echo(norm, source, now)
-        if reason is not None:
-            return reason
-
-        self._remember(norm, source, now)
-        self._vote(norm, meta)
-        return None
+        """Thin wrapper: a reason when the whole block goes, ``None`` when any of
+        it stays. Callers that need the trimmed text use ``review``."""
+        return self.review(text, source, meta, now)[2]
 
     # ── checks ────────────────────────────────────────────────────────────────
     def _check_hum(self, norm: str, meta: dict) -> str | None:
@@ -129,23 +163,58 @@ class MeetingFilter:
         new_words = norm.split()
         if len(new_words) < ECHO_MIN_WORDS:
             return None
+        tail = self._other_tail(source, now)
+        if not tail:
+            return None
+        if self._covered(new_words, tail) >= ECHO_MATCH_RATIO:
+            return "cross-channel echo"
+        return None
+
+    def _cut_echo(self, parts: list[dict], source: str, now: float) -> list[dict]:
+        """Drop the echo SEGMENTS inside a block, keeping the rest.
+
+        🔴 12.09.2026. The whole-block ratio was the second half of Katya's bug:
+        whisper hands back one block holding several segments, and when the echo
+        is only its first third ("Типа применить один и тот же подход ко всем."
+        followed by two sentences of her own), coverage over the whole block
+        drops under the threshold and the echo rides in with the real speech.
+        Segment boundaries are already carried for speaker splitting, so cut
+        there instead of judging the block as one lump."""
+        tail = self._other_tail(source, now)
+        if not tail:
+            return parts
+        kept: list[dict] = []
+        prev_echo = False
+        for part in parts:
+            words = _norm(str(part.get("text", ""))).split()
+            if len(words) < ECHO_MIN_WORDS:
+                # whisper cut a phrase mid-sentence ("проекту.") — too short to
+                # judge alone, so the tail inherits its neighbour's verdict.
+                if not prev_echo:
+                    kept.append(part)
+                continue
+            prev_echo = self._covered(words, tail) >= ECHO_MATCH_RATIO
+            if not prev_echo:
+                kept.append(part)
+        return kept
+
+    def _other_tail(self, source: str, now: float) -> list[str]:
+        """Recent words from the OTHER channel, newest last."""
         self._recent = [(t, s, n) for (t, s, n) in self._recent if now - t <= ECHO_WINDOW_SEC]
         tail: list[str] = []
         for _, s, n in self._recent:
             if s != source:
                 tail.extend(n.split())
-        tail = tail[-ECHO_TAIL_WORDS:]
-        if not tail:
-            return None
-        # Share of the new words covered by runs of ≥2 consecutive words shared
-        # with the other channel's tail: containment-tolerant (the tail is
-        # longer and the two segmenters cut at different points), yet robust to
-        # per-channel ASR word differences.
+        return tail[-ECHO_TAIL_WORDS:]
+
+    @staticmethod
+    def _covered(new_words: list[str], tail: list[str]) -> float:
+        """Share of the new words covered by runs of >=2 consecutive words shared
+        with the other channel's tail: containment-tolerant (the tail is longer
+        and the two segmenters cut at different points), yet robust to
+        per-channel ASR word differences."""
         blocks = SequenceMatcher(None, new_words, tail, autojunk=False).get_matching_blocks()
-        covered = sum(b.size for b in blocks if b.size >= 2) / len(new_words)
-        if covered >= ECHO_MATCH_RATIO:
-            return "cross-channel echo"
-        return None
+        return sum(b.size for b in blocks if b.size >= 2) / len(new_words)
 
     # ── state ─────────────────────────────────────────────────────────────────
     def _remember(self, norm: str, source: str | None, now: float) -> None:
