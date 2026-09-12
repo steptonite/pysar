@@ -142,6 +142,29 @@ if AVAILABLE:
                 self._owner._on_stream_stop(error)
 
 
+def displays_present() -> bool:
+    """Чи існує зараз бодай один активний екран.
+
+    🔴 12.09.2026, заміряно на Маку Льоші: закрита кришка валить захоплення з
+    `SCStreamErrorDomain Code=-3815` («не вдалося знайти екран чи вікно») — бо
+    ScreenCaptureKit тягне СИСТЕМНИЙ звук через дисплей, і без дисплея йому
+    нема до чого чіплятись. Це не поломка Писаря і не лікується ретраєм: поки
+    екрана нема, кожна спроба впаде миттєво.
+
+    Невідомість трактуємо як «є»: якщо Quartz недоступний, вигадувати блокер на
+    порожньому місці гірше, ніж спробувати підняти потік і побачити чесну
+    помилку."""
+    try:
+        from Quartz import CGGetActiveDisplayList
+
+        err, _ids, count = CGGetActiveDisplayList(16, None, None)
+        if err:
+            return True
+        return int(count) > 0
+    except Exception:
+        return True
+
+
 def mic_pinning_supported() -> bool:
     """Whether SCK can be told WHICH microphone to capture (macOS 15+).
 

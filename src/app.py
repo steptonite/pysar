@@ -60,7 +60,7 @@ from .recordings import (
     save_recording,
     save_settings,
 )
-from .syscap import SystemAudioRecorder, mic_pinning_supported
+from .syscap import SystemAudioRecorder, displays_present, mic_pinning_supported
 from .transcriber import is_alive, transcribe, transcribe_meeting
 from .transcripts import TranscriptFile, set_transcripts_dir
 
@@ -916,6 +916,31 @@ class VoiceTyper:
         self._recover_meeting_capture(reason)
         return reason
 
+    _DISPLAY_WAIT_MAX_SEC = 3600.0  # довша за будь-яку зустріч пауза — не вічний цикл
+
+    def _wait_for_display(self) -> bool:
+        """Дочекатись екрана перед перезапуском захоплення.
+
+        Повертає False, якщо чекати вже нема для кого: людина натиснула «Стоп»
+        або екран не повернувся за годину. Лічильник відновлень при поверненні
+        екрана скидається — інцидент «кришку закрили й відкрили» не має тягнути
+        за собою штрафні бали з попереднього."""
+        if displays_present():
+            return True
+        print("⏸ екрана нема (кришка/сон) — чекаю, не витрачаю спроби")
+        waited = 0.0
+        while waited < self._DISPLAY_WAIT_MAX_SEC:
+            if not self._meeting or self._meeting_stopping:
+                return False
+            time.sleep(1.0)
+            waited += 1.0
+            if displays_present():
+                self._meeting_recover_count = 0
+                self._meeting_recover_window_start = time.monotonic()
+                print(f"▶️ екран повернувся через {waited:.0f} с — піднімаю захоплення")
+                return True
+        return False
+
     def _recover_meeting_capture(self, reason: str) -> None:
         """Restart only the SCK capture stream, keeping the live meeting session
         (file, worker, queue, per-source tails) intact. Serialised by
@@ -935,6 +960,15 @@ class VoiceTyper:
             ):
                 self._meeting_recover_count = 0
                 self._meeting_recover_window_start = now
+            # 🔴 12.09.2026. Закрита кришка (або сон екрана) валить потік з
+            # -3815: екрана нема — чіплятись нема до чого. Раніше це коштувало
+            # зустрічі: три миттєві невдалі рестарти за 30 с вибирали ліміт, і
+            # Писар глушив СЕСІЮ — хоч варто було просто дочекатись, поки екран
+            # повернеться. Зустріч не переписати, тому тут чекаємо, а не рахуємо
+            # штрафні: без екрана жодна спроба все одно не злетить.
+            if not self._wait_for_display():
+                return
+
             self._meeting_recover_count += 1
 
             if self._meeting_recover_count > self._MEETING_RECOVER_MAX:
