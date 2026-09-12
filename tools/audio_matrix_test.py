@@ -97,6 +97,22 @@ def mic_holders() -> list[str]:
 
 
 # ── A. мікрофон трьома шляхами ────────────────────────────────────────────────
+def duck_min(inp) -> None:
+    """Зняти приглушення чужого звуку, яке VPIO вмикає разом з AEC.
+
+    🔴 12.09.2026. Це НЕ клас, а C-структура: alloc/init на ній падає
+    AttributeError (спіймано на живому прогоні). Конструюється значеннями:
+    (enableAdvancedDucking, duckingLevel). Рівні в цій системі — Default=0,
+    Min=10, тобто «Min» означає МЕНШЕ приглушення, а не менший номер."""
+    import AVFAudio
+
+    inp.setVoiceProcessingOtherAudioDuckingConfiguration_(
+        AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+            False, AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingLevelMin
+        )
+    )
+
+
 def probe_sck_mic() -> str:
     """Наш поточний шлях: мік через ScreenCaptureKit."""
     from src import syscap
@@ -129,20 +145,15 @@ def probe_sck_mic() -> str:
 
 def probe_engine(vpio: bool) -> str:
     """AVAudioEngine, з апаратним AEC або без."""
-    import AVFoundation as AV
+    import AVFoundation
 
-    eng = AV.AVAudioEngine.alloc().init()
+    eng = AVFoundation.AVAudioEngine.alloc().init()
     inp = eng.inputNode()
     if vpio:
         ok, e = inp.setVoiceProcessingEnabled_error_(True, None)
         if not ok:
             return f"🔴 VPIO не увімкнувся: {e}"
-        import AVFAudio
-
-        cfg = AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingConfiguration.alloc().init()
-        cfg.setEnableAdvancedDucking_(False)
-        cfg.setDuckingLevel_(AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingLevelMin)
-        inp.setVoiceProcessingOtherAudioDuckingConfiguration_(cfg)
+        duck_min(inp)
     fmt = inp.inputFormatForBus_(0)
     ch = fmt.channelCount()
     peaks: list[float] = []
@@ -179,29 +190,24 @@ def probe_ducking() -> list[str]:
 
     if not syscap.AVAILABLE:
         return ["🔴 ScreenCaptureKit недоступний"]
-    import AVFoundation as AV
+    import AVFoundation
 
     out = []
-    for label, vpio, duck_min in (
+    for label, vpio, want_duck in (
         ("без VPIO         ", False, False),
         ("VPIO, дефолт     ", True, False),
         ("VPIO + duck .min ", True, True),
     ):
         eng = inp = None
         if vpio:
-            eng = AV.AVAudioEngine.alloc().init()
+            eng = AVFoundation.AVAudioEngine.alloc().init()
             inp = eng.inputNode()
             ok, e = inp.setVoiceProcessingEnabled_error_(True, None)
             if not ok:
                 out.append(f"{label}: 🔴 VPIO не увімкнувся: {e}")
                 continue
-            if duck_min:
-                import AVFAudio
-
-                cfg = AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingConfiguration.alloc().init()
-                cfg.setEnableAdvancedDucking_(False)
-                cfg.setDuckingLevel_(AVFAudio.AVAudioVoiceProcessingOtherAudioDuckingLevelMin)
-                inp.setVoiceProcessingOtherAudioDuckingConfiguration_(cfg)
+            if want_duck:
+                duck_min(inp)
             eng.startAndReturnError_(None)
         TMP.mkdir(parents=True, exist_ok=True)
         rec = syscap.SystemAudioRecorder(
