@@ -34,7 +34,28 @@ if [ -f "$P/pysar.log" ]; then
   [ -f "$P/pysar.log.1" ] && cp "$P/pysar.log.1" "$OUT/pysar.log.1" 2>/dev/null
   echo "лог скопійовано ($(wc -c <"$P/pysar.log" | tr -d ' ') байт)"
   echo "— рядки про розділення голосів і помилки:"
-  grep -n "diariz\|спікер\|speaker\|Traceback\|⚠️\|Error\|error" "$P/pysar.log" | tail -40
+  grep -n "diariz\|спікер\|speaker\|Traceback\|Error\|error" "$P/pysar.log" | tail -25
+
+  echo
+  echo "— 🌡 СТОРОЖ ПЕРЕГРІВУ (чи він паузив роботу і на яких градусах):"
+  if grep -q "🌡" "$P/pysar.log"; then
+    grep -n "🌡" "$P/pysar.log" | tail -25
+  else
+    echo "   сторож у лозі не озивався жодного разу"
+  fi
+
+  echo
+  echo "— 🔁 ОБРИВИ ЗАХОПЛЕННЯ ЗВУКУ (з контекстом: що було за мить до обриву):"
+  N=$(grep -c "capture stopped\|capture recover" "$P/pysar.log" 2>/dev/null || echo 0)
+  echo "   всього обривів/перезапусків у лозі: $N"
+  grep -n -B4 "capture stopped" "$P/pysar.log" | tail -40
+
+  echo
+  echo "— 🧹 ЩО ВИКИНУВ ФІЛЬТР ЕХО (дублі динаміків у мікрофоні):"
+  echo "   спрацювань усього: $(grep -c "meeting filter" "$P/pysar.log" 2>/dev/null || echo 0)"
+  grep -o "meeting filter \[[^]]*\]" "$P/pysar.log" 2>/dev/null | sort | uniq -c | sort -rn | head
+  echo "   останні 12 викинутих рядків:"
+  grep -n "meeting filter" "$P/pysar.log" | tail -12
 else
   echo "🔴 лога немає: $P/pysar.log"
 fi
