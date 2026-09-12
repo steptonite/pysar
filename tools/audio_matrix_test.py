@@ -154,7 +154,17 @@ def probe_engine(vpio: bool) -> str:
         if not ok:
             return f"🔴 VPIO не увімкнувся: {e}"
         duck_min(inp)
-    fmt = inp.inputFormatForBus_(0)
+    # 🔴 12.09.2026. Після фази B пристрій ще не відпустив попередній рушій, і
+    # формат приходить нульовий — installTap падає IsFormatSampleRateAnd
+    # ChannelCountValid. Тому чекаємо, поки формат стане чинним.
+    fmt = None
+    for _ in range(20):
+        fmt = inp.inputFormatForBus_(0)
+        if fmt.sampleRate() > 0 and fmt.channelCount() > 0:
+            break
+        time.sleep(0.15)
+    else:
+        return "🔴 формат входу лишився нульовим (пристрій не відпустили)"
     ch = fmt.channelCount()
     peaks: list[float] = []
 
