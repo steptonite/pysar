@@ -20,3 +20,10 @@ def test_update_turns_aec_off_for_installs_that_already_exist(tmp_path, monkeypa
     # Свідоме ввімкнення після переходу — поважаємо.
     f.write_text(json.dumps({"meeting_mic_aec": True, "aec_off_migrated": True}))
     assert recordings.load_settings()["meeting_mic_aec"] is True
+
+
+def test_recorder_never_uses_vpio_even_if_asked():
+    # Самотест 13.09: VPIO глушить дзвінок на −24 дБ — жоден шлях його не вмикає.
+    from pysar.syscap import SystemAudioRecorder
+
+    assert SystemAudioRecorder(capture_mic=True, mic_aec=True)._mic_aec is False

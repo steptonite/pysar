@@ -280,10 +280,12 @@ class SystemAudioRecorder:
         mic_aec: bool = False,
     ):
         self._capture_mic = capture_mic
-        # 🔴 12.09.2026. Мікрофон через VPIO замість SCK: апаратний AEC знімає
-        # ехо динаміків ДО віспера (заміряно −22 dB). Системна доріжка лишається
-        # на ScreenCaptureKit — VPIO її лише приглушує, і те лікується.
-        self._mic_aec = bool(mic_aec)
+        # 🔴 13.09.2026 VPIO ЗАБОРОНЕНО. Самотест tools/call_audio_selftest.py:
+        # з VPIO звук дзвінка в динаміках −23.8 дБ, мік для Telegram −9.4 дБ,
+        # попри _duck_min. Писар не має чіпати гучність дзвінка взагалі, тому
+        # параметр ігнорується, хоч би що лежало в налаштуваннях.
+        del mic_aec
+        self._mic_aec = False
         self._vpio: VoiceProcessingMic | None = None
         # Чи мікрофон цієї сесії справді пішов через VPIO. Ставиться в start():
         # якщо AEC не піднявся, вертаємось на мік SCK — без мікрофона зустріч
