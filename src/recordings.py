@@ -87,7 +87,9 @@ DEFAULTS = {
     #                     12.09.2026), тому зустріч можна писати без навушників.
     #                     🔴 Ціна: VPIO бере СИСТЕМНИЙ мікрофон за замовчуванням —
     #                     мік, вибраний у меню, цей шлях не закріплює.
-    "meeting_mic_aec": True,
+    #                     🔴 13.09.2026 ВИМКНЕНО: поки Писар пише зустріч, VPIO
+    #                     глушить мік для Telegram/Zoom і приглушує чужий звук.
+    "meeting_mic_aec": False,
     "meeting_save_file": True,
     "meeting_on_top": False,
     "meeting_mode": None,
@@ -125,6 +127,8 @@ DEFAULTS = {
     #                     false. Прапорець ставиться один раз; далі рішення
     #                     людини (вимкнула — значить вимкнено) поважається.
     "diar_on_migrated": False,
+    #   aec_off_migrated — разове вимкнення meeting_mic_aec у вже наявних установках.
+    "aec_off_migrated": False,
     #   meeting_island_frame — last position/size of the floating transcript island
     #                          ({x,y,w,h}); None = default (top-right of the screen)
     "meeting_island_frame": None,
@@ -349,6 +353,12 @@ def load_settings() -> dict:
         if not merged.get("diar_on_migrated"):
             merged["meeting_diarize"] = True
             merged["diar_on_migrated"] = True
+        # 🔴 13.09.2026. VPIO забирав системний мік у режим обробки голосу: у
+        # Telegram/Zoom людину переставало бути чути, а чужий звук ставав тихим
+        # (у Льоші й у Каті). Тож AEC вимкнено і в тих, у кого в файлі вже лежить true.
+        if not merged.get("aec_off_migrated"):
+            merged["meeting_mic_aec"] = False
+            merged["aec_off_migrated"] = True
     except Exception:
         pass  # missing/invalid settings file → fall back to defaults
     # Normalise hotkeys into fresh dicts (also migrates the legacy int keycode).

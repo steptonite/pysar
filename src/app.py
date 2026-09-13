@@ -775,7 +775,7 @@ class VoiceTyper:
         # restarts capture mid-session, so nothing already saved gets truncated.
         self._meeting_stem = time.strftime("%Y-%m-%d_%H-%M-%S")
         mic_uid = _mic_uid_for_name(self._settings.get("mic"))
-        mic_aec = bool(self._settings.get("meeting_mic_aec", True))
+        mic_aec = bool(self._settings.get("meeting_mic_aec", False))
         self._warn_if_mic_not_pinned(capture_mic, None if mic_aec else mic_uid)
         # 🔴 Before 24.08.2026 the recorder was built without either of these:
         # the chosen mic never reached SCK, and audio never reached the disk.
@@ -1015,7 +1015,7 @@ class VoiceTyper:
                 raw_dump_dir=meetings_dir(),
                 raw_dump_stem=getattr(self, "_meeting_stem", "") or "",
                 mic_device_uid=_mic_uid_for_name(self._settings.get("mic")),
-                mic_aec=bool(self._settings.get("meeting_mic_aec", True)),
+                mic_aec=bool(self._settings.get("meeting_mic_aec", False)),
             )
             self._sysrec.start(on_segment=self._enqueue_meeting, on_error=self._on_meeting_error)
             # The fresh stream is built on whatever device is current NOW — rebase,
